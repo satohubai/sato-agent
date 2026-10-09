@@ -1,11 +1,15 @@
 // v0.1.1 owner controls, offline: chain binding, raises (any loosening), Sato
 // Hub checks that can stop a spend, kit-enforced approval, strict amounts,
 // pay headers, status rounding, and the ERC-8004 card. A local mock stands in
-// for Sato Hub; RPCs point at a closed port, so nothing reaches a chain.
+// for Sato Hub and behaves like the real Preflight: ONE target per call, in its
+// precedence order (token before address), and it records what it was asked.
+// RPCs point at a closed port, so nothing reaches a chain.
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 import { freshHome } from "./helpers.js";
@@ -19,12 +23,16 @@ const { gateRefusals } = await import("../src/satohub.js");
 
 const BIN = fileURLToPath(new URL("../bin/sato-agent.js", import.meta.url));
 const DEAD = "0x000000000000000000000000000000000000dEaD";
-let mcp; // mock Sato Hub
+let mcp;
 let mcpUrl;
-let verdict = "go";
-let web; // plain HTTP resource for pay headers
+let mode = { verdict: "go" }; // what the mock answers
+let lastArgs = null; // what the mock was asked
+let web;
 let webUrl;
 let lastHeaders = null;
+
+// Real Preflight precedence (onchain-agent-app lib/mcp/tools.ts): one target per call.
+const ORDER = ["repo", "package", "endpoint", "agent", "token", "skill", "x402", "address"];
 
 function run(args, extraEnv = {}) {
   return new Promise((resolve) => {
@@ -44,11 +52,17 @@ before(async () => {
     let body = "";
     req.on("data", (d) => (body += d));
     req.on("end", () => {
-      if (verdict === "down") {
+      lastArgs = JSON.parse(body).params.arguments;
+      if (mode.down) {
         res.writeHead(503);
         return res.end("down");
       }
-      const result = { content: [{ type: "text", text: `Preflight: ${verdict} (mock)` }], structuredContent: { verdict, rule: "A1", checked_at: "2026-10-09T00:00:00Z" } };
+      const given = ORDER.filter((k) => lastArgs[k] !== undefined);
+      const kind = given[0];
+      const structured = { verdict: mode.verdict, rule: "A1", target: { kind }, checked_at: "2026-10-09T00:00:00Z" };
+      if (given.length > 1) structured.not_checked = given.slice(1);
+      const result = { content: [{ type: "text", text: `Preflight ${kind}: ${mode.verdict} (mock)` }] };
+      if (!mode.textOnly) result.structuredContent = structured;
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result }));
     });
@@ -86,13 +100,15 @@ test("any loosening is a raise: allowlist widened, chains widened, gate loosened
   assert.deepEqual(raisesBetween(base, { ...base, on_check_unavailable: "allow" }), ["on_check_unavailable: refuse -> allow"]);
 });
 
-test("a spend on a chain the agent is not set for is refused", () => {
+test("chains: a spend on a chain the agent is not set for is refused; a v0.1.0 policy must choose first", () => {
   const p = { max_usd_per_tx: null, max_usd_per_day: null, allow_recipients: null, chains: ["base"] };
   assert.deepEqual(evaluate(p, { usd: 1, to: "x", chain: "solana" }, 0).map((r) => r.rule), ["chain_not_allowed"]);
   assert.deepEqual(evaluate(p, { usd: 1, to: "x", chain: "base" }, 0), []);
+  const v1 = { schema: "sato-agent.policy/v1", max_usd_per_tx: 5, max_usd_per_day: 5, allow_recipients: null };
+  assert.deepEqual(evaluate(v1, { usd: 1, to: "x", chain: "base" }, 0).map((r) => r.rule), ["chains_not_set"]);
 });
 
-test("check gating follows the owner's choice; unknown never stops a spend", () => {
+test("check gating follows the owner's choice; unknown never stops a spend; unavailable fails closed unless the owner chose allow", () => {
   const ok = (p, c) => gateRefusals(p, c).map((r) => r.rule);
   assert.deepEqual(ok({ check_gate: "off" }, { verdict: "no" }), []);
   assert.deepEqual(ok({}, { verdict: "no" }), [], "unset = informs only");
@@ -100,14 +116,23 @@ test("check gating follows the owner's choice; unknown never stops a spend", () 
   assert.deepEqual(ok({ check_gate: "no" }, { verdict: "caution" }), []);
   assert.deepEqual(ok({ check_gate: "caution" }, { verdict: "caution" }), ["check_caution"]);
   assert.deepEqual(ok({ check_gate: "caution" }, { verdict: "unknown" }), []);
-  assert.deepEqual(ok({ check_gate: "no" }, { unavailable: true }), [], "unavailable: allowed unless the owner chose refuse");
+  assert.deepEqual(ok({ check_gate: "no", on_check_unavailable: "allow" }, { unavailable: true }), []);
   assert.deepEqual(ok({ check_gate: "no", on_check_unavailable: "refuse" }, { unavailable: true }), ["check_unavailable"]);
+  assert.deepEqual(ok({ check_gate: "no" }, { unavailable: true }), ["check_unavailable"], "never chosen: fail closed");
   assert.deepEqual(gateRefusals({ check_gate: "no" }, {}, { skipped: true }).map((r) => r.rule), ["check_required"]);
 });
 
-test("CLI: a Base-only agent shows only Base, and refuses a Solana send", async () => {
+test("policy: turning the gate on requires choosing what happens when the check can't run", async () => {
+  // fresh state for this file's CLI tests
   await run(["init"]);
   assert.equal((await run(["policy", "set", "--chains", "base", "--per-tx", "5", "--per-day", "20"])).code, 0);
+  const r = await run(["policy", "set", "--check-gate", "no"]);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /on-check-unavailable/);
+  assert.equal((await run(["policy", "set", "--check-gate", "no", "--on-check-unavailable", "allow"])).code, 0);
+});
+
+test("CLI: a Base-only agent shows only Base, and refuses a Solana send", async () => {
   const addr = JSON.parse((await run(["address", "--json"])).stdout);
   assert.deepEqual(Object.keys(addr), ["base"]);
   const r = await run(["send", "--chain", "solana", "--to", "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin", "--amount", "1"]);
@@ -115,13 +140,22 @@ test("CLI: a Base-only agent shows only Base, and refuses a Solana send", async 
   assert.match(r.stderr, /chain_not_allowed/);
 });
 
-test("CLI: with the gate on, a `no` verdict stops the send before anything is signed", async () => {
-  await run(["policy", "set", "--check-gate", "no"]);
-  verdict = "no";
-  const r = await run(["send", "--chain", "base", "--to", DEAD, "--amount", "1"]);
-  assert.equal(r.code, 3);
-  assert.match(r.stderr, /check_no/);
-  verdict = "go";
+test("CLI: the Base send check asks about the RECIPIENT (never a token, which would outrank it)", async () => {
+  mode = { verdict: "go" };
+  await run(["send", "--chain", "base", "--to", DEAD, "--amount", "1"]);
+  assert.equal(lastArgs.address, DEAD);
+  assert.equal(lastArgs.chain, "Base");
+  assert.equal(lastArgs.token, undefined);
+});
+
+test("CLI: with the gate on, `no` (any casing) stops the send before anything is signed; go proceeds", async () => {
+  for (const v of ["no", "NO"]) {
+    mode = { verdict: v };
+    const r = await run(["send", "--chain", "base", "--to", DEAD, "--amount", "1"]);
+    assert.equal(r.code, 3, v);
+    assert.match(r.stderr, /check_no/);
+  }
+  mode = { verdict: "go" };
   const g = await run(["send", "--chain", "base", "--to", DEAD, "--amount", "1"]);
   assert.notEqual(g.code, 3, "a go verdict does not stop it (it then fails on the closed RPC port)");
   const s = await run(["send", "--chain", "base", "--to", DEAD, "--amount", "1", "--skip-check"]);
@@ -129,44 +163,64 @@ test("CLI: with the gate on, a `no` verdict stops the send before anything is si
   assert.match(s.stderr, /check_required/);
 });
 
-test("CLI: a check that cannot run follows the owner's on-unavailable choice", async () => {
-  verdict = "down";
-  const allowed = await run(["send", "--chain", "base", "--to", DEAD, "--amount", "1"]);
-  assert.notEqual(allowed.code, 3);
+test("CLI: an answer that isn't a check of our target counts as unavailable, and follows the owner's choice", async () => {
   await run(["policy", "set", "--on-check-unavailable", "refuse"]);
-  const refused = await run(["send", "--chain", "base", "--to", DEAD, "--amount", "1"]);
-  assert.equal(refused.code, 3);
-  assert.match(refused.stderr, /check_unavailable/);
-  verdict = "go";
+  for (const m of [{ down: true }, { verdict: "go", textOnly: true }]) {
+    mode = m;
+    const r = await run(["send", "--chain", "base", "--to", DEAD, "--amount", "1"]);
+    assert.equal(r.code, 3, JSON.stringify(m));
+    assert.match(r.stderr, /check_unavailable/);
+  }
+  mode = { verdict: "go" };
   assert.match((await run(["status"])).stdout, /checks skipped or unavailable/);
+  assert.match((await run(["status"])).stdout, /custom_endpoint/, "a non-default Sato Hub address is logged when the gate is on");
 });
 
-test("CLI: approval mode needs the owner's yes for the exact intent, once", async () => {
+test("CLI: approval mode needs the owner's yes for the exact intent, once; --skip-check is part of the intent", async () => {
   await run(["policy", "set", "--approval", "ask"]);
   const ask = await run(["send", "--chain", "base", "--to", DEAD, "--amount", "2", "--json"]);
   assert.equal(ask.code, 5, "nothing spent: needs approval");
   const { code } = JSON.parse(ask.stdout).needs_approval;
   const other = await run(["send", "--chain", "base", "--to", DEAD, "--amount", "3", "--approve", code]);
-  assert.equal(other.code, 1);
   assert.match(other.stderr, /different intent/);
+  const skipping = await run(["send", "--chain", "base", "--to", DEAD, "--amount", "2", "--skip-check", "--approve", code]);
+  assert.notEqual(skipping.code, 0);
   const yes = await run(["send", "--chain", "base", "--to", DEAD, "--amount", "2", "--approve", code]);
-  assert.ok(![2, 3, 5].includes(yes.code), "approved: proceeds to the spend (then fails on the closed RPC port)");
+  assert.doesNotMatch(yes.stderr, /approval|different intent|REFUSED/, "approved: gets past the approval to the spend");
   const again = await run(["send", "--chain", "base", "--to", DEAD, "--amount", "2", "--approve", code]);
   assert.match(again.stderr, /already used|not found/);
+  const reg = await run(["register", "--name", "a", "--description", "b"]);
+  assert.equal(reg.code, 5, "register asks too in approval mode");
+  const over = await run(["send", "--chain", "base", "--to", DEAD, "--amount", "6"]);
+  assert.equal(over.code, 3, "over the limit is refused BEFORE asking for approval");
+});
+
+test("CLI: pay in approval mode never stores or prints header values, and says the price is not bound", async () => {
+  await run(["policy", "set", "--check-gate", "off"]);
+  const r = await run(["pay", webUrl, "--header", "Authorization: Bearer sk-SECRET123", "--skip-check"]);
+  assert.equal(r.code, 5);
+  assert.doesNotMatch(r.stdout + r.stderr, /sk-SECRET123/);
+  assert.match(r.stderr, /does not fix the price/);
+  for (const f of ["ledger.jsonl", "approvals.json"]) assert.doesNotMatch(readFileSync(join(home, f), "utf8"), /sk-SECRET123/, f);
+  assert.equal((await run(["pay", webUrl, "--header", "X-Payment: x", "--skip-check"])).code, 2, "payment headers are reserved");
   const back = await run(["policy", "set", "--approval", "auto"]);
   assert.match(back.stdout, /RAISED \(approval: ask -> auto\)/);
 });
 
 test("CLI: pay sends --header values and a JSON content-type for JSON bodies", async () => {
-  const r = await run(["pay", webUrl, "--method", "POST", "--data", '{"q":1}', "--header", "x-api-tag: sato", "--skip-check"], {});
-  // the gate is on in this home, so --skip-check is refused; turn it off and retry
-  assert.equal(r.code, 3);
-  await run(["policy", "set", "--check-gate", "off"]);
   const ok = await run(["pay", webUrl, "--method", "POST", "--data", '{"q":1}', "--header", "x-api-tag: sato", "--skip-check"]);
   assert.equal(ok.code, 0);
   assert.equal(lastHeaders["x-api-tag"], "sato");
   assert.equal(lastHeaders["content-type"], "application/json");
   assert.equal((await run(["pay", webUrl, "--header", "no-colon", "--skip-check"])).code, 2);
+});
+
+test("deleting policy.json and starting over is still flagged as a raise", async () => {
+  rmSync(join(home, "policy.json"));
+  const r = await run(["policy", "set", "--chains", "base,solana", "--per-tx", "none", "--per-day", "none"]);
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /RAISED \(policy file was missing/);
+  assert.match(r.stdout, /chains widened/);
 });
 
 test("status rounds money and lists one row per spend", async () => {
@@ -188,3 +242,5 @@ test("the ERC-8004 card does not claim x402 acceptance unless asked, and declare
   assert.equal(c.x402Support, true);
   assert.deepEqual(c.services, [{ name: "web", endpoint: "https://x.y" }]);
 });
+
+void writeFileSync;

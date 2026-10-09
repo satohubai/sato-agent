@@ -36,7 +36,9 @@ The kit creates both a Base and a Solana address, so you always have one of each
    - "Should I ask you before every payment, or act on my own within your limits?" → `policy set --approval ask` or `--approval auto`.
      In `ask` mode, every `send` or `pay` first stops with **exit code 5** and an approval code. Show the owner the exact intent it printed. Only if they say yes, re-run the SAME command with `--approve <code>`. The code works once, for that exact intent, for 15 minutes.
    - "Should a Sato Hub check be able to stop a payment?" → `--check-gate off` (it only informs), `--check-gate no` (stop when the check says `no`), or `--check-gate caution` (stop on `caution` or `no`).
-   - "If the Sato Hub check can't run, should I go ahead or stop?" → `--on-check-unavailable allow` or `--on-check-unavailable refuse`.
+     `caution` is strict: many ordinary x402 sellers and new recipients come back `caution`, so it will stop those too.
+   - If the gate is on: "If the Sato Hub check can't run, should I go ahead or stop?" → `--on-check-unavailable allow` or `--on-check-unavailable refuse`. The kit requires this answer whenever the gate is on.
+   - In `ask` mode, approving a `pay` approves the URL and request, not the price. The server sets the price and payee when paying, and the per-transaction limit caps it. Tell the owner that when you ask.
 5. **Ask the owner to fund the wallet for your CHAIN** (see the table above): only what they are willing to let you spend. Check with `~/sato-agent-NAME balance`.
 6. **Base only: offer an onchain identity.** Run `~/sato-agent-NAME register --name "<name>" --description "<what you do>"`. This registers you in the ERC-8004 agent registry on Base (gas only) and shows your agent id.
    - Add `--service name=endpoint` (repeatable) for anything you actually offer.

@@ -5,18 +5,20 @@
 // 5 needs the owner's approval (nothing spent).
 
 import { parseArgs } from "node:util";
+import { createHash } from "node:crypto";
 import { addresses, initWallet, walletExists } from "../src/wallet.js";
-import { allowedChains, loadPolicy, setPolicy } from "../src/policy.js";
+import { allowedChains, evaluate, loadPolicy, setPolicy } from "../src/policy.js";
 import { NeedsApproval, Pending, Refused } from "../src/errors.js";
 import { read, recordCheckEvent, spentLast24h } from "../src/ledger.js";
 import { consumeApproval, requestApproval } from "../src/approvals.js";
 import { roundUsd } from "../src/amount.js";
-import { home } from "../src/store.js";
+import { home, withLock } from "../src/store.js";
 import { VERSION } from "../src/version.js";
 import * as baseChain from "../src/base.js";
 import * as solana from "../src/solana.js";
 import { pay } from "../src/x402.js";
-import { checkInstall, gateRefusals, recommend, runCheck } from "../src/satohub.js";
+import { MCP_URL, checkInstall, customEndpoint, gateRefusals, recommend, runCheck } from "../src/satohub.js";
+import { usdcUnits, unitsToUsd } from "../src/amount.js";
 
 const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, with the owner's limits
 
@@ -101,13 +103,19 @@ function policyText(p) {
   ].join("\n");
 }
 
+// Headers the x402 exchange itself uses (and our own user-agent): a user value
+// would break or spoof the payment, so they are refused.
+const RESERVED_HEADERS = ["x-payment", "x-payment-response", "payment-signature", "payment-required", "payment-response", "user-agent"];
+
 /** Headers from repeatable `--header 'k: v'`, plus a JSON content-type when --data is JSON. */
 function parseHeaders() {
   const h = {};
   for (const line of flags.header ?? []) {
     const i = line.indexOf(":");
     if (i <= 0) throw new UsageError(`--header must look like 'name: value' (got "${line}")`);
-    h[line.slice(0, i).trim().toLowerCase()] = line.slice(i + 1).trim();
+    const name = line.slice(0, i).trim().toLowerCase();
+    if (RESERVED_HEADERS.includes(name)) throw new UsageError(`--header ${name} is reserved for the payment exchange`);
+    h[name] = line.slice(i + 1).trim();
   }
   if (flags.data !== undefined && !h["content-type"]) {
     try {
@@ -125,20 +133,24 @@ function parseHeaders() {
  * chose, the Sato Hub check under the owner's gate, and the owner's approval
  * when they chose "ask". Throws Refused (3) or NeedsApproval (5).
  */
-async function beforeSpend({ chain, intent, checkArgs }) {
+async function beforeSpend({ chain, intent, checkArgs, expectKind, usd, to }) {
   const policy = loadPolicy();
-  if (policy && !allowedChains(policy).includes(chain)) {
-    throw new Refused([{ rule: "chain_not_allowed", limit: allowedChains(policy), observed: chain, message: `this agent is set to work on ${allowedChains(policy).join(" and ")} only` }]);
-  }
+  // The limits first (when the amount is known here), so the owner is never
+  // asked to approve something the limits would refuse anyway. The spend is
+  // checked again, and reserved, under the lock when it actually happens.
+  const early = evaluate(policy, { usd: usd ?? 0.000001, to, chain }, spentLast24h());
+  if (early.length) throw new Refused(early);
+  intent = { ...intent, skip_check: Boolean(flags["skip-check"]) };
   let check = null;
   if (flags["skip-check"]) {
     recordCheckEvent({ status: "skipped", intent });
     const r = gateRefusals(policy, {}, { skipped: true });
     if (r.length) throw new Refused(r);
-  } else {
-    check = await runCheck(checkArgs);
+  } else if (checkArgs) {
+    if (customEndpoint() && policy?.check_gate && policy.check_gate !== "off") recordCheckEvent({ status: "custom_endpoint", mcp_url: MCP_URL, intent });
+    check = await runCheck(checkArgs, expectKind);
     say(`Sato Hub check (dated evidence, not a verdict on anyone):\n${check.text}\n`);
-    if (check.unavailable) recordCheckEvent({ status: "unavailable", reason: check.reason, intent });
+    if (check.unavailable) recordCheckEvent({ status: "unavailable", reason: check.reason, mcp_url: MCP_URL, intent });
     const r = gateRefusals(policy, check);
     if (r.length) throw new Refused(r);
   }
@@ -147,6 +159,11 @@ async function beforeSpend({ chain, intent, checkArgs }) {
     await consumeApproval(flags.approve, intent);
   }
   return check;
+}
+
+/** Header values never go in an intent, a ledger line or the chat: only names and a short hash. */
+function redactHeaders(h) {
+  return Object.fromEntries(Object.entries(h).map(([k, v]) => [k, `sha256:${createHash("sha256").update(v).digest("hex").slice(0, 16)}`]));
 }
 
 async function main() {
@@ -192,15 +209,21 @@ async function main() {
       if (rest[0] === "set") {
         if (flags.allow === "") throw new UsageError("--allow needs a comma-separated list of addresses, or `any`");
         const allow = flags.allow === undefined ? undefined : flags.allow === "any" ? null : flags.allow.split(",").map((s) => s.trim()).filter(Boolean);
-        const { policy, raised, raises, first } = setPolicy({
-          perTx: flags["per-tx"],
-          perDay: flags["per-day"],
-          allowRecipients: allow,
-          chains: flags.chains,
-          checkGate: flags["check-gate"],
-          approval: flags.approval,
-          onCheckUnavailable: flags["on-check-unavailable"],
-        });
+        // Under a lock, so two concurrent changes cannot both compare against the
+        // same old policy and miss a raise.
+        const { policy, raised, raises, first } = await withLock(
+          async () =>
+            setPolicy({
+              perTx: flags["per-tx"],
+              perDay: flags["per-day"],
+              allowRecipients: allow,
+              chains: flags.chains,
+              checkGate: flags["check-gate"],
+              approval: flags.approval,
+              onCheckUnavailable: flags["on-check-unavailable"],
+            }),
+          { name: "policy" },
+        );
         const head = first
           ? "Set."
           : raised
@@ -216,11 +239,11 @@ async function main() {
       const chain = (flags.chain || "").toLowerCase();
       if (!["base", "solana"].includes(chain) || !flags.to || !flags.amount) throw new UsageError("send --chain base|solana --to <address> --amount <usdc>");
       const a = addresses();
-      const checkArgs =
-        chain === "base"
-          ? { address: flags.to, chain: "Base", from: a.base, token: baseChain.USDC_BASE }
-          : { address: flags.to, chain: "Solana", from: a.solana };
-      const check = await beforeSpend({ chain, intent: { cmd: "send", chain, to: flags.to, amount: flags.amount }, checkArgs });
+      // One Preflight call checks ONE target, and `token` outranks `address`, so
+      // never pass a token here: this must be the recipient check (Sato Scan).
+      const checkArgs = { address: flags.to, chain: chain === "base" ? "Base" : "Solana", from: chain === "base" ? a.base : a.solana };
+      const usd = unitsToUsd(usdcUnits(flags.amount)); // refuses malformed amounts before anything else
+      const check = await beforeSpend({ chain, intent: { cmd: "send", chain, to: flags.to, amount: flags.amount }, checkArgs, expectKind: "address", usd, to: flags.to });
       const r = chain === "base" ? await baseChain.sendUsdc({ to: flags.to, amount: flags.amount }) : await solana.sendUsdc({ to: flags.to, amount: flags.amount });
       return out(`Sent ${r.usd} USDC on ${chain} to ${r.to}\n  ${r.explorer}`, { ...r, chain, sato_hub_check: check });
     }
@@ -231,8 +254,11 @@ async function main() {
       const method = (flags.method || "GET").toUpperCase();
       const check = await beforeSpend({
         chain: "base",
-        intent: { cmd: "pay", url, method, data: flags.data ?? null, headers },
+        // The price and payee are set by the server at pay time, capped by the
+        // per-transaction limit: the approval binds what is asked for, not the price.
+        intent: { cmd: "pay", url, method, data: flags.data ?? null, headers: redactHeaders(headers), price: "set by the server at pay time, up to the per-transaction limit; payee not bound" },
         checkArgs: { x402: url },
+        expectKind: "x402",
       });
       const r = await pay(url, { method, body: flags.data, headers });
       const head = r.settled
@@ -252,6 +278,13 @@ async function main() {
         if (i <= 0) throw new UsageError(`--service must look like name=endpoint (got "${s}")`);
         return { name: s.slice(0, i).trim(), endpoint: s.slice(i + 1).trim() };
       });
+      // Registration spends gas only, so it is not limit-gated, but "ask before
+      // every payment" covers it too.
+      if (loadPolicy()?.approval === "ask") {
+        const intent = { cmd: "register", name: flags.name ?? null, description: flags.description ?? null, image: flags.image ?? null, services, x402_support: Boolean(flags["x402-support"]), again: Boolean(flags.again), resume: flags.resume ?? null };
+        if (!flags.approve) throw new NeedsApproval(intent, await requestApproval(intent));
+        await consumeApproval(flags.approve, intent);
+      }
       const r = await baseChain.registerAgent({
         name: flags.name,
         description: flags.description,

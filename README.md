@@ -59,7 +59,7 @@ Exit codes:
 - `2`: usage error.
 - `3`: refused by the limits. Nothing was signed; the message names the rule, the limit and what was observed.
 - `4`: signed but not confirmed. It stays counted. **Do not retry**; check the explorer link.
-- `5`: needs the owner's approval (approval mode). Nothing was spent. Re-run the same command with `--approve <code>` after the owner says yes. The code works once, for that exact intent, for 15 minutes.
+- `5`: needs the owner's approval (approval mode). Nothing was spent. Re-run the same command with `--approve <code>` after the owner says yes. The code works once, for that exact intent, for 15 minutes. For `pay`, the approval covers the URL and request; the server sets the price and payee at pay time, capped by the per-transaction limit. Header values are never stored or printed (names plus a hash only). `register` also asks in approval mode.
 
 Dependencies are locked by `npm-shrinkwrap.json` (every transitive version), and none has an install script.
 
@@ -99,7 +99,7 @@ Every limit change is written to the ledger and shown in `status`. `pay` frames 
 
 ## What Sato Hub's checks are
 
-They are dated evidence lines (when a project last shipped, whether an endpoint answered, what an install does with keys), not verdicts. A check stops a spend only if the owner chose that (`--check-gate`). A `go` never means a recipient or resource is safe; it means nothing on record stood in the way. `unknown` means Sato Hub holds no record, not that anything is wrong. Docs: https://satohub.ai/mcp
+They are dated evidence lines (when a project last shipped, whether an endpoint answered, what an install does with keys), not verdicts. A check stops a spend only if the owner chose that (`--check-gate`). With the gate on, the owner also chooses what happens when a check can't run, or when Sato Hub answered about something other than the target. A non-default Sato Hub address (`SATO_AGENT_MCP_URL`) is logged on every gated check. A `go` never means a recipient or resource is safe; it means nothing on record stood in the way. `unknown` means Sato Hub holds no record, not that anything is wrong. Docs: https://satohub.ai/mcp
 
 ## Tests
 

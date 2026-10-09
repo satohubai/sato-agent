@@ -1,11 +1,13 @@
 // "Ask me before every payment", enforced by the kit (policy `approval: "ask"`).
 //
 // A spend command run without --approve does NOT spend: it records the exact
-// intent (what, how much, to whom) under a short random code and exits 5. The
-// agent shows the owner that intent; when the owner says yes, the agent re-runs
-// the SAME command with `--approve <code>`. The code is single-use, expires
-// after APPROVAL_TTL_MS, and only matches the identical intent: change the
-// amount, recipient, URL or body and it is refused.
+// intent under a short random code and exits 5. For `send` that is the chain,
+// recipient and amount. For `pay` it is the URL, method, body and header names
+// (values hashed): the server sets the price and payee at pay time, capped by
+// the per-transaction limit, so an approval does not fix the price. The agent
+// shows the owner the intent; when the owner says yes, the agent re-runs the
+// SAME command with `--approve <code>`. The code is single-use, expires after
+// APPROVAL_TTL_MS, and only matches the identical intent.
 //
 // Honest scope, as with the limits: the agent can type the code itself. This
 // stops mistakes and an agent that follows its rules (it cannot spend without

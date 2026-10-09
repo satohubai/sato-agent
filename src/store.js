@@ -40,7 +40,13 @@ export function writePrivate(path, text, { exclusive = false, atomic = false } =
   ensureHome();
   if (atomic && !exclusive) {
     const tmp = `${path}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, text, { mode: 0o600 });
+    const fd = fs.openSync(tmp, "w", 0o600);
+    try {
+      fs.writeSync(fd, text);
+      fs.fsyncSync(fd); // on disk before it replaces the old file
+    } finally {
+      fs.closeSync(fd);
+    }
     fs.chmodSync(tmp, 0o600);
     fs.renameSync(tmp, path);
     return;

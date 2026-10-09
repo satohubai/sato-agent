@@ -17,7 +17,7 @@
 import { isAddress as isEvmAddress } from "viem";
 import { isAddress as isSolanaAddress } from "@solana/kit";
 import { paths, readJson, writePrivate } from "./store.js";
-import { recordPolicyChange } from "./ledger.js";
+import { entries, recordPolicyChange } from "./ledger.js";
 
 export { Refused } from "./errors.js";
 
@@ -93,6 +93,10 @@ export function raisesBetween(prev, next) {
  */
 export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, approval, onCheckUnavailable }) {
   const prev = loadPolicy();
+  // If policy.json is gone (deleted, or never written after a crash) but the
+  // ledger recorded one, compare against that: deleting the file and starting
+  // over must still show up as a raise.
+  const recorded = prev ? null : [...entries()].reverse().find((e) => e.kind === "policy" && e.to)?.to ?? null;
   if (!prev && (perTx === undefined || perDay === undefined)) {
     throw new Error("first time: set both --per-tx and --per-day (a USD amount, or \"none\")");
   }
@@ -113,10 +117,14 @@ export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, a
     approval: pick(parseChoice(approval, APPROVAL_MODES, "--approval"), "approval"),
     on_check_unavailable: pick(parseChoice(onCheckUnavailable, UNAVAILABLE_MODES, "--on-check-unavailable"), "on_check_unavailable"),
   };
-  const raises = raisesBetween(prev, next);
+  if (["no", "caution"].includes(next.check_gate) && !next.on_check_unavailable) {
+    throw new Error("with --check-gate on, also choose --on-check-unavailable allow|refuse: what to do when the check can't run (no default)");
+  }
+  const raises = raisesBetween(prev ?? recorded, next);
+  if (!prev && recorded) raises.unshift("policy file was missing; compared with the last recorded policy");
   writePrivate(paths.policy(), JSON.stringify(next, null, 2) + "\n", { atomic: true });
-  recordPolicyChange({ from: prev, to: next, raised: raises.length > 0, raises });
-  return { policy: next, raised: raises.length > 0, raises, first: !prev };
+  recordPolicyChange({ from: prev ?? recorded, to: next, raised: raises.length > 0, raises });
+  return { policy: next, raised: raises.length > 0, raises, first: !prev && !recorded };
 }
 
 /** The chains this policy allows (a v1 policy with no `chains` allows both). */
@@ -135,6 +143,10 @@ export function evaluate(policy, { usd, to, chain }, spent) {
     return [{ rule: "ledger_unreadable", limit: null, observed: s.unreadable, message: `the spend ledger has unreadable line(s) ${s.unreadable.join(", ")}; spending is stopped until the owner looks at ${paths.ledger()}` }];
   }
   const out = [];
+  if (!Array.isArray(policy.chains)) {
+    // A v0.1.0 policy never chose its chains. No default: choose before spending.
+    return [{ rule: "chains_not_set", limit: null, observed: null, message: "choose which chain(s) this agent may spend on: `sato-agent policy set --chains <base|solana|base,solana>`" }];
+  }
   if (chain && !allowedChains(policy).includes(chain)) {
     out.push({ rule: "chain_not_allowed", limit: allowedChains(policy), observed: chain, message: `this agent is set to work on ${allowedChains(policy).join(" and ")} only` });
   }

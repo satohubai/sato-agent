@@ -1,0 +1,77 @@
+{
+ "code": 0,
+ "message": "successfully",
+ "data": {
+  "routeSummary": {
+   "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+   "amountIn": "100000000",
+   "amountInUsd": "100.01272320691487",
+   "tokenOut": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+   "amountOut": "40145191458367072",
+   "amountOutUsd": "99.85882708552784",
+   "gas": "715498",
+   "gasPrice": "6000000",
+   "gasUsd": "0.010678557774891313",
+   "l1FeeUsd": "0.00002386764041867717",
+   "extraFee": {
+    "feeAmount": "15",
+    "chargeFeeBy": "currency_in",
+    "isInBps": true,
+    "feeReceiver": "0xcee53eb001d4d1743ef9df333dcf45bc38622be9"
+   },
+   "route": [
+    [
+     {
+      "pool": "elfomofi_0x4200000000000000000000000000000000000006_0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "tokenOut": "0x4200000000000000000000000000000000000006",
+      "swapAmount": "99850000",
+      "amountOut": "40145191458367072",
+      "exchange": "elfomofi",
+      "poolType": "elfomofi",
+      "poolExtra": {
+       "approvalAddress": "0xf0f0F0F0FB0d738452EfD03A28e8be14C76d5f73",
+       "blockNumber": 52366572
+      },
+      "extra": {
+       "_ce": {
+        "prCnt": 1,
+        "tgtAmtOut": "40145191458367072",
+        "ces": [
+         {
+          "pool": "0xb4cb800910b228ed3d0834cf79d697127bbb00e5",
+          "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "tokenOut": "0x4200000000000000000000000000000000000006",
+          "swapAmount": "99850000",
+          "amountOut": "40142754894970373",
+          "exchange": "uniswapv3",
+          "poolType": "uniswapv3",
+          "poolExtra": {
+           "swapFee": 100,
+           "priceLimit": "1461446703485210103287273052203988822378723970341",
+           "blockNumber": 52366573
+          },
+          "extra": {
+           "rAI": "0",
+           "nSqrtRx96": "3951211901077228163163901",
+           "nT": -198132
+          }
+         }
+        ]
+       },
+       "_cs": "16183147478880643596",
+       "_ts": "1791522494",
+       "ri": "5b155b0fQFVFGKP2"
+      }
+     }
+    ]
+   ],
+   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+   "routeID": "5b155b0fQFVFGKP2",
+   "checksum": "16183147478880643596",
+   "timestamp": 1791522494
+  },
+  "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
+ },
+ "requestId": "5b155b0f-4055-4518-a3f6-0441b083b111"
+}

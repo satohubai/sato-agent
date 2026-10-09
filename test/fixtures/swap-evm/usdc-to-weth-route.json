@@ -1,0 +1,70 @@
+{
+ "code": 0,
+ "message": "successfully",
+ "data": {
+  "routeSummary": {
+   "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+   "amountIn": "100000000",
+   "amountInUsd": "100.04683091984788",
+   "tokenOut": "0x4200000000000000000000000000000000000006",
+   "amountOut": "40145399909011856",
+   "amountOutUsd": "99.8878184872025",
+   "gas": "330498",
+   "gasPrice": "6000000",
+   "gasUsd": "0.004933973652155261",
+   "l1FeeUsd": "0.000024150160086713604",
+   "extraFee": {
+    "feeAmount": "15",
+    "chargeFeeBy": "currency_in",
+    "isInBps": true,
+    "feeReceiver": "0xcee53eb001d4d1743ef9df333dcf45bc38622be9"
+   },
+   "route": [
+    [
+     {
+      "pool": "0x4e392fbfe4d0557c82d2f97f02ec39daa31516dd",
+      "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "tokenOut": "0x4200000000000000000000000000000000000006",
+      "swapAmount": "99850000",
+      "amountOut": "40145399909011856",
+      "exchange": "aerodrome-cl-3",
+      "poolType": "slipstream",
+      "poolExtra": {
+       "swapFee": 80,
+       "priceLimit": "1461446703485210103287273052203988822378723970341",
+       "blockNumber": 52366573
+      },
+      "extra": {
+       "_cs": "6819267461785166510",
+       "_ss": {
+        "pool": "elfomofi_0x4200000000000000000000000000000000000006_0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "tokenOut": "0x4200000000000000000000000000000000000006",
+        "swapAmount": "99850000",
+        "amountOut": "40144651357396096",
+        "exchange": "elfomofi",
+        "poolType": "elfomofi",
+        "poolExtra": {
+         "approvalAddress": "0xf0f0F0F0FB0d738452EfD03A28e8be14C76d5f73",
+         "blockNumber": 52366576
+        },
+        "extra": null
+       },
+       "_ts": "1791522502",
+       "nSqrtRx96": "3951242720898367549264647",
+       "nT": -198132,
+       "rAI": "0",
+       "ri": "6b97f088fJJAULNe"
+      }
+     }
+    ]
+   ],
+   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+   "routeID": "6b97f088fJJAULNe",
+   "checksum": "6819267461785166510",
+   "timestamp": 1791522502
+  },
+  "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
+ },
+ "requestId": "6b97f088-7c92-4050-b35e-0a3b1f78286b"
+}

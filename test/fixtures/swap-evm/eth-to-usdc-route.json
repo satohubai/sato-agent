@@ -1,0 +1,79 @@
+{
+ "code": 0,
+ "message": "successfully",
+ "data": {
+  "routeSummary": {
+   "tokenIn": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+   "amountIn": "10000000000000000",
+   "amountInUsd": "24.87441794594188",
+   "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+   "amountOut": "24841409",
+   "amountOutUsd": "24.84456962386764",
+   "gas": "356167",
+   "gasPrice": "6000000",
+   "gasUsd": "0.005315668089931369",
+   "l1FeeUsd": "0.000024143276114970507",
+   "extraFee": {
+    "feeAmount": "15",
+    "chargeFeeBy": "currency_in",
+    "isInBps": true,
+    "feeReceiver": "0xcee53eb001d4d1743ef9df333dcf45bc38622be9"
+   },
+   "route": [
+    [
+     {
+      "pool": "0xaf15cd1f9c3874bbcfddfc2b544544612c9de8c8bae28ba21c129c6b286c1e19",
+      "tokenIn": "0x4200000000000000000000000000000000000006",
+      "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "swapAmount": "9985000000000000",
+      "amountOut": "24841409",
+      "exchange": "uniswap-v4-fairflow",
+      "poolType": "uniswap-v4",
+      "poolExtra": {
+       "blockNumber": 52366454,
+       "router": "0x6ff5693b99212da76ad316178a184ab56d299b43",
+       "permit2Addr": "0x000000000022d473030f116ddee9f6b43ac78ba3",
+       "tokenIn": "0x0000000000000000000000000000000000000000",
+       "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+       "fee": 90,
+       "tickSpacing": 2,
+       "hookAddress": "0x4440854b2d02c57a0dc5c58b7a884562d875c0c4",
+       "hookData": "",
+       "priceLimit": "4295128740"
+      },
+      "extra": {
+       "HookSwapInfo": null,
+       "_cs": "6656364868313832312",
+       "_ss": {
+        "pool": "0x0000efc4ec03a7c47d3a38a9be7ff1d52dd01b99",
+        "tokenIn": "0x4200000000000000000000000000000000000006",
+        "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "swapAmount": "9985000000000000",
+        "amountOut": "24832925",
+        "exchange": "lunarbase",
+        "poolType": "lunarbase",
+        "poolExtra": {
+         "blockHash": "0x27d3da4fadd315dc7d7911ed8c9b9d42de5e2887db4347d3fcc5b70706ca27da",
+         "blockNumber": 52366574,
+         "n": true
+        },
+        "extra": {}
+       },
+       "_ts": "1791522498",
+       "nSqrtRx96": "3951806731915941390556704",
+       "nT": -198129,
+       "rAI": "0",
+       "ri": "78127fddymZKdbyJ"
+      }
+     }
+    ]
+   ],
+   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+   "routeID": "78127fddymZKdbyJ",
+   "checksum": "6656364868313832312",
+   "timestamp": 1791522498
+  },
+  "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
+ },
+ "requestId": "78127fdd-ca66-4a75-bc89-c9f854076be4"
+}

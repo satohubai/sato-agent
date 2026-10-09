@@ -18,6 +18,7 @@
 
 import { wrapFetchWithPayment, x402Client, decodePaymentResponseHeader } from "@x402/fetch";
 import { ExactEvmScheme } from "@x402/evm";
+import { ExactEvmSchemeV1 } from "@x402/evm/v1";
 import { evaluate, loadPolicy } from "./policy.js";
 import { record, release, reserve, spentLast24h } from "./ledger.js";
 import { Pending, Refused } from "./errors.js";
@@ -54,8 +55,29 @@ export function resolvePayChain(policy, requested) {
   return { chain, refusals };
 }
 
-const usdOf = (req) => Number(BigInt(req.amount)) / 1e6;
-const isBaseUsdc = (req) => req.network === BASE_NETWORK && String(req.asset).toLowerCase() === USDC_BASE.toLowerCase();
+// x402 v1 servers say `maxAmountRequired` (not `amount`) and name networks "base" / "solana".
+// Every check below runs on a normalized view, so v1 and v2 pass the SAME guard.
+const V1_NETWORKS = { base: BASE_NETWORK, solana: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp" };
+
+/** The requirement as the guard sees it: canonical CAIP-2 network, atomic amount, same window/asset/payTo. */
+export function view(req, version) {
+  const v1 = version === 1;
+  return {
+    network: v1 ? V1_NETWORKS[req.network] : req.network, // v1: only "base" and "solana" are understood
+    asset: req.asset,
+    amount: v1 ? req.maxAmountRequired : req.amount,
+    maxTimeoutSeconds: req.maxTimeoutSeconds,
+    payTo: req.payTo,
+    extra: req.extra,
+    raw: req,
+  };
+}
+const unitsOf = (v) => {
+  if (typeof v.amount !== "string" || !/^[0-9]+$/.test(v.amount)) throw new Error("amount is not a string of digits");
+  return BigInt(v.amount);
+};
+const usdOf = (v) => Number(unitsOf(v)) / 1e6;
+const isBaseUsdc = (v) => v.network === BASE_NETWORK && String(v.asset).toLowerCase() === USDC_BASE.toLowerCase();
 
 /** The signed payload was built but is not what was approved. It is NOT sent and NOT released. */
 class SignedPayloadRejected extends Error {
@@ -68,7 +90,10 @@ class SignedPayloadRejected extends Error {
 const baseChain = (account) => ({
   name: "base",
   scheme: new ExactEvmScheme(account),
+  schemeV1: new ExactEvmSchemeV1(account),
+  v1Network: "base",
   networkPattern: BASE_NETWORK,
+  walletUrl: `https://basescan.org/address/${account.address}`,
   asset: USDC_BASE,
   accepts: isBaseUsdc,
   limit: `USDC on ${BASE_NETWORK}`,
@@ -93,17 +118,20 @@ async function solanaChain({ signer, scheme, rpc }) {
   return {
     name: "solana",
     scheme: scheme ?? sol.solanaScheme(s),
+    schemeV1: scheme ?? sol.solanaSchemeV1(s),
+    v1Network: "solana",
     networkPattern: sol.SOLANA_NETWORK,
     asset: sol.USDC_MINT,
     owner,
     accepts: sol.isSolanaUsdc,
     limit: `USDC (${sol.USDC_MINT}) on ${sol.SOLANA_NETWORK}`,
     refusal: "only USDC on Solana mainnet is paid on this chain (use --chain base to pay on Base)",
-    preSign: (req) => sol.preSignRefusals(req, owner),
+    preSign: (v) => sol.preSignRefusals(v, owner),
     txUrl: (sig) => `https://solscan.io/tx/${sig}`,
     walletUrl: `https://solscan.io/account/${owner}`,
     // Decode the transaction that was just signed and compare it with what was reserved.
-    async afterSign({ paymentPayload, selectedRequirements: req }, { units }) {
+    async afterSign({ paymentPayload, selectedRequirements }, { units, version }) {
+      const req = view(selectedRequirements, version);
       // From here on something is signed: ANY failure means "do not send, keep counted".
       let problems;
       let info = null;
@@ -125,9 +153,10 @@ async function solanaChain({ signer, scheme, rpc }) {
   };
 }
 
-function check(policy, req, chain) {
+function check(policy, raw, chain, version) {
+  const req = view(raw, version);
   if (!chain.accepts(req)) {
-    return [{ rule: "asset", limit: chain.limit, observed: `${req.asset} on ${req.network}`, message: chain.refusal }];
+    return [{ rule: "asset", limit: chain.limit, observed: `${raw.asset} on ${raw.network}`, message: chain.refusal }];
   }
   // Must be a real integer: the signing code computes `now + maxTimeoutSeconds`,
   // and a string "300" would concatenate into an authorization valid for millennia.
@@ -141,7 +170,7 @@ function check(policy, req, chain) {
   try {
     usd = usdOf(req);
   } catch {
-    return [{ rule: "amount", limit: "integer atomic units", observed: req.amount, message: "the server's amount is not an integer" }];
+    return [{ rule: "amount", limit: "integer atomic units", observed: req.amount ?? null, message: "the server's amount is not an integer" }];
   }
   return evaluate(policy, { usd, to: req.payTo, chain: chain.name }, spentLast24h());
 }
@@ -162,15 +191,18 @@ export async function pay(url, { chain: requestedChain, method = "GET", body, he
   const chain = chainName === "solana" ? await solanaChain({ signer, scheme, rpc }) : baseChain(account ?? evmAccount());
 
   const seen = [];
-  const guard = (_version, reqs) =>
+  const guard = (version, reqs) =>
     reqs.filter((req) => {
-      const r = check(policy, req, chain);
+      const r = check(policy, req, chain, version);
       seen.push(...r);
       return r.length === 0;
     });
 
   const client = x402Client.fromConfig({
-    schemes: [{ network: chain.networkPattern, client: chain.scheme }],
+    schemes: [
+      { network: chain.networkPattern, client: chain.scheme },
+      { x402Version: 1, network: chain.v1Network, client: chain.schemeV1 }, // v1 servers: same guard, same hooks
+    ],
     policies: [guard],
     // x402's built-in controls ($1 default, default assets) run before policies and
     // would answer for the owner. The guard is stricter (USDC on one chain only, short
@@ -183,15 +215,19 @@ export async function pay(url, { chain: requestedChain, method = "GET", body, he
   let units = null; // atomic USDC reserved for the payment being created
   let signedInfo = null; // Solana: the payer signature etc. of the transaction that was signed
   let rejected = null; // the signed payload that did not match; it stays counted
-  client.onBeforePaymentCreation(async ({ selectedRequirements: req }) => {
-    const pre = check(loadPolicy(), req, chain);
+  let signed = false; // the payload was built AND passed the checks: it may be sent, so it must stay counted
+  let version = 2; // x402 protocol version of the payment being made
+  client.onBeforePaymentCreation(async ({ paymentRequired, selectedRequirements: raw }) => {
+    version = paymentRequired?.x402Version ?? 2;
+    const pre = check(loadPolicy(), raw, chain, version);
     if (pre.length) {
       seen.push(...pre);
       return { abort: true, reason: pre.map((x) => x.rule).join(",") };
     }
+    const req = view(raw, version);
     try {
       entry = await reserve(loadPolicy(), { kind: "x402", chain: chain.name, asset: "USDC", usd: usdOf(req), to: req.payTo, url });
-      units = BigInt(req.amount);
+      units = unitsOf(req);
     } catch (err) {
       if (err instanceof Refused) {
         seen.push(...err.refusals);
@@ -203,7 +239,7 @@ export async function pay(url, { chain: requestedChain, method = "GET", body, he
   client.onAfterPaymentCreation(async (ctx) => {
     // Throwing here fires the failure hook and the payload is never sent.
     try {
-      signedInfo = await chain.afterSign(ctx, { units }, seen);
+      signedInfo = await chain.afterSign(ctx, { units, version }, seen);
     } catch (err) {
       if (err instanceof SignedPayloadRejected && entry) {
         // Signed, so it stays counted: write down what was signed, and do not send it.
@@ -214,7 +250,8 @@ export async function pay(url, { chain: requestedChain, method = "GET", body, he
       throw err;
     }
     // Record the signature BEFORE the request that carries the payment is sent.
-    if (entry) record({ id: entry.id, status: "signed", chain: chain.name, ...signedInfo });
+    if (entry) record({ id: entry.id, status: "signed", chain: chain.name, x402_version: version, ...signedInfo });
+    signed = true;
   });
   client.onPaymentCreationFailure(async () => {
     if (rejected) return; // something was signed: it stays counted
@@ -239,12 +276,25 @@ export async function pay(url, { chain: requestedChain, method = "GET", body, he
         explorer: chain.walletUrl,
       });
     }
+    if (signed && entry) {
+      // Signed and (possibly) sent, then the request failed: a reset connection, a timeout,
+      // a dropped answer. The server may have the payment and may still settle it. It stays
+      // counted, and the caller must not retry.
+      record({ id: entry.id, status: "signed_unconfirmed", chain: chain.name, reason: String(err.message).slice(0, 300) });
+      throw new Pending(`A payment of ${entry.usd} USDC to ${entry.to} was signed and sent, but the request failed before an answer arrived (${err.message}).`, {
+        chain: chain.name,
+        usd: entry.usd,
+        pay_to: entry.to,
+        ...signedInfo,
+        explorer: chain.walletUrl,
+      });
+    }
     if (!entry && seen.length) throw new Refused(seen);
     // Solana: x402 drops offers on networks other than mainnet before the guard sees them.
     if (!entry && chain.name === "solana" && /No network\/scheme registered/.test(err.message)) {
       throw new Refused([{ rule: "asset", limit: chain.limit, observed: "no offer on this network", message: chain.refusal }]);
     }
-    throw err; // if a payment was signed and sent, it stays counted
+    throw err; // nothing was signed
   }
 
   const receiptHeader = res.headers.get("PAYMENT-RESPONSE") || res.headers.get("X-PAYMENT-RESPONSE");
@@ -258,6 +308,13 @@ export async function pay(url, { chain: requestedChain, method = "GET", body, he
   }
   const settled = Boolean(settlement?.success && settlement?.transaction);
   if (entry) record({ id: entry.id, status: settled ? "confirmed" : "signed_unsettled", chain: chain.name, http_status: res.status, tx: settlement?.transaction ?? null });
+  // A body that cannot be read must not turn a signed payment into a plain error.
+  let bodyText = "";
+  try {
+    bodyText = await res.text();
+  } catch (err) {
+    bodyText = `(the response body could not be read: ${err.message})`;
+  }
 
   return {
     status: res.status,
@@ -273,6 +330,7 @@ export async function pay(url, { chain: requestedChain, method = "GET", body, he
     settlement,
     explorer: settled ? chain.txUrl(settlement.transaction) : (entry ? chain.walletUrl ?? null : null),
     content_type: res.headers.get("content-type"),
-    body: await res.text(),
+    x402_version: version,
+    body: bodyText,
   };
 }

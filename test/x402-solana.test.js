@@ -68,6 +68,8 @@ let blockhashValid = true;
 const payments = []; // what the 402 server received
 let settle = true;
 let nextOffer = null;
+let nextOfferV1 = null;
+const payments1 = []; // x402 v1 payments the server received
 
 const ata = async (who, mint = USDC_MINT) => (await findAssociatedTokenPda({ owner: address(who), mint: address(mint), tokenProgram: TOKEN_PROGRAM_ADDRESS }))[0];
 
@@ -102,6 +104,21 @@ const requirement = (over = {}) => ({
   network: SOLANA_MAINNET_CAIP2,
   asset: USDC_MAINNET_ADDRESS,
   amount: "10000", // $0.01
+  payTo,
+  maxTimeoutSeconds: 60,
+  extra: { feePayer },
+  ...over,
+});
+
+/** The same offer as an x402 v1 server states it. */
+const requirementV1 = (over = {}) => ({
+  scheme: "exact",
+  network: "solana",
+  asset: USDC_MAINNET_ADDRESS,
+  maxAmountRequired: "10000",
+  resource: "http://x/",
+  description: "",
+  mimeType: "application/json",
   payTo,
   maxTimeoutSeconds: 60,
   extra: { feePayer },
@@ -167,6 +184,17 @@ before(async () => {
   server = createServer((req, res) => {
     const path = new URL(req.url, "http://x").pathname;
     const sig = req.headers["payment-signature"];
+    if (path.startsWith("/v1/")) {
+      const xp = req.headers["x-payment"];
+      if (!xp) {
+        res.writeHead(402, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ x402Version: 1, error: "payment required", accepts: nextOfferV1 ?? [requirementV1()] }));
+      }
+      payments1.push({ path, payload: JSON.parse(Buffer.from(xp, "base64").toString()) });
+      res.writeHead(200, { "content-type": "application/json", "X-PAYMENT-RESPONSE": encodePaymentResponseHeader({ success: true, transaction: FAKE_SETTLEMENT, network: "solana", payer: owner.address }) });
+      return res.end(JSON.stringify({ data: "paid content (v1)" }));
+    }
+    if (path === "/hangup" && sig) return void req.socket.destroy(); // took the payment, never answers
     const required = () => encodePaymentRequiredHeader({ x402Version: 2, resource: { url: `${origin}${path}` }, accepts: nextOffer ?? [requirement()] });
     if (!sig) {
       res.writeHead(402, { "PAYMENT-REQUIRED": required() });
@@ -198,6 +226,7 @@ const reset = () => {
   blockhashValid = true;
   settle = true;
   nextOffer = null;
+  nextOfferV1 = null;
 };
 
 // ---------------------------------------------------------------- constants
@@ -616,4 +645,67 @@ test("CLI: approval mode (exit 5) and the Sato Hub gate apply to a Solana pay ex
   assert.match(skipped.stderr, /check_required/);
   assert.equal(payments.length, n + 1, "nothing paid while gated");
   setPolicy({ checkGate: "off" });
+});
+
+// ---------------------------------------------------------------- a payment that was sent, then the connection died
+
+test("signed and sent, then the connection is reset: Pending (exit 4), stays counted, never released", async () => {
+  reset();
+  const before = spent();
+  const n = rows().length;
+  await assert.rejects(pay(`${origin}/hangup`, { chain: "solana" }), (e) => e instanceof Pending && e.details.chain === "solana" && /Do NOT retry/.test(e.message) && /stays counted/.test(e.message) && /may still land/.test(e.message));
+  assert.equal(spent(), before + 0.01);
+  assert.deepEqual(rows().slice(n).map((r) => r.status), ["submitted", "signed", "signed_unconfirmed"]);
+});
+
+test("the CLI exits 4 when the connection dies after the Solana payment was sent", async () => {
+  const bin = fileURLToPath(new URL("../bin/sato-agent.js", import.meta.url));
+  const code = await new Promise((resolve) => spawn(process.execPath, [bin, "pay", `${origin}/hangup`, "--chain", "solana", "--skip-check", "--json"], { env: process.env, stdio: "ignore" }).on("exit", resolve));
+  assert.equal(code, 4);
+});
+
+// ---------------------------------------------------------------- x402 v1 servers, same guard
+
+test("v1: a valid Solana 402 (maxAmountRequired, network \"solana\") is paid, and the signed transaction is checked the same way", async () => {
+  reset();
+  const before = spent();
+  const r = await pay(`${origin}/v1/ok`, { chain: "solana" });
+  assert.equal(r.status, 200);
+  assert.equal(r.x402_version, 1);
+  assert.equal(r.network, SOLANA_MAINNET_CAIP2);
+  assert.equal(r.amount_atomic, "10000");
+  assert.equal(r.settled, true);
+  assert.equal(spent(), before + 0.01);
+  const { payload } = payments1.at(-1);
+  assert.equal(payload.x402Version, 1);
+  assert.equal(payload.network, "solana");
+  const tx = getTransactionDecoder().decode(getBase64Encoder().encode(payload.payload.transaction));
+  const { problems } = await inspectSignedTransaction(payload.payload.transaction, { req: { extra: { feePayer }, payTo }, owner: owner.address, units: 10000n });
+  assert.deepEqual(problems, []);
+  assert.ok(tx.signatures[owner.address]);
+  assert.equal(rows().filter((e) => e.status === "signed").at(-1).x402_version, 1);
+});
+
+test("v1: wrong asset, window, network, amount or fee payer: refused, nothing signed", async () => {
+  const n = payments1.length;
+  const rowsBefore = rows().length;
+  const cases = {
+    asset: requirementV1({ asset: OTHER_MINT }),
+    authorization_window: requirementV1({ maxTimeoutSeconds: 301 }),
+    "authorization_window (string)": requirementV1({ maxTimeoutSeconds: "60" }),
+    "authorization_window (fraction)": requirementV1({ maxTimeoutSeconds: 1.5 }),
+    amount: requirementV1({ maxAmountRequired: "0x2710" }),
+    "amount (v2 field only)": (() => { const r = requirementV1(); delete r.maxAmountRequired; r.amount = "10000"; return r; })(),
+    fee_payer: requirementV1({ extra: { feePayer: owner.address } }),
+  };
+  for (const [name, offer] of Object.entries(cases)) {
+    nextOfferV1 = [offer];
+    const rule = name.split(" ")[0].replace("amount", "amount");
+    await assert.rejects(pay(`${origin}/v1/x`, { chain: "solana" }), (e) => e instanceof Refused && e.refusals.some((r) => r.rule === rule), name);
+  }
+  nextOfferV1 = [requirementV1({ network: "solana-devnet" })];
+  await assert.rejects(pay(`${origin}/v1/x`, { chain: "solana" }), (e) => e instanceof Refused && e.refusals.some((r) => r.rule === "asset"));
+  assert.equal(payments1.length, n);
+  assert.equal(rows().length, rowsBefore, "nothing was reserved");
+  reset();
 });

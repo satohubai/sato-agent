@@ -31,6 +31,7 @@ import {
 } from "@solana/kit";
 import { TOKEN_PROGRAM_ADDRESS, findAssociatedTokenPda } from "@solana-program/token";
 import { ExactSvmScheme, SOLANA_MAINNET_CAIP2 } from "@x402/svm";
+import { ExactSvmSchemeV1 } from "@x402/svm/v1";
 import { rpc as defaultRpc, USDC_MINT } from "./solana.js";
 import { solanaSecret } from "./wallet.js";
 
@@ -70,7 +71,12 @@ export function solanaScheme(signer, { rpcUrl = process.env.SATO_AGENT_SOLANA_RP
   return new ExactSvmScheme(signer, rpcUrl ? { rpcUrl } : undefined);
 }
 
-const u64le = (bytes, at) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).readBigUInt64LE(at);
+/** The same, for x402 v1 servers (network "solana", amount in `maxAmountRequired`). */
+export function solanaSchemeV1(signer, { rpcUrl = process.env.SATO_AGENT_SOLANA_RPC || undefined } = {}) {
+  return new ExactSvmSchemeV1(signer, rpcUrl ? { rpcUrl } : undefined);
+}
+
+const u64le =(bytes, at) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).readBigUInt64LE(at);
 
 function verifyEd25519(owner, message, signature) {
   try {

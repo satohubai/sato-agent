@@ -230,6 +230,15 @@ test("CLI: pay sends --header values and a JSON content-type for JSON bodies", a
   assert.equal((await run(["pay", webUrl, "--header", "no-colon", "--skip-check"])).code, 2);
 });
 
+test("CLI: a Base-only agent refuses `pay --chain solana` before anything is reserved", async () => {
+  const before = readFileSync(join(home, "ledger.jsonl"), "utf8").split("\n").filter((l) => l.includes('"submitted"')).length;
+  const r = await run(["pay", webUrl, "--chain", "solana", "--skip-check"]);
+  assert.equal(r.code, 3);
+  assert.match(r.stderr, /chain_not_allowed/);
+  const after = readFileSync(join(home, "ledger.jsonl"), "utf8").split("\n").filter((l) => l.includes('"submitted"')).length;
+  assert.equal(after, before, "nothing reserved");
+});
+
 test("deleting policy.json and starting over is still flagged as a raise", async () => {
   rmSync(join(home, "policy.json"));
   const r = await run(["policy", "set", "--chains", "base,solana", "--per-tx", "none", "--per-day", "none"]);
@@ -252,7 +261,7 @@ test("status rounds money and lists one row per spend", async () => {
 
 test("pay --dry-run runs the check and pays nothing; history and proof show every action with its explorer link", async () => {
   lastHeaders = null;
-  const d = await run(["pay", webUrl, "--dry-run", "--json"]);
+  const d = await run(["pay", webUrl, "--chain", "base", "--dry-run", "--json"]); // the policy allows both chains, so pay must name one
   assert.equal(d.code, 0);
   assert.equal(JSON.parse(d.stdout).dry_run, true);
   assert.equal(lastHeaders, null, "a dry run never contacts the resource");
@@ -268,6 +277,15 @@ test("pay --dry-run runs the check and pays nothing; history and proof show ever
   assert.match(p.stdout, /ERC-8004 agent: 4242/);
   assert.match(p.stdout, new RegExp(`basescan.org/tx/0x${"ab".repeat(32)}`));
   assert.match(p.stdout, /Check it yourself/);
+});
+
+test("status prints ledger fields cleaned: no control or bidi characters from a server reach the terminal", async () => {
+  const a = record({ status: "submitted", kind: "x402", chain: "base", usd: 0.01, to: "0xEVIL\u001b[2J‮", url: "http://x" });
+  record({ id: a.id, status: "signed_unsettled\nFAKE LINE", tx: "0x\u001b]0;pwned\u0007" });
+  const s = await run(["status"]);
+  assert.equal(s.code, 0);
+  assert.doesNotMatch(s.stdout, /[\u001b\u0007‮]/);
+  assert.doesNotMatch(s.stdout, /\nFAKE LINE/);
 });
 
 test("the ERC-8004 card does not claim x402 acceptance unless asked, and declares services", () => {

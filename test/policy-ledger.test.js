@@ -21,7 +21,8 @@ test("limits accept any plain amount or 'none', and nothing else", () => {
   assert.equal(parseLimit("none"), null);
   assert.equal(parseLimit("2500"), 2500);
   assert.equal(parseLimit("0.5"), 0.5);
-  for (const bad of ["0", "-1", "lots", "0x10", "1e3", " 5", "5 ", "", "Infinity"]) assert.throws(() => parseLimit(bad), undefined, bad);
+  for (const bad of ["0", "-1", "lots", "0x10", "1e3", " 5", "5 ", "", "Infinity", "0.0099996", "1.", ".5"]) assert.throws(() => parseLimit(bad), undefined, bad);
+  assert.equal(parseLimit("0.000001"), 0.000001, "six decimals is USDC's precision");
   assert.throws(() => parseLimit(true), /needs a value/, "a flag given with no value must not become $1");
 });
 
@@ -41,6 +42,15 @@ test("per-transaction, per-24h and recipient limits each refuse with their rule"
   assert.throws(() => setPolicy({ allowRecipients: ["0xAbC"] }), /not a Base or Solana address/);
   const q = setPolicy({ perDay: "100" });
   assert.equal(q.policy.max_usd_per_tx, 10, "changing one limit keeps the other");
+});
+
+test("sub-cent spends add up exactly: the spend that reaches the daily limit is allowed, one more is refused", () => {
+  const { policy: p } = setPolicy({ perTx: "none", perDay: "0.01" });
+  const nine = [...Array(9)].reduce((s) => s + 0.001, 0); // 0.009000000000000001 in floats
+  assert.deepEqual(evaluate(p, { usd: 0.001 }, nine), [], "the 10th $0.001 reaches $0.01 exactly");
+  assert.deepEqual(evaluate(p, { usd: 0.001 }, 0.01).map((r) => r.rule), ["max_usd_per_day"]);
+  // A hand-edited limit with more decimals rounds down, never up.
+  assert.deepEqual(evaluate({ ...p, max_usd_per_day: 0.0099996 }, { usd: 0.01 }, 0).map((r) => r.rule), ["max_usd_per_day"]);
 });
 
 test("every limit change is logged, and a raise is flagged", () => {
@@ -67,7 +77,7 @@ test("spend over a rolling 24 h: submitted counts, provably-unsent drops out, ol
 });
 
 test("reserve is atomic across processes: three concurrent $1 spends under a $1 limit, one wins", async () => {
-  setPolicy({ perTx: "none", perDay: String(spentLast24h().usd + 1) });
+  setPolicy({ perTx: "none", perDay: (spentLast24h().usd + 1).toFixed(6) });
   const worker = fileURLToPath(new URL("./reserve-worker.js", import.meta.url));
   const runs = await Promise.all(
     [0, 1, 2].map(

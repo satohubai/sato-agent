@@ -1,7 +1,10 @@
+import { clean } from "./text.js";
+
 /** A spend the limits did not allow. Nothing was signed. CLI exit code 3. */
 export class Refused extends Error {
   constructor(refusals) {
-    super(refusals.map((r) => `REFUSED ${r.rule}: ${r.message}`).join("\n"));
+    // One line per refusal; a message can quote what a server sent.
+    super(refusals.map((r) => `REFUSED ${clean(r.rule, 60)}: ${clean(r.message, 500)}`).join("\n"));
     this.refusals = refusals;
   }
 }
@@ -14,7 +17,8 @@ export class Refused extends Error {
 export class Pending extends Error {
   constructor(message, details = {}) {
     const counted = details.counted === false ? "" : " It stays counted against the limits.";
-    super(`${message}\nIt may still land.${counted} Do NOT retry; check ${details.explorer ?? "the explorer"} first.`);
+    const land = details.sent === false ? "" : "\nIt may still land."; // sent:false = signed but never sent
+    super(`${message}${land}${counted} Do NOT retry; check ${details.explorer ?? "the explorer"} first.`);
     this.details = details;
   }
 }

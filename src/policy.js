@@ -33,7 +33,8 @@ export function parseLimit(raw, flag) {
   if (raw === undefined) throw new Error(`${flag} is required: a USD amount, or "none" for no limit`);
   if (typeof raw !== "string") throw new Error(`${flag} needs a value: a USD amount, or "none"`);
   if (raw.toLowerCase() === "none") return null;
-  if (!/^\d+(\.\d+)?$/.test(raw) || !(Number(raw) > 0)) throw new Error(`${flag} must be a positive USD amount like 25 or 0.5, or "none" (got "${raw}")`);
+  // At most 6 decimals (USDC's precision), the same rule as amounts: a limit is never rounded.
+  if (!/^\d+(\.\d{1,6})?$/.test(raw) || !(Number(raw) > 0)) throw new Error(`${flag} must be a positive USD amount like 25 or 0.5 (at most 6 decimals), or "none" (got "${raw}")`);
   return Number(raw);
 }
 
@@ -195,7 +196,9 @@ export function evaluate(policy, { usd, to, chain, kind, slippage_bps }, spent) 
   if (policy.max_usd_per_tx !== null && usd > policy.max_usd_per_tx) {
     out.push({ rule: "max_usd_per_tx", limit: policy.max_usd_per_tx, observed: usd, message: `over the per-transaction limit of $${policy.max_usd_per_tx}` });
   }
-  if (policy.max_usd_per_day !== null && s.usd + usd > policy.max_usd_per_day) {
+  // Compared in whole micro-dollars, so a spend that exactly reaches the limit is allowed.
+  // The limit is rounded DOWN (a hand-edited policy with more decimals can only get stricter).
+  if (policy.max_usd_per_day !== null && micro(s.usd) + micro(usd) > Math.floor(policy.max_usd_per_day * 1e6 + 1e-7)) {
     out.push({
       rule: "max_usd_per_day",
       limit: policy.max_usd_per_day,
@@ -224,3 +227,4 @@ export function evaluate(policy, { usd, to, chain, kind, slippage_bps }, spent) 
 }
 
 const round = (n) => Math.round(n * 1e6) / 1e6;
+const micro = (n) => Math.round(n * 1e6);

@@ -1,5 +1,10 @@
-// Base (chain id 8453): balances, USDC sends under the owner's limits, and
-// ERC-8004 self-registration. Every transaction is simulated before it is sent.
+// Base (chain id 8453): balances, USDC sends under the limits, and ERC-8004
+// self-registration.
+//
+// A send is reserved against the limits first, simulated, then signed HERE and
+// its hash recorded before it is broadcast. If the broadcast or the receipt
+// wait fails, the spend stays counted and the command says "do not retry"
+// (Pending): the node may have accepted it.
 
 import {
   createPublicClient,
@@ -10,12 +15,14 @@ import {
   formatUnits,
   http,
   isAddress,
+  keccak256,
   parseEventLogs,
   parseUnits,
 } from "viem";
 import { base } from "viem/chains";
-import { evaluate, loadPolicy, Refused } from "./policy.js";
-import { record, spentOn } from "./ledger.js";
+import { loadPolicy } from "./policy.js";
+import { entries, record, release, reserve } from "./ledger.js";
+import { Pending } from "./errors.js";
 import { evmAccount, loadWallet } from "./wallet.js";
 import { USER_AGENT } from "./version.js";
 
@@ -30,6 +37,7 @@ export const identityRegistryAbi = [
 ];
 
 const RPC_TIMEOUT_MS = 20_000;
+const explorer = (hash) => `https://basescan.org/tx/${hash}`;
 
 function transport() {
   const url = process.env.SATO_AGENT_BASE_RPC || "https://mainnet.base.org";
@@ -54,36 +62,54 @@ export async function balances(addr = loadWallet().evm.address) {
   return { address: addr, eth: formatEther(eth), usdc: formatUnits(usdc, 6) };
 }
 
-/** Send USDC on Base. Refuses (throws Refused) when the owner's limits say no. */
+/**
+ * Sign locally, record the hash, broadcast, wait. Returns the receipt.
+ * Throws Pending when the outcome is unknown (the caller keeps the spend counted).
+ */
+async function signAndSend(c, { to, data }, onSigned) {
+  const prepared = await c.wallet.prepareTransactionRequest({ account: c.account, to, data, chain: base });
+  const signed = await c.wallet.signTransaction(prepared);
+  const hash = keccak256(signed);
+  onSigned?.(hash);
+  try {
+    await c.pub.sendRawTransaction({ serializedTransaction: signed });
+  } catch (err) {
+    throw new Pending(`broadcast of ${hash} reported an error (${err.shortMessage || err.message}).`, { tx: hash, explorer: explorer(hash) });
+  }
+  try {
+    return await c.pub.waitForTransactionReceipt({ hash, timeout: 120_000 });
+  } catch (err) {
+    throw new Pending(`no receipt for ${hash} yet (${err.shortMessage || err.message}).`, { tx: hash, explorer: explorer(hash) });
+  }
+}
+
+/** Send USDC on Base. Throws Refused when the limits say no; nothing is signed then. */
 export async function sendUsdc({ to, amount }, c = clients()) {
   if (!isAddress(to)) throw new Error(`not a Base address: ${to}`);
   const units = parseUnits(String(amount), 6);
   const usd = Number(formatUnits(units, 6));
-  const refusals = evaluate(loadPolicy(), { usd, to }, spentOn());
-  if (refusals.length) throw new Refused(refusals);
+  const entry = await reserve(loadPolicy(), { kind: "send", chain: "base", asset: "USDC", usd, to });
 
-  const { request } = await c.pub.simulateContract({
-    account: c.account,
-    address: USDC_BASE,
-    abi: erc20Abi,
-    functionName: "transfer",
-    args: [to, units],
-  });
-  const entry = record({ status: "submitted", kind: "send", chain: "base", asset: "USDC", usd, to });
-  let hash;
+  const data = encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [to, units] });
   try {
-    hash = await c.wallet.writeContract(request);
+    await c.pub.simulateContract({ account: c.account, address: USDC_BASE, abi: erc20Abi, functionName: "transfer", args: [to, units] });
   } catch (err) {
-    record({ id: entry.id, status: "failed", reason: "not broadcast", error: String(err.shortMessage || err.message) });
+    release(entry, "simulation failed; nothing signed", { error: String(err.shortMessage || err.message) });
     throw err;
   }
-  const receipt = await c.pub.waitForTransactionReceipt({ hash, timeout: 120_000 });
-  if (receipt.status !== "success") {
-    record({ id: entry.id, status: "failed", reason: "reverted", tx: hash });
-    throw new Error(`transaction reverted: ${hash}`);
+  let receipt;
+  try {
+    receipt = await signAndSend(c, { to: USDC_BASE, data }, (hash) => record({ id: entry.id, status: "signed", tx: hash }));
+  } catch (err) {
+    if (!(err instanceof Pending)) release(entry, "failed before signing", { error: String(err.shortMessage || err.message) });
+    throw err;
   }
-  record({ id: entry.id, status: "confirmed", tx: hash });
-  return { tx: hash, explorer: `https://basescan.org/tx/${hash}`, usd, to };
+  if (receipt.status !== "success") {
+    release(entry, "reverted onchain", { tx: receipt.transactionHash });
+    throw new Error(`transaction reverted: ${explorer(receipt.transactionHash)}`);
+  }
+  record({ id: entry.id, status: "confirmed", tx: receipt.transactionHash });
+  return { tx: receipt.transactionHash, explorer: explorer(receipt.transactionHash), usd, to };
 }
 
 /** The ERC-8004 registration file, as a data: URI stored fully onchain. */
@@ -101,35 +127,47 @@ export function registrationUri({ agentId, name, description, image = "", servic
   return `data:application/json;base64,${Buffer.from(JSON.stringify(card)).toString("base64")}`;
 }
 
+/** Agent ids this wallet already registered, from the ledger. */
+export function registeredIds() {
+  return entries().filter((e) => e.kind === "register" && e.agent_id).map((e) => e.agent_id);
+}
+
 /**
  * Register this agent in the ERC-8004 IdentityRegistry on Base. Two transactions:
  * register (the id is only known after it), then setAgentURI with the full
- * registration file that names that id. Costs gas only.
+ * registration file naming that id. Gas only, not counted against the USD limits.
+ * `resume` finishes step two for an id whose first step already landed.
  */
-export async function registerAgent({ name, description, image, services }, c = clients()) {
+export async function registerAgent({ name, description, image, services, again = false, resume }, c = clients()) {
   if (!name || !description) throw new Error("--name and --description are required");
-  const first = registrationUri({ name, description, image, services });
-  const { request } = await c.pub.simulateContract({ account: c.account, address: IDENTITY_REGISTRY, abi: identityRegistryAbi, functionName: "register", args: [first] });
-  const hash1 = await c.wallet.writeContract(request);
-  const r1 = await c.pub.waitForTransactionReceipt({ hash: hash1, timeout: 120_000 });
-  if (r1.status !== "success") throw new Error(`register reverted: ${hash1}`);
-  const ev = parseEventLogs({ abi: identityRegistryAbi, logs: r1.logs, eventName: "Registered" }).find(
-    (l) => l.address.toLowerCase() === IDENTITY_REGISTRY.toLowerCase(),
-  );
-  if (!ev) throw new Error(`no Registered event in ${hash1}`);
-  const agentId = ev.args.agentId;
+  let agentId;
+  if (resume !== undefined) {
+    if (!/^\d+$/.test(String(resume))) throw new Error("--resume takes the agent id");
+    agentId = BigInt(resume);
+  } else {
+    const prior = registeredIds();
+    if (prior.length && !again) throw new Error(`this wallet already registered agent id ${prior.join(", ")}; add --again to register another`);
+    const first = registrationUri({ name, description, image, services });
+    await c.pub.simulateContract({ account: c.account, address: IDENTITY_REGISTRY, abi: identityRegistryAbi, functionName: "register", args: [first] });
+    const r1 = await signAndSend(c, { to: IDENTITY_REGISTRY, data: encodeFunctionData({ abi: identityRegistryAbi, functionName: "register", args: [first] }) });
+    if (r1.status !== "success") throw new Error(`register reverted: ${explorer(r1.transactionHash)}`);
+    const ev = parseEventLogs({ abi: identityRegistryAbi, logs: r1.logs, eventName: "Registered" }).find(
+      (l) => l.address.toLowerCase() === IDENTITY_REGISTRY.toLowerCase(),
+    );
+    if (!ev) throw new Error(`no Registered event in ${explorer(r1.transactionHash)}`);
+    agentId = ev.args.agentId;
+    record({ kind: "register", status: "registered", chain: "base", usd: 0, agent_id: agentId.toString(), tx: r1.transactionHash });
+  }
 
   const full = registrationUri({ agentId, name, description, image, services });
   const data = encodeFunctionData({ abi: identityRegistryAbi, functionName: "setAgentURI", args: [agentId, full] });
-  await c.pub.call({ account: c.account, to: IDENTITY_REGISTRY, data }); // simulate
-  const hash2 = await c.wallet.sendTransaction({ to: IDENTITY_REGISTRY, data });
-  const r2 = await c.pub.waitForTransactionReceipt({ hash: hash2, timeout: 120_000 });
-  record({ status: "confirmed", kind: "register", chain: "base", usd: 0, agent_id: agentId.toString(), tx: [hash1, hash2] });
-  return {
-    agent_id: agentId.toString(),
-    registry: `eip155:8453:${IDENTITY_REGISTRY}`,
-    tx: [hash1, hash2],
-    uri_set: r2.status === "success",
-    explorer: `https://basescan.org/tx/${hash1}`,
-  };
+  try {
+    await c.pub.call({ account: c.account, to: IDENTITY_REGISTRY, data });
+    const r2 = await signAndSend(c, { to: IDENTITY_REGISTRY, data });
+    if (r2.status !== "success") throw new Error(`setAgentURI reverted: ${explorer(r2.transactionHash)}`);
+    record({ kind: "register_uri", status: "confirmed", chain: "base", usd: 0, agent_id: agentId.toString(), tx: r2.transactionHash });
+    return { agent_id: agentId.toString(), registry: `eip155:8453:${IDENTITY_REGISTRY}`, tx: r2.transactionHash, explorer: explorer(r2.transactionHash) };
+  } catch (err) {
+    throw new Error(`registered as agent ${agentId}, but writing its registration file failed (${err.shortMessage || err.message}). Finish with: sato-agent register --resume ${agentId} --name ... --description ...`);
+  }
 }

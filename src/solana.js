@@ -1,6 +1,12 @@
-// Solana mainnet: balances and USDC sends under the owner's limits. Every
-// transaction is simulated before it is sent; the recipient's token account is
-// created if it does not exist yet (the agent pays that rent, ~0.002 SOL).
+// Solana mainnet: balances and USDC sends under the limits.
+//
+// The recipient must be a wallet: a token account or another off-curve address
+// is refused, because USDC sent "to" it lands in an account nobody can sign for.
+// A send is reserved against the limits first, simulated, and signed here; the
+// signature is recorded before broadcast. If the broadcast or the status checks
+// fail, the spend stays counted and the command says "do not retry" (Pending).
+// The recipient's token account is created if missing (the agent pays that
+// rent, about 0.002 SOL, not counted against the USD limits).
 
 import {
   address,
@@ -11,6 +17,7 @@ import {
   getBase64EncodedWireTransaction,
   getSignatureFromTransaction,
   isAddress,
+  isOffCurveAddress,
   pipe,
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
@@ -22,13 +29,16 @@ import {
   getCreateAssociatedTokenIdempotentInstruction,
   getTransferCheckedInstruction,
 } from "@solana-program/token";
-import { evaluate, loadPolicy, Refused } from "./policy.js";
-import { record, spentOn } from "./ledger.js";
+import { loadPolicy } from "./policy.js";
+import { record, release, reserve } from "./ledger.js";
+import { Pending } from "./errors.js";
 import { loadWallet, solanaSecret } from "./wallet.js";
 import { USER_AGENT } from "./version.js";
 
 export const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PZnBCPiW4JQ7Gr";
 const LAMPORTS = 1_000_000_000;
+const explorer = (sig) => `https://solscan.io/tx/${sig}`;
 
 export function rpc() {
   const url = process.env.SATO_AGENT_SOLANA_RPC || "https://api.mainnet-beta.solana.com";
@@ -45,6 +55,18 @@ export async function balances(owner = loadWallet().solana.address, r = rpc()) {
   ]);
   const usdc = accounts.value.reduce((s, a) => s + Number(a.account.data.parsed.info.tokenAmount.uiAmountString || 0), 0);
   return { address: owner, sol: (Number(lamports.value) / LAMPORTS).toString(), usdc: usdc.toString() };
+}
+
+/** Refuse recipients that are not wallets. Returns nothing when `to` is a plausible wallet. */
+export async function assertWalletRecipient(to, r = rpc()) {
+  if (!isAddress(to)) throw new Error(`not a Solana address: ${to}`);
+  if (isOffCurveAddress(address(to))) {
+    throw new Error(`${to} is not a wallet address (it has no private key, e.g. a token account or a program account). USDC sent to it would be lost.`);
+  }
+  const { value } = await withTimeout(r.getAccountInfo(address(to), { encoding: "base64" }).send());
+  if (value && (value.owner === TOKEN_PROGRAM_ADDRESS || value.owner === TOKEN_2022_PROGRAM)) {
+    throw new Error(`${to} is a token account, not a wallet. Ask for the recipient's wallet address; USDC sent to a token account's address would be lost.`);
+  }
 }
 
 /** Build and sign a USDC transfer. Pure apart from the blockhash it is given. */
@@ -71,41 +93,52 @@ export async function buildUsdcTransfer({ secret, to, units, blockhash }) {
 export function toUnits(amount) {
   const [whole, frac = ""] = String(amount).split(".");
   if (!/^\d+$/.test(whole) || !/^\d*$/.test(frac) || frac.length > 6) throw new Error(`not a USDC amount: ${amount}`);
-  return BigInt(whole) * 1_000_000n + BigInt(frac.padEnd(6, "0"));
+  const units = BigInt(whole) * 1_000_000n + BigInt(frac.padEnd(6, "0"));
+  if (units <= 0n) throw new Error(`not a positive USDC amount: ${amount}`);
+  return units;
 }
 
-/** Send USDC on Solana. Refuses (throws Refused) when the owner's limits say no. */
+/** Send USDC on Solana. Throws Refused when the limits say no; nothing is signed then. */
 export async function sendUsdc({ to, amount }, r = rpc()) {
-  if (!isAddress(to)) throw new Error(`not a Solana address: ${to}`);
   const units = toUnits(amount);
   const usd = Number(units) / 1e6;
-  const refusals = evaluate(loadPolicy(), { usd, to }, spentOn());
-  if (refusals.length) throw new Refused(refusals);
+  await assertWalletRecipient(to, r);
+  const entry = await reserve(loadPolicy(), { kind: "send", chain: "solana", asset: "USDC", usd, to });
 
-  const { value: blockhash } = await withTimeout(r.getLatestBlockhash().send());
-  const { wire, signature } = await buildUsdcTransfer({ secret: solanaSecret(), to, units, blockhash });
-  const sim = await withTimeout(r.simulateTransaction(wire, { encoding: "base64", commitment: "confirmed" }).send());
-  if (sim.value.err) throw new Error(`simulation failed: ${JSON.stringify(sim.value.err, (_k, v) => (typeof v === "bigint" ? v.toString() : v))}`);
+  let built;
+  try {
+    const { value: blockhash } = await withTimeout(r.getLatestBlockhash({ commitment: "confirmed" }).send());
+    built = await buildUsdcTransfer({ secret: solanaSecret(), to, units, blockhash });
+    const sim = await withTimeout(r.simulateTransaction(built.wire, { encoding: "base64", commitment: "confirmed" }).send());
+    if (sim.value.err) throw new Error(`simulation failed: ${JSON.stringify(sim.value.err, (_k, v) => (typeof v === "bigint" ? v.toString() : v))}`);
+  } catch (err) {
+    release(entry, "failed before broadcast; nothing sent", { error: String(err.message) });
+    throw err;
+  }
 
-  const entry = record({ status: "submitted", kind: "send", chain: "solana", asset: "USDC", usd, to });
+  const { wire, signature } = built;
+  record({ id: entry.id, status: "signed", tx: signature });
   try {
     await withTimeout(r.sendTransaction(wire, { encoding: "base64", preflightCommitment: "confirmed" }).send());
   } catch (err) {
-    record({ id: entry.id, status: "failed", reason: "not broadcast", error: String(err.message) });
-    throw err;
+    throw new Pending(`broadcast of ${signature} reported an error (${err.message}).`, { tx: signature, explorer: explorer(signature) });
   }
   for (let i = 0; i < 40; i++) {
-    const { value } = await withTimeout(r.getSignatureStatuses([signature]).send());
-    const s = value[0];
+    await new Promise((res) => setTimeout(res, 1500));
+    let s;
+    try {
+      s = (await withTimeout(r.getSignatureStatuses([signature]).send())).value[0];
+    } catch {
+      continue; // a flaky status read is not a failed transaction
+    }
     if (s?.err) {
-      record({ id: entry.id, status: "failed", reason: "transaction error", tx: signature });
-      throw new Error(`transaction failed: ${signature}`);
+      release(entry, "transaction failed onchain", { tx: signature });
+      throw new Error(`transaction failed onchain: ${explorer(signature)}`);
     }
     if (s && (s.confirmationStatus === "confirmed" || s.confirmationStatus === "finalized")) {
       record({ id: entry.id, status: "confirmed", tx: signature });
-      return { tx: signature, explorer: `https://solscan.io/tx/${signature}`, usd, to };
+      return { tx: signature, explorer: explorer(signature), usd, to };
     }
-    await new Promise((res) => setTimeout(res, 1500));
   }
-  return { tx: signature, explorer: `https://solscan.io/tx/${signature}`, usd, to, note: "sent; not confirmed within 60 s, check the explorer" };
+  throw new Pending(`${signature} was sent but not confirmed within 60 s.`, { tx: signature, explorer: explorer(signature) });
 }

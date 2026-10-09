@@ -11,7 +11,8 @@
     "src/",
     "BOT.md",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "npm-shrinkwrap.json"
   ],
   "engines": {
     "node": ">=20.18"

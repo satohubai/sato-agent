@@ -15,7 +15,7 @@ It installs the kit, creates its wallet, asks you for your limits, and asks you 
 ## Quickstart (any machine)
 
 ```sh
-npm install --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.1.0
+npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.1.0
 alias sato-agent=~/.sato-agent-cli/node_modules/.bin/sato-agent
 
 sato-agent init                                     # this agent's own wallet
@@ -32,7 +32,7 @@ sato-agent register --name "My agent" --description "What it does"
 |---|---|
 | `init` | Creates the agent's Base + Solana wallet in `~/.sato-agent/`. Never replaces an existing one. |
 | `address` / `balance` | Addresses; ETH + USDC on Base, SOL + USDC on Solana |
-| `policy set --per-tx <usd\|none> --per-day <usd\|none> [--allow <addrs>\|any]` | The owner's limits. **There are no defaults:** nothing is spent until they are set. |
+| `policy set --per-tx <usd\|none> --per-day <usd\|none> [--allow <addrs>\|any]` | The spending limits (per day = rolling 24 hours). **There are no defaults:** nothing is spent until both are set. Raises are logged and flagged. |
 | `pay <url>` | Pays an x402 resource in USDC on Base, after Sato Hub reads its payment terms |
 | `send --chain base\|solana --to <addr> --amount <usdc>` | Sends USDC, after Sato Hub checks the recipient |
 | `register --name --description [--image]` | Registers in the ERC-8004 IdentityRegistry on Base (`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`), with the registration file stored onchain |
@@ -40,20 +40,44 @@ sato-agent register --name "My agent" --description "What it does"
 | `recommend "<goal>"` | A stack for a build goal from Sato Hub's index |
 | `status` | Limits, spend today (UTC), recent ledger lines |
 
-Add `--json` to any command for machine-readable output. A refusal exits with code 3 and names the rule, the limit and what was observed.
+Add `--json` to any command for machine-readable output.
+
+Exit codes:
+- `0`: done.
+- `1`: error.
+- `2`: usage error.
+- `3`: refused by the limits. Nothing was signed; the message names the rule, the limit and what was observed.
+- `4`: signed but not confirmed. It stays counted. **Do not retry**; check the explorer link.
+
+Dependencies are locked by `npm-shrinkwrap.json` (every transitive version), and none has an install script.
+
+Every limit change is written to the ledger and shown in `status`. `pay` frames the response body as untrusted content.
 
 ## How the limits work, and what they don't do
 
-- The owner sets a per-transaction and a per-day limit in USD (or "none"). Every spend is checked against them, and today's spend is read from an append-only ledger, so a restart does not reset it.
-- x402 payments are limited twice: only a payment option inside the limits can be chosen, and the limits are checked again just before the payment is signed.
-- Every transaction is simulated before it is sent.
-- **What the limits are not:** they are enforced by this program, on the same computer that holds the key. Something that bypasses the program, such as a compromised Bot or a prompt injection that writes its own code, could spend past them. **The hard bound is what you fund the wallet with.** Use a wallet dedicated to the agent, never your main wallet, and fund it with what you are willing to let it spend.
+**What they do**
+- The owner picks a per-transaction limit and a limit per rolling 24 hours, in USD (or "none"). There are no defaults.
+- Every spend is checked and reserved under a lock before anything is signed, so two commands running at once can't both squeeze under the same limit.
+- Spend is read from the ledger, so a restart doesn't reset it. If the ledger is unreadable, spending stops.
+- x402 payments are checked twice: only a payment option inside the limits can be chosen, and the limits are checked again just before signing.
+- Payment authorizations must expire within 5 minutes.
+- A signed payment always counts, even if the server rejects it, because the server could still settle it.
+- Every transaction is simulated before it's signed. Its hash is recorded before it's broadcast.
+- If the outcome is unclear, the spend stays counted, and the command exits with code 4: **do not retry**.
+- Solana sends to token accounts or other non-wallet addresses are refused.
+
+**What they don't do**
+- The limits are enforced by this program, on the same computer that holds the key. **The agent itself can raise its limits** with `policy set`. A raise is logged and flagged in `status`, but it isn't blocked.
+- The agent can also edit these files, or write its own code that uses the key.
+- So the limits stop mistakes, runaway loops, and an agent that follows its rules. They don't stop a compromised agent, or a prompt injection it obeys.
+- **The hard bound is what you fund the wallet with.** Use a wallet dedicated to the agent, never your main wallet, and fund it with what you're willing to let it spend.
 - On Grok Bot, every Bot in your account shares one computer, so every one of your Bots can read the key file.
 
 ## Files, network and privacy
 
 - `~/.sato-agent/wallet.json` (mode 600): the keys. Never printed, never sent anywhere.
-- `~/.sato-agent/policy.json`: the owner's limits. `~/.sato-agent/ledger.jsonl`: every spend.
+- `~/.sato-agent/policy.json`: the limits. `~/.sato-agent/ledger.jsonl`: every spend and every limit change.
+- `SATO_AGENT_HOME` gives each agent its own folder. Two Bots on one computer should each use their own, so they get separate wallets and limits.
 - Network calls:
   - Base and Solana RPCs (`SATO_AGENT_BASE_RPC`, `SATO_AGENT_SOLANA_RPC` to override; public endpoints by default);
   - the x402 resources you pay;

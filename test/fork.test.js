@@ -70,7 +70,7 @@ test("sends USDC on a Base fork, inside the owner's limits", { skip: !enabled },
 test("registers as an ERC-8004 agent on the real registry contract, with a full onchain registration file", { skip: !enabled }, async () => {
   const r = await registerAgent({ name: "Sato Agent fork test", description: "Grok Bot onchain agent (fork test)" });
   assert.ok(Number(r.agent_id) > 0);
-  assert.equal(r.uri_set, true);
+  await assert.rejects(registerAgent({ name: "x", description: "y" }), /already registered agent id/, "no accidental duplicate");
   const uri = await pub.readContract({
     address: IDENTITY_REGISTRY,
     abi: [{ type: "function", name: "tokenURI", stateMutability: "view", inputs: [{ type: "uint256" }], outputs: [{ type: "string" }] }],

@@ -1,12 +1,15 @@
 // Where the agent keeps its state: one private folder on the machine it runs on.
 //
 //   wallet.json   the agent's own keys (0600). Never printed, never sent anywhere.
-//   policy.json   the limits the OWNER chose. There are no defaults: until the
-//                 owner sets them, every command that spends refuses.
-//   ledger.jsonl  one line per spend, append-only. "Spent today" is read from it,
-//                 so a restart does not reset the daily limit.
+//   policy.json   the spending limits. There are no defaults: until they are set,
+//                 every command that spends refuses.
+//   ledger.jsonl  one line per spend and per limit change. Spend over the last
+//                 24 hours is read from it, so a restart does not reset the limit.
+//   spend.lock    held while a spend is checked and reserved, so two commands
+//                 running at once cannot both fit under the same limit.
 //
-// SATO_AGENT_HOME moves the folder (tests use a temp dir).
+// SATO_AGENT_HOME moves the folder (tests use a temp dir; two bots on one
+// computer each use their own).
 
 import fs from "node:fs";
 import { homedir } from "node:os";
@@ -20,6 +23,7 @@ export const paths = {
   wallet: () => join(home(), "wallet.json"),
   policy: () => join(home(), "policy.json"),
   ledger: () => join(home(), "ledger.jsonl"),
+  lock: () => join(home(), "spend.lock"),
 };
 
 export function ensureHome() {
@@ -40,14 +44,56 @@ export function readJson(path) {
 
 export function appendLine(path, obj) {
   ensureHome();
-  fs.appendFileSync(path, JSON.stringify(obj) + "\n", { mode: 0o600 });
+  fs.appendFileSync(path, JSON.stringify(obj, (_k, v) => (typeof v === "bigint" ? v.toString() : v)) + "\n", { mode: 0o600 });
 }
 
+/** Parsed lines, plus the 1-based numbers of any line that would not parse. */
 export function readLines(path) {
-  if (!fs.existsSync(path)) return [];
-  return fs
-    .readFileSync(path, "utf8")
+  if (!fs.existsSync(path)) return { rows: [], bad: [] };
+  const rows = [];
+  const bad = [];
+  fs.readFileSync(path, "utf8")
     .split("\n")
-    .filter(Boolean)
-    .map((l) => JSON.parse(l));
+    .forEach((l, i) => {
+      if (!l.trim()) return;
+      try {
+        rows.push(JSON.parse(l));
+      } catch {
+        bad.push(i + 1);
+      }
+    });
+  return { rows, bad };
+}
+
+const STALE_LOCK_MS = 120_000;
+
+/** Run `fn` holding the spend lock (a file created exclusively). Waits up to 30 s. */
+export async function withLock(fn, { waitMs = 30_000 } = {}) {
+  ensureHome();
+  const lock = paths.lock();
+  const start = Date.now();
+  for (;;) {
+    try {
+      fs.writeFileSync(lock, `${process.pid} ${new Date().toISOString()}\n`, { flag: "wx", mode: 0o600 });
+      break;
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      try {
+        if (Date.now() - fs.statSync(lock).mtimeMs > STALE_LOCK_MS) fs.unlinkSync(lock);
+      } catch {
+        /* someone else removed it */
+      }
+      if (Date.now() - start > waitMs) throw new Error(`another spend is in progress (lock ${lock}); try again`);
+      await new Promise((r) => setTimeout(r, 50 + Math.random() * 100));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    try {
+      fs.unlinkSync(lock);
+    } catch {
+      /* already gone */
+    }
+  }
 }

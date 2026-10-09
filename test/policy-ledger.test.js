@@ -43,6 +43,13 @@ test("per-transaction, per-24h and recipient limits each refuse with their rule"
   assert.equal(q.policy.max_usd_per_tx, 10, "changing one limit keeps the other");
 });
 
+test("sub-cent spends add up exactly: the spend that reaches the daily limit is allowed, one more is refused", () => {
+  const { policy: p } = setPolicy({ perTx: "none", perDay: "0.01" });
+  const nine = [...Array(9)].reduce((s) => s + 0.001, 0); // 0.009000000000000001 in floats
+  assert.deepEqual(evaluate(p, { usd: 0.001 }, nine), [], "the 10th $0.001 reaches $0.01 exactly");
+  assert.deepEqual(evaluate(p, { usd: 0.001 }, 0.01).map((r) => r.rule), ["max_usd_per_day"]);
+});
+
 test("every limit change is logged, and a raise is flagged", () => {
   const lower = setPolicy({ perTx: "5" });
   assert.equal(lower.raised, false);

@@ -69,8 +69,9 @@ const PKG_FLAGS = new Set(["-p", "--package"]);
 // packages are skipped, not looked up. (A project or user .npmrc can redirect an
 // install too; that is not visible in the command, and the output says so.)
 export const OTHER_REGISTRY = "installs from another registry";
-const REGISTRY_FLAG_RE = /^--(?:reg(?:i(?:s(?:t(?:r(?:y)?)?)?)?)?|userconfig|@[^\s=:]+:registry)(?:=|$)/;
-const REGISTRY_ENV_RE = /^npm_config_(?:registry|userconfig|@[^\s=:]+:registry)=/i;
+const REGISTRY_FLAG_RE = /^--(?:reg(?:i(?:s(?:t(?:r(?:y)?)?)?)?)?|userconfig|globalconfig|@[^\s=:]+:registry|config\.(?:registry|@[^\s=:]+:registry|userconfig|globalconfig))(?:=|$)/;
+// npm, pnpm, yarn (classic and berry) and bun each read their own registry variables.
+const REGISTRY_ENV_RE = /^(?:(?:npm|pnpm)_config_(?:registry|userconfig|globalconfig|@[^\s=:]+:registry)|bun_config_registry|yarn_registry|yarn_npm_registry_server|yarn_npm_scopes)=/i;
 const redirectsRegistry = (w) => REGISTRY_FLAG_RE.test(w) || REGISTRY_ENV_RE.test(w);
 
 const NAME_RE = /^(?:@[A-Za-z0-9~_-][A-Za-z0-9._~-]*\/)?[A-Za-z0-9~_-][A-Za-z0-9._~-]*$/;

@@ -51,6 +51,7 @@ const FAKE_SETTLEMENT = getBase58Decoder().decode(new Uint8Array(64).fill(9));
 const OTHER_MINT = getBase58Decoder().decode(new Uint8Array(32).fill(3));
 
 const spent = () => spentLast24h().usd;
+const micro = (usd) => Math.round(usd * 1e6); // compare spends in whole micro-dollars, as the ledger sums them
 const rows = () => entries();
 const lastFor = (id) => rows().filter((r) => r.id === id);
 
@@ -382,7 +383,7 @@ test("pays with the agent's wallet: reserve first, sign, record the signature, t
   assert.equal(r.settlement.transaction, FAKE_SETTLEMENT);
   assert.equal(r.explorer, `https://solscan.io/tx/${FAKE_SETTLEMENT}`);
   assert.match(r.body, /paid content/);
-  assert.equal(spent(), before + 0.01);
+  assert.equal(micro(spent()), micro(before) + 10_000);
 
   // What the server received, checked here independently of the agent's own checks.
   const { payload, ua, ledger } = payments.at(-1);
@@ -432,7 +433,7 @@ test("a server that supplies the blockhash and a plausible last-valid height is 
   const before = spent();
   await assert.rejects(pay(`${origin}/a`, { chain: "solana" }), (e) => e instanceof Pending && /allows at most/.test(e.message));
   assert.equal(payments.length, n, "not sent");
-  assert.equal(spent(), before + 0.01, "signed, so it stays counted");
+  assert.equal(micro(spent()), micro(before) + 10_000, "signed, so it stays counted");
   reset();
 });
 
@@ -442,7 +443,7 @@ test("a blockhash the node says is not valid: the payment is not sent and stays 
   const before = spent();
   await assert.rejects(pay(`${origin}/a`, { chain: "solana" }), (e) => e instanceof Pending && /blockhash is not valid/.test(e.message) && e.details.sent === false);
   assert.equal(payments.length, n);
-  assert.equal(spent(), before + 0.01);
+  assert.equal(micro(spent()), micro(before) + 10_000);
   reset();
 });
 
@@ -452,7 +453,7 @@ test("a node that cannot confirm the blockhash after signing: not sent, stays co
   const before = spent();
   await assert.rejects(pay(`${origin}/a`, { chain: "solana" }), (e) => e instanceof Pending);
   assert.equal(payments.length, n);
-  assert.equal(spent(), before + 0.01);
+  assert.equal(micro(spent()), micro(before) + 10_000);
   reset();
 });
 
@@ -464,7 +465,7 @@ test("a node that never answers the blockhash check after signing: ends as Pendi
   await assert.rejects(pay(`${origin}/a`, { chain: "solana", rpcTimeoutMs: 300 }), (e) => e instanceof Pending && e.details.sent === false && /timed out/.test(e.message));
   assert.ok(Date.now() - t0 < 10_000, "bounded");
   assert.equal(payments.length, n, "nothing sent");
-  assert.equal(spent(), before + 0.01, "signed: stays counted");
+  assert.equal(micro(spent()), micro(before) + 10_000, "signed: stays counted");
   assert.equal(rows().at(-1).status, "signed_not_sent");
   reset();
 });
@@ -522,7 +523,7 @@ for (const [name, { make, why }] of Object.entries(deviations)) {
       (e) => e instanceof Pending && e.details.sent === false && why.test(e.message) && /Do NOT retry/.test(e.message) && /stays counted/.test(e.message),
     );
     assert.equal(payments.length, n, "nothing reached the server");
-    assert.equal(spent(), before + 0.01, "still counted");
+    assert.equal(micro(spent()), micro(before) + 10_000, "still counted");
     const added = rows().slice(rowsBefore).map((r) => r.status);
     assert.deepEqual(added, ["submitted", "signed_not_sent"], "never released");
   });
@@ -570,7 +571,7 @@ test("a signed payment the server answers with 402 STAYS counted; the CLI exits 
   assert.equal(r.status, 402);
   assert.equal(r.signed, true);
   assert.equal(r.settled, false);
-  assert.equal(spent(), before + 0.01);
+  assert.equal(micro(spent()), micro(before) + 10_000);
   assert.equal(entries().at(-1).status, "signed_unsettled");
   assert.match(r.explorer, /^https:\/\/solscan\.io\/account\//);
 
@@ -682,7 +683,7 @@ test("signed and sent, then the connection is reset: Pending (exit 4), stays cou
   const before = spent();
   const n = rows().length;
   await assert.rejects(pay(`${origin}/hangup`, { chain: "solana" }), (e) => e instanceof Pending && e.details.chain === "solana" && /Do NOT retry/.test(e.message) && /stays counted/.test(e.message) && /may still land/.test(e.message));
-  assert.equal(spent(), before + 0.01);
+  assert.equal(micro(spent()), micro(before) + 10_000);
   assert.deepEqual(rows().slice(n).map((r) => r.status), ["submitted", "signed", "signed_unconfirmed"]);
 });
 
@@ -703,7 +704,7 @@ test("v1: a valid Solana 402 (maxAmountRequired, network \"solana\") is paid, an
   assert.equal(r.network, SOLANA_MAINNET_CAIP2);
   assert.equal(r.amount_atomic, "10000");
   assert.equal(r.settled, true);
-  assert.equal(spent(), before + 0.01);
+  assert.equal(micro(spent()), micro(before) + 10_000);
   const { payload } = payments1.at(-1);
   assert.equal(payload.x402Version, 1);
   assert.equal(payload.network, "solana");

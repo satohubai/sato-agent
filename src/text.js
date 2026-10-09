@@ -10,6 +10,14 @@ export function clean(value, max = 200) {
 /** `clean`, but null/undefined stay null (for optional fields). */
 export const cleanOrNull = (value, max = 200) => (value === null || value === undefined ? null : clean(value, max));
 
+/** Every string inside a plain JSON value, cleaned (for --json output built from outside data). */
+export function cleanStrings(value) {
+  if (typeof value === "string") return clean(value, 2000);
+  if (Array.isArray(value)) return value.map(cleanStrings);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, cleanStrings(v)]));
+  return value;
+}
+
 /**
  * A response body for the terminal: keeps its lines and tabs, drops every other
  * control or format character (so no terminal escape sequence or bidi trick

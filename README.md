@@ -26,6 +26,8 @@ Each Bot keeps its own wallet, limits and ledger, even on the same Grok Bot comp
 ```sh
 npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.2.0
 alias sato-agent=~/.sato-agent-cli/node_modules/.bin/sato-agent
+# npm may print "ERESOLVE overriding peer dependency" three times (the Solana x402
+# library's helpers ask for an older @solana/kit). That is expected; the tests run on these versions.
 
 sato-agent init                                     # this agent's own wallet
 # The chains and both limits come from the owner; there are no defaults. "none" = no limit.
@@ -146,7 +148,7 @@ Every limit change is written to the ledger and shown in `status`. `pay` frames 
 - A payment receipt counts as settled when it names a transaction id in that chain's own form. Any other id is not stored or shown, and the payment is treated as unsettled (exit 4). Text from a server (addresses, receipts, error messages) is shown and logged on one cleaned line.
 - A Solana RPC that does not answer ends the payment: before signing, nothing is sent and the reservation is released; after signing, nothing is sent and it stays counted (exit 4).
 - On Solana, the agent reads the transaction it just signed before sending it. It sends only one USDC transfer of the reserved amount from its own USDC account to the recipient's, with the fee payer the server named. Anything else is not sent, stays counted, and the command exits with code 4. The agent pays no SOL for an x402 payment: the server's facilitator pays the fee. A Solana payment is valid for about a minute (the life of its blockhash).
-- Every transaction is simulated before it is sent, and its hash is recorded before it is broadcast. Transactions from one wallet are signed one at a time, so two commands never reuse a nonce.
+- Every `send` transaction is simulated before it is sent, and its hash is recorded before it is broadcast. (An x402 payment is checked as described above and sent to the server, which settles it.) Transactions from one wallet are signed one at a time, so two commands never reuse a nonce.
 - If the outcome is unclear, the spend stays counted, and the command exits with code 4: **do not retry**.
 - Solana sends to token accounts or other non-wallet addresses are refused.
 
@@ -168,7 +170,7 @@ Every limit change is written to the ledger and shown in `status`. `pay` frames 
   - `https://registry.npmjs.org/` for `check` (package versions and tarballs; only the package names you ask about);
   - the x402 resources you pay;
   - `https://satohub.ai/api/mcp` for checks (it receives the URL, recipient or install command being checked, never a key).
-- Every request sends the user-agent `sato-agent/<version>`.
+- Requests made by the kit itself send the user-agent `sato-agent/<version>`. The Solana x402 library's own RPC reads (the USDC mint and a recent blockhash) go out with Node's default user-agent.
 
 ## What Sato Hub's checks are
 

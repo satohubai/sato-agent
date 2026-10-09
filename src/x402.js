@@ -88,7 +88,8 @@ export function view(req, version) {
 // Anything else is refused, never rounded or coerced.
 const MAX_UNITS = BigInt(Number.MAX_SAFE_INTEGER);
 const unitsOf = (v) => {
-  if (typeof v.amount !== "string" || !/^[0-9]{1,16}$/.test(v.amount)) throw new Error("amount is not a string of digits");
+  // No leading zeros: the signed value must be the same string the server sent.
+  if (typeof v.amount !== "string" || !/^[1-9][0-9]{0,15}$/.test(v.amount)) throw new Error("amount is not a string of digits");
   const units = BigInt(v.amount);
   if (units <= 0n || units > MAX_UNITS) throw new Error("amount is not a positive USDC amount");
   return units;

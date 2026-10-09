@@ -155,7 +155,8 @@ export function evaluate(policy, { usd, to, chain }, spent) {
   if (policy.max_usd_per_tx !== null && usd > policy.max_usd_per_tx) {
     out.push({ rule: "max_usd_per_tx", limit: policy.max_usd_per_tx, observed: usd, message: `over the per-transaction limit of $${policy.max_usd_per_tx}` });
   }
-  if (policy.max_usd_per_day !== null && s.usd + usd > policy.max_usd_per_day) {
+  // Compared in whole micro-dollars, so a spend that exactly reaches the limit is allowed.
+  if (policy.max_usd_per_day !== null && micro(s.usd) + micro(usd) > micro(policy.max_usd_per_day)) {
     out.push({
       rule: "max_usd_per_day",
       limit: policy.max_usd_per_day,
@@ -170,3 +171,4 @@ export function evaluate(policy, { usd, to, chain }, spent) {
 }
 
 const round = (n) => Math.round(n * 1e6) / 1e6;
+const micro = (n) => Math.round(n * 1e6);

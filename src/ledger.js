@@ -45,8 +45,9 @@ export function spentLast24h(now = Date.now(), ledger = read()) {
   const failed = new Set(ledger.rows.filter((e) => e.status === "failed").map((e) => e.id));
   const usd = ledger.rows
     .filter((e) => e.status === "submitted" && now - Date.parse(e.ts) < DAY_MS && !failed.has(e.id))
-    .reduce((sum, e) => sum + (Number(e.usd) || 0), 0);
-  return { usd, unreadable: ledger.bad };
+    // Summed in whole micro-dollars (USDC's 6 decimals), so ten $0.001 spends are exactly $0.01.
+    .reduce((sum, e) => sum + Math.round((Number(e.usd) || 0) * 1e6), 0);
+  return { usd: usd / 1e6, unreadable: ledger.bad };
 }
 
 /**

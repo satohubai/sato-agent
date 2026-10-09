@@ -19,6 +19,7 @@ const { spentLast24h, entries } = await import("../src/ledger.js");
 const { USDC_BASE } = await import("../src/base.js");
 
 const spent = () => spentLast24h().usd;
+const micro = (usd) => Math.round(usd * 1e6); // compare spends in whole micro-dollars, as the ledger sums them
 const PAY_TO = "0x1111111111111111111111111111111111111111";
 let server;
 let origin;
@@ -61,6 +62,7 @@ const offersV1 = {
   "/v1/other-network": [requirementV1({ network: "base-sepolia" })],
   "/v1/caip-network": [requirementV1({ network: "eip155:8453" })],
   "/v1/hex-amount": [requirementV1({ amount: "0x2710" })],
+  "/v1/leading-zero": [requirementV1({ amount: "0005000" })],
 };
 const seenV1 = [];
 
@@ -178,7 +180,7 @@ test("a signed payment the server answers with 402 STAYS counted (the server cou
   assert.equal(r.status, 402);
   assert.equal(r.signed, true);
   assert.equal(r.settled, false);
-  assert.equal(spent(), before + 0.01, "a signed payment never leaves the total");
+  assert.equal(micro(spent()), micro(before) + 10_000, "a signed payment never leaves the total");
   assert.equal(entries().at(-1).status, "signed_unsettled");
   await pay(`${origin}/cheap`);
   // A server that keeps rejecting cannot drain more than the limit.
@@ -207,7 +209,7 @@ test("signed and sent, then the connection is reset: Pending (exit 4), stays cou
   const before = spent();
   const n = entries().length;
   await assert.rejects(pay(`${origin}/hangup`), (e) => e instanceof Pending && /Do NOT retry/.test(e.message) && /stays counted/.test(e.message) && e.details.chain === "base");
-  assert.equal(spent(), before + 0.01, "the payment may have landed: it stays counted");
+  assert.equal(micro(spent()), micro(before) + 10_000, "the payment may have landed: it stays counted");
   const added = entries().slice(n).map((r) => r.status);
   assert.deepEqual(added, ["submitted", "signed", "signed_unconfirmed"], "never released");
 });
@@ -242,7 +244,7 @@ test("v1: a valid 402 (maxAmountRequired, network \"base\") is paid with a valid
   assert.equal(r.usd, 0.01);
   assert.equal(r.amount_atomic, "10000");
   assert.equal(r.network, "eip155:8453");
-  assert.equal(spent(), before + 0.01);
+  assert.equal(micro(spent()), micro(before) + 10_000);
   const { payload } = seenV1.at(-1);
   assert.equal(payload.x402Version, 1);
   assert.equal(payload.network, "base");
@@ -274,6 +276,7 @@ test("v1: the same refusals as v2 (asset, window, network, amount, limits); noth
     "/v1/fractional-window": "authorization_window",
     "/v1/pricey": "max_usd_per_tx",
     "/v1/hex-amount": "amount",
+    "/v1/leading-zero": "amount", // refused before anything is reserved, not signed and then counted
   };
   for (const [path, rule] of Object.entries(cases)) {
     await assert.rejects(pay(`${origin}${path}`), (e) => e instanceof Refused && e.refusals.some((r) => r.rule === rule), path);
@@ -370,7 +373,7 @@ test("Base: a signed authorization that is not what was reserved is NOT sent, st
       name,
     );
     assert.equal(seen.length, n, `${name}: nothing was sent`);
-    assert.equal(spent(), before + 0.01, `${name}: it stays counted`);
+    assert.equal(micro(spent()), micro(before) + 10_000, `${name}: it stays counted`);
     assert.deepEqual(entries().slice(rows).map((r) => r.status), ["submitted", "signed_not_sent"], `${name}: never released`);
   }
   // The same fake scheme with a matching authorization passes the check (and is sent).

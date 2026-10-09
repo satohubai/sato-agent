@@ -328,7 +328,7 @@ test("a dry run is plan + verify and returns the summary; nothing is reserved", 
 
 // ------------------------------------------------------------------ execute (scripted chain)
 
-setPolicy({ chains: "base", perTx: "150", perDay: "100000" });
+setPolicy({ chains: "base", perTx: "150", perDay: "100000", swapSlippageBps: "1000", maxTradesPerDay: "none" });
 const lastSwap = () => actions().filter((a) => a.kind === "swap").at(-1);
 const reserved = () => spentLast24h().usd;
 
@@ -512,11 +512,17 @@ test("an error before anything is signed gives the reservation back", async () =
   assert.equal(reserved(), before);
 });
 
-test("the owner's recipient allowlist is checked against the router (a swap pays no third party, so an allowlist refuses it)", async () => {
+test("a swap is held to the swap caps, not the payee allowlist (it pays a pinned router and the output returns to the agent)", async () => {
   const { c, state } = fakeChain({ address: SENDER });
   const plan = await planFor("usdc-to-eth");
-  const policy = { ...(await import("../src/policy.js")).loadPolicy(), allow_recipients: ["0x000000000000000000000000000000000000dEaD"] };
-  assert.deepEqual(await rules(executeBaseSwap(plan, { c, policy })), ["allow_recipients"]);
+  const base = (await import("../src/policy.js")).loadPolicy();
+  const withAllowlist = { ...base, allow_recipients: ["0x000000000000000000000000000000000000dEaD"], max_trades_per_day: 0 };
+  // The allowlist is not the reason; the trade cap is.
+  assert.deepEqual(await rules(executeBaseSwap(plan, { c, policy: withAllowlist })), ["max_trades_per_day"]);
+  const swapsOff = { ...base };
+  delete swapsOff.max_slippage_bps;
+  delete swapsOff.max_trades_per_day;
+  assert.deepEqual(await rules(executeBaseSwap(plan, { c, policy: swapsOff })), ["swaps_not_enabled"]);
   assert.equal(state.sent.length, 0);
 });
 

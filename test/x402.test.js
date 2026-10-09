@@ -33,6 +33,8 @@ const offers = {
   "/pricey": [requirement({ amount: "7500000" })], // $7.50
   "/other-asset": [requirement({ amount: "10000", asset: "0x2222222222222222222222222222222222222222" })],
   "/forever": [requirement({ amount: "10000", maxTimeoutSeconds: 1e12 })],
+  // A string concatenates in `now + maxTimeoutSeconds`: "300" would mean ~56,800 years.
+  "/string-window": [requirement({ amount: "10000", maxTimeoutSeconds: "300" })],
 };
 
 before(async () => {
@@ -116,6 +118,12 @@ test("an authorization the server wants valid for years: refused, nothing signed
   assert.equal(seen.length, n);
 });
 
+test("a window sent as a string (\"300\") is refused, nothing signed", async () => {
+  const n = seen.length;
+  await assert.rejects(pay(`${origin}/string-window`), (e) => e instanceof Refused && e.refusals.some((r) => r.rule === "authorization_window"));
+  assert.equal(seen.length, n);
+});
+
 test("the 24 h limit counts earlier payments", async () => {
   setPolicy({ perTx: "10", perDay: "7.5" });
   const n = seen.length;
@@ -137,4 +145,18 @@ test("a signed payment the server answers with 402 STAYS counted (the server cou
   // A server that keeps rejecting cannot drain more than the limit.
   await assert.rejects(pay(`${origin}/cheap`), (e) => e instanceof Refused && e.refusals.some((x) => x.rule === "max_usd_per_day"));
   accept = true;
+});
+
+test("the CLI exits 4 (do not retry) for a signed-but-unsettled payment, in --json mode too", async () => {
+  const { spawn } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  setPolicy({ perTx: "1", perDay: "100" });
+  accept = false;
+  const bin = fileURLToPath(new URL("../bin/sato-agent.js", import.meta.url));
+  const code = await new Promise((resolve) => {
+    const p = spawn(process.execPath, [bin, "pay", `${origin}/cheap`, "--skip-check", "--json"], { env: process.env, stdio: "ignore" });
+    p.on("exit", resolve);
+  });
+  accept = true;
+  assert.equal(code, 4);
 });

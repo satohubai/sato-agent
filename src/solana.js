@@ -31,7 +31,7 @@ import {
 } from "@solana-program/token";
 import { loadPolicy } from "./policy.js";
 import { record, release, reserve } from "./ledger.js";
-import { Pending } from "./errors.js";
+import { Pending, Rejected } from "./errors.js";
 import { loadWallet, solanaSecret } from "./wallet.js";
 import { USER_AGENT } from "./version.js";
 
@@ -121,6 +121,13 @@ export async function sendUsdc({ to, amount }, r = rpc()) {
   try {
     await withTimeout(r.sendTransaction(wire, { encoding: "base64", preflightCommitment: "confirmed" }).send());
   } catch (err) {
+    // The RPC's own preflight refusing it means it was never forwarded: release.
+    // Anything else (a timeout, a dropped connection) may have gone out: Pending.
+    const msg = `${err.message} ${JSON.stringify(err.context ?? {}, (_k, v) => (typeof v === "bigint" ? v.toString() : v))}`;
+    if (/PREFLIGHT_FAILURE|preflight|-32002|Blockhash not found|insufficient (funds|lamports)/i.test(msg)) {
+      release(entry, "rejected by the RPC preflight; never sent", { tx: signature, error: String(err.message) });
+      throw new Rejected(`the RPC refused ${signature}: ${err.message}`);
+    }
     throw new Pending(`broadcast of ${signature} reported an error (${err.message}).`, { tx: signature, explorer: explorer(signature) });
   }
   for (let i = 0; i < 40; i++) {

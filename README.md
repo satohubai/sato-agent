@@ -38,7 +38,7 @@ sato-agent register --name "My agent" --description "What it does"
 | `register --name --description [--image]` | Registers in the ERC-8004 IdentityRegistry on Base (`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`), with the registration file stored onchain |
 | `check "<install command>"` | Sato Check: does an install take a key, does the key leave, can it move funds on its own |
 | `recommend "<goal>"` | A stack for a build goal from Sato Hub's index |
-| `status` | Limits, spend today (UTC), recent ledger lines |
+| `status` | Limits, spend in the last 24 hours, limit changes, recent spends |
 
 Add `--json` to any command for machine-readable output.
 
@@ -62,7 +62,7 @@ Every limit change is written to the ledger and shown in `status`. `pay` frames 
 - x402 payments are checked twice: only a payment option inside the limits can be chosen, and the limits are checked again just before signing.
 - Payment authorizations must expire within 5 minutes.
 - A signed payment always counts, even if the server rejects it, because the server could still settle it.
-- Every transaction is simulated before it's signed. Its hash is recorded before it's broadcast.
+- Every transaction is simulated before it is sent, and its hash is recorded before it is broadcast. Transactions from one wallet are signed one at a time, so two commands never reuse a nonce.
 - If the outcome is unclear, the spend stays counted, and the command exits with code 4: **do not retry**.
 - Solana sends to token accounts or other non-wallet addresses are refused.
 

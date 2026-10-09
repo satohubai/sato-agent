@@ -28,7 +28,10 @@ function check(policy, req) {
   if (!isBaseUsdc(req)) {
     return [{ rule: "asset", limit: `USDC on ${BASE_NETWORK}`, observed: `${req.asset} on ${req.network}`, message: "only USDC on Base is paid in this version" }];
   }
-  if (!(Number(req.maxTimeoutSeconds) > 0 && Number(req.maxTimeoutSeconds) <= MAX_AUTH_WINDOW_S)) {
+  // Must be a real integer: the signing code computes `now + maxTimeoutSeconds`,
+  // and a string "300" would concatenate into an authorization valid for millennia.
+  const w = req.maxTimeoutSeconds;
+  if (!(typeof w === "number" && Number.isInteger(w) && w > 0 && w <= MAX_AUTH_WINDOW_S)) {
     return [{ rule: "authorization_window", limit: MAX_AUTH_WINDOW_S, observed: req.maxTimeoutSeconds, message: `the server asks for a payment authorization valid for ${req.maxTimeoutSeconds}s; the limit is ${MAX_AUTH_WINDOW_S}s` }];
   }
   let usd;
@@ -79,7 +82,15 @@ export async function pay(url, { method = "GET", body, headers = {}, account = e
       throw err;
     }
   });
-  client.onAfterPaymentCreation(async () => {
+  client.onAfterPaymentCreation(async ({ paymentPayload }) => {
+    // Belt and braces: check what was actually signed. Throwing here fires the
+    // failure hook (which releases the reservation) and the payload is never sent.
+    const validBefore = Number(paymentPayload?.payload?.authorization?.validBefore);
+    const left = validBefore - Date.now() / 1000;
+    if (!Number.isFinite(validBefore) || left > MAX_AUTH_WINDOW_S + 30) {
+      seen.push({ rule: "authorization_window", limit: MAX_AUTH_WINDOW_S, observed: Number.isFinite(left) ? Math.round(left) : "unknown", message: "the signed authorization would stay valid too long (or its expiry could not be read); it was not sent" });
+      throw new Error("authorization window check failed; payment not sent");
+    }
     if (entry) record({ id: entry.id, status: "signed" });
   });
   client.onPaymentCreationFailure(async () => {
@@ -94,7 +105,7 @@ export async function pay(url, { method = "GET", body, headers = {}, account = e
     res = await paidFetch(url, { method, body, headers: { "user-agent": USER_AGENT, ...headers }, signal: AbortSignal.timeout(timeoutMs) });
   } catch (err) {
     if (!entry && seen.length) throw new Refused(seen);
-    throw err; // if a payment was signed, it stays counted
+    throw err; // if a payment was signed and sent, it stays counted
   }
 
   const receiptHeader = res.headers.get("PAYMENT-RESPONSE") || res.headers.get("X-PAYMENT-RESPONSE");

@@ -13,7 +13,11 @@ export class Refused extends Error {
  */
 export class Pending extends Error {
   constructor(message, details = {}) {
-    super(`${message}\nIt may still land. It stays counted against the limits. Do NOT retry; check ${details.explorer ?? "the explorer"} first.`);
+    const counted = details.counted === false ? "" : " It stays counted against the limits.";
+    super(`${message}\nIt may still land.${counted} Do NOT retry; check ${details.explorer ?? "the explorer"} first.`);
     this.details = details;
   }
 }
+
+/** A broadcast the node definitely refused: it never entered the mempool. */
+export class Rejected extends Error {}

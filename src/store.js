@@ -23,7 +23,7 @@ export const paths = {
   wallet: () => join(home(), "wallet.json"),
   policy: () => join(home(), "policy.json"),
   ledger: () => join(home(), "ledger.jsonl"),
-  lock: () => join(home(), "spend.lock"),
+  lock: (name = "spend") => join(home(), `${name}.lock`),
 };
 
 export function ensureHome() {
@@ -67,10 +67,47 @@ export function readLines(path) {
 
 const STALE_LOCK_MS = 120_000;
 
-/** Run `fn` holding the spend lock (a file created exclusively). Waits up to 30 s. */
-export async function withLock(fn, { waitMs = 30_000 } = {}) {
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+};
+
+/**
+ * Remove a lock only if it is stale (old AND its process is gone), without ever
+ * removing a fresh lock another process just took: rename it aside atomically,
+ * and if what we moved is not what we judged stale, put it back.
+ */
+function clearStale(lock) {
+  let content;
+  try {
+    if (Date.now() - fs.statSync(lock).mtimeMs <= STALE_LOCK_MS) return;
+    content = fs.readFileSync(lock, "utf8");
+  } catch {
+    return;
+  }
+  if (alive(Number(content.split(" ")[0]))) return;
+  const aside = `${lock}.${process.pid}.${Math.random().toString(36).slice(2)}`;
+  try {
+    fs.renameSync(lock, aside);
+  } catch {
+    return; // someone else got there first
+  }
+  try {
+    if (fs.readFileSync(aside, "utf8") !== content) fs.linkSync(aside, lock); // not the stale one: restore it
+  } catch {
+    /* a new lock already exists; leave it */
+  }
+  fs.rmSync(aside, { force: true });
+}
+
+/** Run `fn` holding a named lock (a file created exclusively). Waits up to 30 s. */
+export async function withLock(fn, { name = "spend", waitMs = 30_000 } = {}) {
   ensureHome();
-  const lock = paths.lock();
+  const lock = paths.lock(name);
   const start = Date.now();
   for (;;) {
     try {
@@ -78,12 +115,8 @@ export async function withLock(fn, { waitMs = 30_000 } = {}) {
       break;
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
-      try {
-        if (Date.now() - fs.statSync(lock).mtimeMs > STALE_LOCK_MS) fs.unlinkSync(lock);
-      } catch {
-        /* someone else removed it */
-      }
-      if (Date.now() - start > waitMs) throw new Error(`another spend is in progress (lock ${lock}); try again`);
+      clearStale(lock);
+      if (Date.now() - start > waitMs) throw new Error(`another ${name} is in progress (lock ${lock}); try again`);
       await new Promise((r) => setTimeout(r, 50 + Math.random() * 100));
     }
   }

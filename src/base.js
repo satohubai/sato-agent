@@ -22,7 +22,8 @@ import {
 import { base } from "viem/chains";
 import { loadPolicy } from "./policy.js";
 import { entries, record, release, reserve } from "./ledger.js";
-import { Pending } from "./errors.js";
+import { Pending, Rejected } from "./errors.js";
+import { withLock } from "./store.js";
 import { evmAccount, loadWallet } from "./wallet.js";
 import { USER_AGENT } from "./version.js";
 
@@ -62,25 +63,47 @@ export async function balances(addr = loadWallet().evm.address) {
   return { address: addr, eth: formatEther(eth), usdc: formatUnits(usdc, 6) };
 }
 
+// Errors that mean the node refused the transaction outright: it never entered
+// the mempool and can never land, so it is safe to release.
+const DEFINITE_REJECTION = /insufficient funds|nonce too low|nonce has already been used|replacement transaction underpriced|intrinsic gas too low|exceeds block gas limit|invalid sender|already known/i;
+
 /**
  * Sign locally, record the hash, broadcast, wait. Returns the receipt.
- * Throws Pending when the outcome is unknown (the caller keeps the spend counted).
+ * Nonce assignment through broadcast is serialized by a lock, so two commands
+ * never sign with the same nonce. Throws Rejected when the node definitely
+ * refused it, Pending when the outcome is unknown (kept counted), and Rejected
+ * when another transaction took the nonce (ours can then never land).
  */
-async function signAndSend(c, { to, data }, onSigned) {
-  const prepared = await c.wallet.prepareTransactionRequest({ account: c.account, to, data, chain: base });
-  const signed = await c.wallet.signTransaction(prepared);
-  const hash = keccak256(signed);
-  onSigned?.(hash);
+async function signAndSend(c, { to, data }, onSigned, { counted = true } = {}) {
+  const { signed, hash } = await withLock(
+    async () => {
+      const prepared = await c.wallet.prepareTransactionRequest({ account: c.account, to, data, chain: base });
+      const signedTx = await c.wallet.signTransaction(prepared);
+      const h = keccak256(signedTx);
+      onSigned?.(h);
+      try {
+        await c.pub.sendRawTransaction({ serializedTransaction: signedTx });
+      } catch (err) {
+        const msg = `${err.shortMessage || ""} ${err.details || ""} ${err.message || ""}`;
+        // "already known" means the node already has it: treat as sent, not rejected.
+        if (DEFINITE_REJECTION.test(msg) && !/already known/i.test(msg)) throw new Rejected(`the node refused ${h}: ${err.shortMessage || err.message}`);
+        throw new Pending(`broadcast of ${h} reported an error (${err.shortMessage || err.message}).`, { tx: h, explorer: explorer(h), counted });
+      }
+      return { signed: signedTx, hash: h };
+    },
+    { name: "base-nonce", waitMs: 60_000 },
+  );
+  let receipt;
   try {
-    await c.pub.sendRawTransaction({ serializedTransaction: signed });
+    receipt = await c.pub.waitForTransactionReceipt({ hash, timeout: 120_000 });
   } catch (err) {
-    throw new Pending(`broadcast of ${hash} reported an error (${err.shortMessage || err.message}).`, { tx: hash, explorer: explorer(hash) });
+    throw new Pending(`no receipt for ${hash} yet (${err.shortMessage || err.message}).`, { tx: hash, explorer: explorer(hash), counted });
   }
-  try {
-    return await c.pub.waitForTransactionReceipt({ hash, timeout: 120_000 });
-  } catch (err) {
-    throw new Pending(`no receipt for ${hash} yet (${err.shortMessage || err.message}).`, { tx: hash, explorer: explorer(hash) });
+  if (receipt.transactionHash.toLowerCase() !== hash.toLowerCase()) {
+    throw new Rejected(`${hash} was replaced by ${receipt.transactionHash} (its nonce was used by another transaction); ${hash} itself never landed`);
   }
+  void signed;
+  return receipt;
 }
 
 /** Send USDC on Base. Throws Refused when the limits say no; nothing is signed then. */
@@ -101,7 +124,9 @@ export async function sendUsdc({ to, amount }, c = clients()) {
   try {
     receipt = await signAndSend(c, { to: USDC_BASE, data }, (hash) => record({ id: entry.id, status: "signed", tx: hash }));
   } catch (err) {
-    if (!(err instanceof Pending)) release(entry, "failed before signing", { error: String(err.shortMessage || err.message) });
+    // Pending = it may have gone out: stays counted. Anything else (an error before
+    // signing, a definite rejection, a replaced nonce) never moved funds.
+    if (!(err instanceof Pending)) release(entry, err instanceof Rejected ? "rejected; never landed" : "failed before broadcast", { error: String(err.shortMessage || err.message) });
     throw err;
   }
   if (receipt.status !== "success") {
@@ -127,9 +152,13 @@ export function registrationUri({ agentId, name, description, image = "", servic
   return `data:application/json;base64,${Buffer.from(JSON.stringify(card)).toString("base64")}`;
 }
 
-/** Agent ids this wallet already registered, from the ledger. */
+/** Agent ids this wallet already registered, and registrations sent but never confirmed, from the ledger. */
 export function registeredIds() {
-  return entries().filter((e) => e.kind === "register" && e.agent_id).map((e) => e.agent_id);
+  const rows = entries();
+  const done = rows.filter((e) => e.kind === "register" && e.agent_id).map((e) => e.agent_id);
+  const doneTx = new Set(rows.filter((e) => e.kind === "register").map((e) => e.tx));
+  const pending = rows.filter((e) => e.kind === "register_sent" && !doneTx.has(e.tx)).map((e) => e.tx);
+  return { done, pending };
 }
 
 /**
@@ -146,10 +175,16 @@ export async function registerAgent({ name, description, image, services, again 
     agentId = BigInt(resume);
   } else {
     const prior = registeredIds();
-    if (prior.length && !again) throw new Error(`this wallet already registered agent id ${prior.join(", ")}; add --again to register another`);
+    if (prior.done.length && !again) throw new Error(`this wallet already registered agent id ${prior.done.join(", ")}; add --again to register another`);
+    if (prior.pending.length && !again) throw new Error(`a registration was sent but never confirmed (${prior.pending.map(explorer).join(", ")}); check it, then use --resume <agent id> or --again`);
     const first = registrationUri({ name, description, image, services });
     await c.pub.simulateContract({ account: c.account, address: IDENTITY_REGISTRY, abi: identityRegistryAbi, functionName: "register", args: [first] });
-    const r1 = await signAndSend(c, { to: IDENTITY_REGISTRY, data: encodeFunctionData({ abi: identityRegistryAbi, functionName: "register", args: [first] }) });
+    const r1 = await signAndSend(
+      c,
+      { to: IDENTITY_REGISTRY, data: encodeFunctionData({ abi: identityRegistryAbi, functionName: "register", args: [first] }) },
+      (hash) => record({ kind: "register_sent", status: "signed", chain: "base", usd: 0, tx: hash }),
+      { counted: false },
+    );
     if (r1.status !== "success") throw new Error(`register reverted: ${explorer(r1.transactionHash)}`);
     const ev = parseEventLogs({ abi: identityRegistryAbi, logs: r1.logs, eventName: "Registered" }).find(
       (l) => l.address.toLowerCase() === IDENTITY_REGISTRY.toLowerCase(),
@@ -163,7 +198,7 @@ export async function registerAgent({ name, description, image, services, again 
   const data = encodeFunctionData({ abi: identityRegistryAbi, functionName: "setAgentURI", args: [agentId, full] });
   try {
     await c.pub.call({ account: c.account, to: IDENTITY_REGISTRY, data });
-    const r2 = await signAndSend(c, { to: IDENTITY_REGISTRY, data });
+    const r2 = await signAndSend(c, { to: IDENTITY_REGISTRY, data }, undefined, { counted: false });
     if (r2.status !== "success") throw new Error(`setAgentURI reverted: ${explorer(r2.transactionHash)}`);
     record({ kind: "register_uri", status: "confirmed", chain: "base", usd: 0, agent_id: agentId.toString(), tx: r2.transactionHash });
     return { agent_id: agentId.toString(), registry: `eip155:8453:${IDENTITY_REGISTRY}`, tx: r2.transactionHash, explorer: explorer(r2.transactionHash) };

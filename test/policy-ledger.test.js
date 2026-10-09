@@ -78,6 +78,22 @@ test("reserve is atomic across processes: three concurrent $1 spends under a $1 
   assert.deepEqual(runs.sort(), [0, 3, 3]);
 });
 
+test("a stale lock from a dead process is cleared; a live process's lock is never taken", async () => {
+  const { writeFileSync, utimesSync, existsSync } = await import("node:fs");
+  const { withLock } = await import("../src/store.js");
+  const old = new Date(Date.now() - 10 * 60_000);
+  // Dead PID, old: cleared, and the work runs.
+  writeFileSync(paths.lock("t1"), "999999 2026-01-01T00:00:00Z\n");
+  utimesSync(paths.lock("t1"), old, old);
+  assert.equal(await withLock(async () => "ran", { name: "t1", waitMs: 2000 }), "ran");
+  assert.equal(existsSync(paths.lock("t1")), false);
+  // Our own (live) PID, old: never cleared, so the caller times out instead.
+  writeFileSync(paths.lock("t2"), `${process.pid} 2026-01-01T00:00:00Z\n`);
+  utimesSync(paths.lock("t2"), old, old);
+  await assert.rejects(withLock(async () => "ran", { name: "t2", waitMs: 400 }), /in progress/);
+  assert.equal(existsSync(paths.lock("t2")), true);
+});
+
 test("an unreadable ledger line stops all spending (deleting the ledger must not be the fix)", async () => {
   appendFileSync(paths.ledger(), '{"truncated": \n');
   const p = loadPolicy();

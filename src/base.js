@@ -137,6 +137,17 @@ export async function sendUsdc({ to, amount }, c = clients()) {
   return { tx: receipt.transactionHash, explorer: explorer(receipt.transactionHash), usd, to };
 }
 
+/**
+ * Dry run of a USDC send: the same simulation a real send runs, nothing
+ * reserved, signed or sent. Throws with the simulation's reason if it would fail.
+ */
+export async function dryRunSendUsdc({ to, amount }, c = clients()) {
+  if (!isAddress(to)) throw new Error(`not a Base address: ${to}`);
+  const units = usdcUnits(amount);
+  await c.pub.simulateContract({ account: c.account, address: USDC_BASE, abi: erc20Abi, functionName: "transfer", args: [to, units] });
+  return { dry_run: true, chain: "base", usd: unitsToUsd(units), to, simulated: true };
+}
+
 /** The ERC-8004 registration file, as a data: URI stored fully onchain. */
 export function registrationUri({ agentId, name, description, image = "", services = [], x402Support = false }) {
   const card = {

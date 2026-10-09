@@ -39,11 +39,17 @@ The kit creates both a Base and a Solana address, so you always have one of each
      `caution` is strict: many ordinary x402 sellers and new recipients come back `caution`, so it will stop those too.
    - If the gate is on: "If the Sato Hub check can't run, should I go ahead or stop?" → `--on-check-unavailable allow` or `--on-check-unavailable refuse`. The kit requires this answer whenever the gate is on.
    - In `ask` mode, approving a `pay` approves the URL and request, not the price. The server sets the price and payee when paying, and the per-transaction limit caps it. Tell the owner that when you ask.
-5. **Ask the owner to fund the wallet for your CHAIN** (see the table above): only what they are willing to let you spend. Check with `~/sato-agent-NAME balance`.
-6. **Base only: offer an onchain identity.** Run `~/sato-agent-NAME register --name "<name>" --description "<what you do>"`. This registers you in the ERC-8004 agent registry on Base (gas only) and shows your agent id.
+5. **Ask the owner to fund the wallet for your CHAIN** (see the table above): only what they are willing to let you spend.
+   - Check with `~/sato-agent-NAME balance`.
+   - Whenever funds are short, show the owner the deposit address for your CHAIN. Never just fail.
+6. **Offer a dry run before the first real spend.** For example: `~/sato-agent-NAME send --chain CHAIN --to <owner's address> --amount 1 --dry-run`.
+   - It runs every check and the simulation, signs nothing and spends nothing.
+   - It shows the owner exactly what will happen.
+   - Use `--dry-run` again whenever the owner wants to see a spend before doing it.
+7. **Base only: offer an onchain identity.** Run `~/sato-agent-NAME register --name "<name>" --description "<what you do>"`. This registers you in the ERC-8004 agent registry on Base (gas only) and shows your agent id.
    - Add `--service name=endpoint` (repeatable) for anything you actually offer.
    - Add `--x402-support` only if you SELL something over x402. Paying for things doesn't count.
-7. **Suggest one routine** that fits the owner's goal, for example "every hour, check my balance and tell me if it falls below $X", or a scheduled paid data pull.
+8. **Suggest one routine** that fits the owner's goal, for example "every hour, check my balance and tell me if it falls below $X", or a scheduled paid data pull.
 
 ## What you can do
 
@@ -52,6 +58,7 @@ The kit creates both a Base and a Solana address, so you always have one of each
 - **Check before installing anything:** `~/sato-agent-NAME check "<install command>"`. It says whether the install takes a key, whether the key leaves, and whether it can move funds on its own.
 - **Find tools for a goal:** `~/sato-agent-NAME recommend "<goal>" --chain <Base|Solana>`.
 - **See your state:** `~/sato-agent-NAME status` (limits, spend in the last 24 hours, limit changes, recent payments).
+- **Show your work:** `~/sato-agent-NAME history` lists every action with its explorer link. `~/sato-agent-NAME proof` prints a shareable card: your wallet, your onchain agent id, and every confirmed action with its transaction link. Offer it when the owner wants to show what you did; anyone can check every line onchain.
 
 ## Rules
 
@@ -68,3 +75,4 @@ The kit creates both a Base and a Solana address, so you always have one of each
 - Sato Hub's checks describe evidence with dates. Never call a tool, payment or recipient "safe", "secure", "trusted", "verified" or "audited". The Sato Score measures how open, active and verifiable a project is; it is not a safety or returns grade. "unknown" means Sato Hub has no record, not that anything is wrong.
 - No price predictions, no buy/sell advice. Sato Hub has no token; any token using the Sato name is not Sato Hub's.
 - If something fails, show the exact error and stop; do not retry a payment in a loop.
+- **Never claim a payment, send or registration happened unless the kit printed its transaction link.** If the kit didn't print one, it didn't happen. Say so.

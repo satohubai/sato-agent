@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { addresses, initWallet, walletExists } from "../src/wallet.js";
 import { allowedChains, evaluate, loadPolicy, setPolicy } from "../src/policy.js";
 import { NeedsApproval, Pending, Refused } from "../src/errors.js";
-import { read, recordCheckEvent, spentLast24h } from "../src/ledger.js";
+import { actions, read, recordCheckEvent, spentLast24h } from "../src/ledger.js";
 import { consumeApproval, requestApproval } from "../src/approvals.js";
 import { roundUsd } from "../src/amount.js";
 import { home, withLock } from "../src/store.js";
@@ -40,6 +40,10 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
   check "<install command>"              what an install does with keys and money (Sato Check)
   recommend "<goal>" [--chain <chain>]   a stack for a build goal, from Sato Hub
   status                                 choices, spend in the last 24 h, changes, recent spends
+  history [--since 24h|7d|30d|all]       every action, one row each, with its explorer link
+  proof                                  a shareable card: this agent's wallet, onchain id and every action with its tx link
+
+Add --dry-run to send or pay to run every check (and, for send, the simulation) without signing or spending.
 
 Add --json for machine-readable output. Files: ${home()} (SATO_AGENT_HOME to move).
 Exit codes: 3 refused (nothing signed) · 4 signed but not confirmed (do NOT retry) · 5 needs the owner's approval (nothing spent).
@@ -75,6 +79,8 @@ try {
       again: { type: "boolean" },
       resume: { type: "string" },
       "skip-check": { type: "boolean" },
+      "dry-run": { type: "boolean" },
+      since: { type: "string" },
     },
   }));
 } catch (err) {
@@ -154,7 +160,8 @@ async function beforeSpend({ chain, intent, checkArgs, expectKind, usd, to }) {
     const r = gateRefusals(policy, check);
     if (r.length) throw new Refused(r);
   }
-  if (policy?.approval === "ask") {
+  // A dry run spends nothing, so it needs no approval.
+  if (policy?.approval === "ask" && !flags["dry-run"]) {
     if (!flags.approve) throw new NeedsApproval(intent, await requestApproval(intent));
     await consumeApproval(flags.approve, intent);
   }
@@ -244,6 +251,10 @@ async function main() {
       const checkArgs = { address: flags.to, chain: chain === "base" ? "Base" : "Solana", from: chain === "base" ? a.base : a.solana };
       const usd = unitsToUsd(usdcUnits(flags.amount)); // refuses malformed amounts before anything else
       const check = await beforeSpend({ chain, intent: { cmd: "send", chain, to: flags.to, amount: flags.amount }, checkArgs, expectKind: "address", usd, to: flags.to });
+      if (flags["dry-run"]) {
+        const d = chain === "base" ? await baseChain.dryRunSendUsdc({ to: flags.to, amount: flags.amount }) : await solana.dryRunSendUsdc({ to: flags.to, amount: flags.amount });
+        return out(`DRY RUN: the checks and the simulation passed for ${d.usd} USDC on ${chain} to ${d.to}. Nothing was signed or sent, and nothing counts against the limits.`, { ...d, sato_hub_check: check });
+      }
       const r = chain === "base" ? await baseChain.sendUsdc({ to: flags.to, amount: flags.amount }) : await solana.sendUsdc({ to: flags.to, amount: flags.amount });
       return out(`Sent ${r.usd} USDC on ${chain} to ${r.to}\n  ${r.explorer}`, { ...r, chain, sato_hub_check: check });
     }
@@ -260,6 +271,9 @@ async function main() {
         checkArgs: { x402: url },
         expectKind: "x402",
       });
+      if (flags["dry-run"]) {
+        return out(`DRY RUN: the checks passed for ${url}. Sato Hub's check above shows the payment terms it read. Nothing was paid or signed.`, { dry_run: true, url, sato_hub_check: check });
+      }
       const r = await pay(url, { method, body: flags.data, headers });
       const head = r.settled
         ? `Paid ${r.usd} USDC to ${r.pay_to} (HTTP ${r.status})\n  https://basescan.org/tx/${r.settlement.transaction}`
@@ -307,6 +321,38 @@ async function main() {
       if (!goal) throw new UsageError('recommend "<goal>" [--chain <chain>]');
       const r = await recommend(goal, flags.chain);
       return out(r.text, r.structured ?? { text: r.text });
+    }
+    case "history": {
+      const windows = { "24h": 864e5, "7d": 7 * 864e5, "30d": 30 * 864e5, all: Infinity };
+      const since = flags.since ?? "all";
+      if (!(since in windows)) throw new UsageError("--since must be one of: 24h, 7d, 30d, all");
+      const cutoff = Date.now() - windows[since];
+      const list = actions().filter((a) => Date.parse(a.first_ts) >= cutoff);
+      const line = (a) =>
+        `${a.first_ts}  ${String(a.kind).padEnd(8)} ${String(a.status).padEnd(16)} ${(a.chain ?? "").padEnd(6)} ${a.kind === "register" || a.kind === "register_uri" ? `agent ${a.agent_id}` : `$${roundUsd(Number(a.usd) || 0)}`} ${a.to ?? a.url ?? ""}${a.explorer ? `\n    ${a.explorer}` : ""}`;
+      return out(list.map(line).join("\n") || "(no actions yet)", { since, actions: list });
+    }
+    case "proof": {
+      // A card the owner can post: everything on it links to the chain, so anyone can check it.
+      const a = addresses();
+      const chains = allowedChains(loadPolicy());
+      const list = actions();
+      const onchain = list.filter((x) => x.explorer && ["confirmed", "registered"].includes(x.status));
+      const agentId = [...list].reverse().find((x) => x.kind === "register" && x.agent_id)?.agent_id ?? null;
+      const spent = onchain.filter((x) => ["send", "x402", "swap"].includes(x.kind)).reduce((s, x) => s + (Number(x.usd) || 0), 0);
+      const card = [
+        "Sato Agent: proof of activity",
+        `generated ${new Date().toISOString()} by sato-agent ${VERSION}`,
+        "",
+        ...chains.map((c) => `${c === "base" ? "Base wallet:  " : "Solana wallet:"} ${a[c]}  ${c === "base" ? `https://basescan.org/address/${a.base}` : `https://solscan.io/account/${a.solana}`}`),
+        agentId ? `ERC-8004 agent: ${agentId} on Base (registry 0x8004A169FB4a3325136EB29fA0ceB6D2e539a432)` : "ERC-8004 agent: not registered",
+        `confirmed onchain actions: ${onchain.length} · USDC moved: $${roundUsd(spent)}`,
+        "",
+        ...onchain.slice(-15).map((x) => `${x.first_ts.slice(0, 16).replace("T", " ")}Z  ${x.kind}  ${x.kind.startsWith("register") ? `agent ${x.agent_id}` : `$${roundUsd(Number(x.usd) || 0)}`}  ${x.explorer}`),
+        "",
+        "Every line links to the chain. Check it yourself. Built with Sato Hub: https://github.com/satohubai/sato-agent",
+      ].join("\n");
+      return out(card, { addresses: Object.fromEntries(chains.map((c) => [c, a[c]])), agent_id: agentId, confirmed_actions: onchain, usdc_moved: roundUsd(spent) });
     }
     case "status": {
       const p = loadPolicy();
@@ -358,6 +404,16 @@ main().catch((err) => {
     else console.error(err.message);
     process.exit(5);
   }
-  console.error(err instanceof UsageError ? `usage: ${err.message}` : `error: ${err.shortMessage || err.message}`);
+  let hint = "";
+  // Out of funds: tell the owner exactly where to send them, instead of a bare error.
+  if (/exceeds balance|insufficient (funds|lamports)|insufficient balance|custom program error: 0x1\b/i.test(`${err.shortMessage || ""} ${err.message || ""}`)) {
+    try {
+      const a = addresses();
+      hint = `\nThe wallet may be short of funds. Deposit address: Base ${a.base} (USDC + a little ETH for gas) · Solana ${a.solana} (USDC + a little SOL).`;
+    } catch {
+      /* no wallet yet */
+    }
+  }
+  console.error(err instanceof UsageError ? `usage: ${err.message}` : `error: ${err.shortMessage || err.message}${hint}`);
   process.exit(err instanceof UsageError ? 2 : 1);
 });

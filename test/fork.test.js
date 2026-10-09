@@ -18,7 +18,7 @@ freshHome();
 process.env.SATO_AGENT_BASE_RPC = RPC;
 const { initWallet } = await import("../src/wallet.js");
 const { setPolicy, Refused } = await import("../src/policy.js");
-const { USDC_BASE, IDENTITY_REGISTRY, sendUsdc, registerAgent, registrationUri } = await import("../src/base.js");
+const { USDC_BASE, IDENTITY_REGISTRY, sendUsdc, dryRunSendUsdc, registerAgent, registrationUri } = await import("../src/base.js");
 
 let anvil;
 let me;
@@ -59,6 +59,11 @@ test("sends USDC on a Base fork, inside the owner's limits", { skip: !enabled },
   await assert.rejects(sendUsdc({ to, amount: "1" }), (e) => e instanceof Refused);
   setPolicy({ chains: "base", perTx: "20", perDay: "30" });
   const before = await pub.readContract({ address: USDC_BASE, abi: erc20Abi, functionName: "balanceOf", args: [to] });
+  // A dry run simulates against the real contract and moves nothing.
+  const dry = await dryRunSendUsdc({ to, amount: "12.5" });
+  assert.equal(dry.simulated, true);
+  assert.equal(await pub.readContract({ address: USDC_BASE, abi: erc20Abi, functionName: "balanceOf", args: [to] }), before);
+  await assert.rejects(dryRunSendUsdc({ to, amount: "500" }), /exceeds balance|revert/i, "a dry run that would fail says so");
   const r = await sendUsdc({ to, amount: "12.5" });
   const after = await pub.readContract({ address: USDC_BASE, abi: erc20Abi, functionName: "balanceOf", args: [to] });
   assert.equal(after - before, 12_500_000n);

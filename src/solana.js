@@ -94,6 +94,21 @@ export async function buildUsdcTransfer({ secret, to, units, blockhash }) {
 /** Same parser as Base (src/amount.js), kept under its old name for callers. */
 export const toUnits = usdcUnits;
 
+/**
+ * Dry run of a USDC send: recipient checks, then the same build + simulation a
+ * real send runs. Nothing is reserved or sent (the transaction is signed in
+ * memory only so the RPC can simulate it, then discarded).
+ */
+export async function dryRunSendUsdc({ to, amount }, r = rpc()) {
+  const units = toUnits(amount);
+  await assertWalletRecipient(to, r);
+  const { value: blockhash } = await withTimeout(r.getLatestBlockhash({ commitment: "confirmed" }).send());
+  const { wire } = await buildUsdcTransfer({ secret: solanaSecret(), to, units, blockhash });
+  const sim = await withTimeout(r.simulateTransaction(wire, { encoding: "base64", commitment: "confirmed" }).send());
+  if (sim.value.err) throw new Error(`simulation failed: ${JSON.stringify(sim.value.err, (_k, v) => (typeof v === "bigint" ? v.toString() : v))}`);
+  return { dry_run: true, chain: "solana", usd: Number(units) / 1e6, to, simulated: true };
+}
+
 /** Send USDC on Solana. Throws Refused when the limits say no; nothing is signed then. */
 export async function sendUsdc({ to, amount }, r = rpc()) {
   const units = toUnits(amount);

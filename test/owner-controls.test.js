@@ -235,6 +235,26 @@ test("status rounds money and lists one row per spend", async () => {
   assert.equal(rows.find((e) => e.id === a.id).status, "confirmed");
 });
 
+test("pay --dry-run runs the check and pays nothing; history and proof show every action with its explorer link", async () => {
+  lastHeaders = null;
+  const d = await run(["pay", webUrl, "--dry-run", "--json"]);
+  assert.equal(d.code, 0);
+  assert.equal(JSON.parse(d.stdout).dry_run, true);
+  assert.equal(lastHeaders, null, "a dry run never contacts the resource");
+  const x = record({ status: "submitted", kind: "x402", chain: "base", usd: 0.001, to: DEAD, url: "https://example.com/r" });
+  record({ id: x.id, status: "confirmed", tx: "0x" + "ab".repeat(32) });
+  record({ kind: "register", status: "registered", chain: "base", usd: 0, agent_id: "4242", tx: "0x" + "cd".repeat(32) });
+  const h = JSON.parse((await run(["history", "--since", "24h", "--json"])).stdout);
+  const paid = h.actions.find((a) => a.id === x.id);
+  assert.equal(paid.status, "confirmed");
+  assert.equal(paid.explorer, `https://basescan.org/tx/0x${"ab".repeat(32)}`);
+  assert.equal((await run(["history", "--since", "1y"])).code, 2);
+  const p = await run(["proof"]);
+  assert.match(p.stdout, /ERC-8004 agent: 4242/);
+  assert.match(p.stdout, new RegExp(`basescan.org/tx/0x${"ab".repeat(32)}`));
+  assert.match(p.stdout, /Check it yourself/);
+});
+
 test("the ERC-8004 card does not claim x402 acceptance unless asked, and declares services", () => {
   const card = (u) => JSON.parse(Buffer.from(u.split(",")[1], "base64").toString());
   assert.equal(card(registrationUri({ name: "a", description: "b" })).x402Support, false);

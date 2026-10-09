@@ -61,6 +61,29 @@ export async function reserve(policy, spend) {
   });
 }
 
+const SPEND_KINDS = ["send", "x402", "swap", "register", "register_sent", "register_uri"];
+
+/**
+ * One row per action (its ledger lines share an id; later lines update it),
+ * oldest first. Every row that reached a chain carries its tx and explorer link,
+ * so the owner (or anyone they show) can check it onchain.
+ */
+export function actions(ledger = read()) {
+  const byId = new Map();
+  for (const e of ledger.rows) {
+    if (!SPEND_KINDS.includes(e.kind) && !(e.id && byId.has(e.id))) continue;
+    const prev = byId.get(e.id) ?? {};
+    byId.set(e.id, { ...prev, ...Object.fromEntries(Object.entries(e).filter(([, v]) => v !== null && v !== undefined)), first_ts: prev.first_ts ?? e.ts });
+  }
+  return [...byId.values()].map((a) => ({ ...a, explorer: explorerFor(a) }));
+}
+
+export function explorerFor(a) {
+  const tx = Array.isArray(a.tx) ? a.tx[0] : a.tx;
+  if (!tx || typeof tx !== "string") return null;
+  return a.chain === "solana" ? `https://solscan.io/tx/${tx}` : `https://basescan.org/tx/${tx}`;
+}
+
 /** Take a reservation back out. Only for spends that provably never went out. */
 export function release(entry, reason, extra = {}) {
   return record({ id: entry.id, status: "failed", reason, ...extra });

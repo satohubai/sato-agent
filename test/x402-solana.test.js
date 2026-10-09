@@ -338,7 +338,7 @@ test("over the per-transaction limit, or the 24 h limit: refused before signing"
   const n = payments.length;
   const calls = rpcCalls.length;
   await assert.rejects(pay(`${origin}/a`, { chain: "solana" }), (e) => e instanceof Refused && e.refusals.some((r) => r.rule === "max_usd_per_tx"));
-  setPolicy({ perTx: "1", perDay: String(spent() + 0.005) });
+  setPolicy({ perTx: "1", perDay: (spent() + 0.005).toFixed(6) });
   await assert.rejects(pay(`${origin}/a`, { chain: "solana" }), (e) => e instanceof Refused && e.refusals.some((r) => r.rule === "max_usd_per_day"));
   assert.equal(payments.length, n);
   assert.equal(rpcCalls.length, calls, "no signing step ran");

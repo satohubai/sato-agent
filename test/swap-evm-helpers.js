@@ -92,17 +92,27 @@ export const transferLog = (token, from, to, value) => ({
  * refuses it), "nonce" (no receipt ever: Pending), or a { status, logs } object.
  * `state.allowance` is read by allowance(), set by a successful approve.
  */
-export function fakeChain({ address, allowance = 0n, receipts = [], balance = 0n, balanceAfter = 0n } = {}) {
-  const state = { allowance, sent: [], hashes: [] };
+/**
+ * `stale`: behaves like a load-balanced public RPC right after a block: reads still return the
+ * allowance from before our approval, and a gas estimate it has to make for the swap reverts with
+ * TRANSFER_FROM_FAILED (seen live on Base, 2026-10-09). Only a request that brings its own nonce
+ * and gas avoids the estimate.
+ */
+export function fakeChain({ address, allowance = 0n, receipts = [], balance = 0n, balanceAfter = 0n, stale = false } = {}) {
+  const state = { allowance, sent: [], hashes: [], staleAllowance: allowance };
   let n = 0;
   const account = { address };
   const wallet = {
     async prepareTransactionRequest(req) {
-      state.sent.push({ to: req.to, data: req.data, value: req.value });
-      return { ...req, nonce: state.sent.length };
+      if (stale && !req.data?.startsWith(APPROVE) && req.gas === undefined) {
+        throw Object.assign(new Error("Execution reverted with reason: TransferHelper: TRANSFER_FROM_FAILED."), { shortMessage: "Execution reverted with reason: TransferHelper: TRANSFER_FROM_FAILED." });
+      }
+      state.sent.push({ to: req.to, data: req.data, value: req.value, nonce: req.nonce, gas: req.gas });
+      return { ...req, nonce: req.nonce ?? state.sent.length };
     },
     async signTransaction(prepared) {
-      return `0x${String(prepared.nonce).padStart(8, "0")}`;
+      // nonce + calldata: two different transactions never share a hash, even on the same nonce
+      return `0x${String(prepared.nonce).padStart(8, "0")}${keccak256(prepared.data ?? "0x").slice(2)}`;
     },
   };
   const pub = {
@@ -121,7 +131,7 @@ export function fakeChain({ address, allowance = 0n, receipts = [], balance = 0n
       return { transactionHash: hash, status, logs: spec.logs ?? [], blockNumber: 100n, gasUsed: 100_000n, effectiveGasPrice: 1_000_000n, l1Fee: 0n };
     },
     async readContract() {
-      return state.allowance;
+      return stale ? state.staleAllowance : state.allowance;
     },
     async getBalance({ blockNumber }) {
       return blockNumber === 100n ? balanceAfter : balance;

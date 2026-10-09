@@ -74,10 +74,20 @@ const DEFINITE_REJECTION = /insufficient funds|nonce too low|nonce has already b
  * refused it, Pending when the outcome is unknown (kept counted), and Rejected
  * when another transaction took the nonce (ours can then never land).
  */
-export async function signAndSend(c, { to, data, value = 0n, gas }, onSigned, { counted = true } = {}) {
-  const { signed, hash } = await withLock(
+export async function signAndSend(c, { to, data, value = 0n, gas, nonce }, onSigned, { counted = true } = {}) {
+  const { signed, hash, sentNonce } = await withLock(
     async () => {
-      const prepared = await c.wallet.prepareTransactionRequest({ account: c.account, to, data, value: BigInt(value), ...(gas ? { gas: BigInt(gas) } : {}), chain: base });
+      // `nonce` (and `gas`) can be given when the caller already knows them: right after
+      // a transaction lands, a public RPC can still answer from a node that has not seen it.
+      const prepared = await c.wallet.prepareTransactionRequest({
+        account: c.account,
+        to,
+        data,
+        value: BigInt(value),
+        ...(gas ? { gas: BigInt(gas) } : {}),
+        ...(nonce !== undefined ? { nonce: Number(nonce) } : {}),
+        chain: base,
+      });
       const signedTx = await c.wallet.signTransaction(prepared);
       const h = keccak256(signedTx);
       onSigned?.(h);
@@ -89,7 +99,7 @@ export async function signAndSend(c, { to, data, value = 0n, gas }, onSigned, { 
         if (DEFINITE_REJECTION.test(msg) && !/already known/i.test(msg)) throw new Rejected(`the node refused ${h}: ${err.shortMessage || err.message}`);
         throw new Pending(`broadcast of ${h} reported an error (${err.shortMessage || err.message}).`, { tx: h, explorer: explorer(h), counted });
       }
-      return { signed: signedTx, hash: h };
+      return { signed: signedTx, hash: h, sentNonce: prepared.nonce };
     },
     { name: "base-nonce", waitMs: 60_000 },
   );
@@ -103,7 +113,8 @@ export async function signAndSend(c, { to, data, value = 0n, gas }, onSigned, { 
     throw new Rejected(`${hash} was replaced by ${receipt.transactionHash} (its nonce was used by another transaction); ${hash} itself never landed`);
   }
   void signed;
-  return receipt;
+  // The nonce this transaction used, so a follow-up can take the next one without asking the RPC.
+  return Object.assign(receipt, { sentNonce });
 }
 
 /** Send USDC on Base. Throws Refused when the limits say no; nothing is signed then. */

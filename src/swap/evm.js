@@ -127,6 +127,18 @@ const KYBER_ALLOWED_FLAGS = 0x80n | 0x200n;
 /** Gas limits for the kit's own simulation: generous for an exact approval and a KyberSwap route. */
 const SIM_GAS_APPROVE = 100_000n;
 const SIM_GAS_SWAP = 2_000_000n;
+/** Gas for an approve(router, 0) sent right after our own transactions (no estimate from a possibly stale node). */
+const RESET_GAS = 100_000n;
+
+/** The swap's gas limit from our own simulation: what it used, plus half again and a fixed margin, within the simulation's cap. */
+export function swapGasLimit(plan) {
+  const used = plan?.simulation?.gas_used;
+  const last = Array.isArray(used) && used.length ? used[used.length - 1] : null;
+  const g = last !== null && /^\d+$/.test(String(last)) ? BigInt(last) : 0n;
+  if (g <= 0n) return SIM_GAS_SWAP;
+  const limit = (g * 3n) / 2n + 50_000n;
+  return limit > SIM_GAS_SWAP ? SIM_GAS_SWAP : limit;
+}
 
 /** How long Sato's signature, and a verified plan, stay usable. Prices move; the plan is rebuilt after this. */
 export const MAX_AGE_MS = 120_000;
@@ -813,17 +825,29 @@ async function executeLocked(plan, deps) {
 
   let approveTx = null;
   let approvedHere = false;
+  // After our approval lands, the transactions that follow it take the next nonces we already
+  // know. A public RPC is load-balanced: right after a block it can answer from a node that has
+  // not seen the approval yet (nonce, allowance and gas estimates all stale). Seen live 2026-10-09:
+  // the swap's gas estimate reverted with TRANSFER_FROM_FAILED and the swap was never sent.
+  let nextNonce;
   const reader = (token = plan.token_in.address) => readAllowance({ token, owner: plan.taker, spender: KYBER_ROUTER_BASE, deps, getClient: () => c });
 
-  /** Put an allowance WE granted back to 0. Never throws: the ledger row says what happened. */
-  const resetAllowance = async () => {
+  /**
+   * Put an allowance WE granted back to 0. Never throws: the ledger row says what happened.
+   * `force`: the swap did not use it, so it is reset without reading it first (a stale read
+   * says 0 and would leave the approval open).
+   */
+  const resetAllowance = async ({ force = false } = {}) => {
     let left = null;
     try {
-      left = await reader();
-      if (left === 0n) return { state: "none_left" };
+      if (force) left = plan.amount_in; // what we granted; a swap that failed or never went out pulled nothing
+      else {
+        left = await reader();
+        if (left === 0n) return { state: "none_left" };
+      }
       const r = await signAndSend(
         c,
-        { to: plan.token_in.address, data: approveData(0n) },
+        { to: plan.token_in.address, data: approveData(0n), ...(nextNonce !== undefined ? { nonce: nextNonce, gas: RESET_GAS } : {}) },
         (hash) => record({ id: entry.id, allowance: "reset_signed", allowance_tx: hash, allowance_spender: KYBER_ROUTER_BASE }),
         { counted: false },
       );
@@ -867,6 +891,7 @@ async function executeLocked(plan, deps) {
       throw new Error(`the approval reverted: ${explorer(r.transactionHash)}`);
     }
     approvedHere = true;
+    if (Number.isInteger(r.sentNonce)) nextNonce = r.sentNonce + 1;
     record({ id: entry.id, status: "approved", step: "approve", approve_tx: r.transactionHash });
   }
 
@@ -876,20 +901,24 @@ async function executeLocked(plan, deps) {
   if (ageNow - plan.verified_at_ms > maxAge) {
     release(entry, "plan expired before the swap was signed", { plan_verified_at: plan.verified_at });
     const expired = new Refused([refusal("plan_expired", "the checked plan became more than two minutes old while the approval was going through, so the swap was not signed; plan it again", "120s", plan.verified_at)]);
-    throw approvedHere ? withNote(expired, await resetAllowance()) : expired;
+    throw approvedHere ? withNote(expired, await resetAllowance({ force: true })) : expired;
   }
+  // Right after our own approval, the swap takes the next nonce and the gas our simulation measured,
+  // so nothing depends on a node that may not have seen the approval yet.
+  const afterApproval = nextNonce !== undefined ? { nonce: nextNonce, gas: swapGasLimit(plan) } : {};
   let receipt;
   try {
-    receipt = await signAndSend(c, { to: plan.tx.to, data: plan.tx.data, value: plan.tx.value }, (hash) => record({ id: entry.id, status: "signed", step: "swap", tx: hash }));
+    receipt = await signAndSend(c, { to: plan.tx.to, data: plan.tx.data, value: plan.tx.value, ...afterApproval }, (hash) => record({ id: entry.id, status: "signed", step: "swap", tx: hash }));
   } catch (err) {
     if (err instanceof Pending) throw err; // may still land: stays counted, allowance untouched
     release(entry, err instanceof Rejected ? "rejected; never landed" : "failed before broadcast", { error: errText(err) });
-    throw approvedHere ? withNote(err, await resetAllowance()) : err;
+    throw approvedHere ? withNote(err, await resetAllowance({ force: true })) : err;
   }
+  if (nextNonce !== undefined) nextNonce += 1; // the swap used it, whatever its outcome
   if (receipt.status !== "success") {
     release(entry, "reverted onchain", { tx: receipt.transactionHash });
     const err = new Error(`transaction reverted: ${explorer(receipt.transactionHash)}`);
-    throw approvedHere ? withNote(err, await resetAllowance()) : err;
+    throw approvedHere ? withNote(err, await resetAllowance({ force: true })) : err;
   }
 
   // --- the receipt: what actually arrived

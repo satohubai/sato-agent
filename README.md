@@ -24,7 +24,7 @@ Each Bot keeps its own wallet, limits and ledger, even on the same Grok Bot comp
 ## Quickstart (any machine)
 
 ```sh
-npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.2.2
+npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.2.3
 alias sato-agent=~/.sato-agent-cli/node_modules/.bin/sato-agent
 # npm may print "ERESOLVE overriding peer dependency" three times (the Solana x402
 # library's helpers ask for an older @solana/kit). That is expected; the tests run on these versions.

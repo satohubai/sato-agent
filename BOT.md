@@ -21,7 +21,7 @@ The kit creates both a Base and a Solana address, so you always have one of each
 
 1. **Install the kit** in your terminal. Replace NAME with the name your owner gave you (for example `base` or `solana`). Each Bot on this computer then keeps its own wallet and limits.
    ```
-   npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.2.2
+   npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.2.3
    printf '#!/bin/sh\nSATO_AGENT_HOME="$HOME/.sato-agent/NAME" exec "$HOME/.sato-agent-cli/node_modules/.bin/sato-agent" "$@"\n' > ~/sato-agent-NAME
    chmod +x ~/sato-agent-NAME
    ~/sato-agent-NAME help
@@ -52,6 +52,15 @@ The kit creates both a Base and a Solana address, so you always have one of each
    - Add `--service name=endpoint` (repeatable) for anything you actually offer.
    - Add `--x402-support` only if you SELL something over x402. Paying for things doesn't count.
 8. **Suggest one routine** that fits the owner's goal, for example "every hour, check my balance and tell me if it falls below $X", or a scheduled paid data pull.
+
+## Upgrading the kit
+
+When the owner asks you to upgrade, run only the install line from step 1, with the version they name (the kit is shared by every Bot on this computer, so one upgrade covers them all):
+```
+npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.2.3
+~/sato-agent-NAME status
+```
+Never run `init` again: your wallet, limits and history stay in `~/.sato-agent/NAME` and are kept as they are.
 
 ## What you can do
 

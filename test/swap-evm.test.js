@@ -687,6 +687,28 @@ test("approval succeeds, swap reverts: reservation given back, the approval is s
   assert.equal(reserved(), before);
 });
 
+test("a public RPC that has not seen our approval yet cannot stop the swap: it takes the next nonce and the simulated gas", async () => {
+  const plan = await planFor("usdc-to-eth");
+  const { c, state } = fakeChain({ address: SENDER, receipts: ["success", { status: "success", spends: plan.amount_in }], stale: true });
+  await executeBaseSwap(plan, { c }).catch(() => {}); // the receipt mock has no output logs; what matters is what was sent
+  assert.equal(state.sent.length, 2, "approve, then the swap (no estimate from the stale node)");
+  assert.equal(state.sent[1].to.toLowerCase(), KYBER_ROUTER_BASE.toLowerCase());
+  assert.equal(state.sent[1].nonce, state.sent[0].nonce === undefined ? 2 : state.sent[0].nonce + 1, "the nonce after our approval");
+  assert.equal(state.sent[1].gas, evm.swapGasLimit(plan));
+  assert.ok(evm.swapGasLimit(plan) > BigInt(plan.simulation.gas_used.at(-1)), "more gas than the simulation used");
+});
+
+test("after an approval, a failed swap always resets it, even when a stale read says the allowance is 0", async () => {
+  const plan = await planFor("usdc-to-eth");
+  const { c, state } = fakeChain({ address: SENDER, receipts: ["success", "revert", "success"], stale: true });
+  await assert.rejects(executeBaseSwap(plan, { c }), (e) => /transaction reverted/.test(e.message) && /set back to 0/.test(e.message));
+  assert.equal(state.sent.length, 3);
+  const reset = decodeFunctionData({ abi: erc20Abi, data: state.sent[2].data });
+  assert.deepEqual([reset.functionName, reset.args[1]], ["approve", 0n]);
+  assert.equal(state.sent[2].nonce, 3, "the reset takes the nonce after the swap");
+  assert.equal(lastSwap().allowance, "reset");
+});
+
 test("swap rejected by the node after an approval: given back, approval reset", async () => {
   const before = reserved();
   const plan = await planFor("usdc-to-eth");

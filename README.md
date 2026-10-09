@@ -14,10 +14,10 @@ It installs the kit, creates its wallet, asks you for your limits, and asks you 
 
 Two Bots, one kit:
 
-| Bot | Message | Today (v0.1) |
+| Bot | Message | Today |
 |---|---|---|
 | **Sato Base Agent** | `NAME = base, CHAIN = base` | x402 payments, USDC sends, ERC-8004 identity, Sato Hub checks |
-| **Sato Solana Agent** | `NAME = solana, CHAIN = solana` | USDC sends (wallet recipients only), Sato Hub checks. x402 on Solana and swaps are next. |
+| **Sato Solana Agent** | `NAME = solana, CHAIN = solana` | x402 payments in USDC on Solana (`pay --chain solana`), USDC sends (wallet recipients only), Sato Hub checks. Swaps are next. |
 
 Each Bot keeps its own wallet, limits and ledger, even on the same Grok Bot computer.
 
@@ -31,7 +31,8 @@ sato-agent init                                     # this agent's own wallet
 sato-agent policy set --chains base,solana --per-tx 25 --per-day 100   # your choices; "none" = no limit
 sato-agent policy set --approval ask --check-gate no                   # optional: ask first; let a `no` check stop a spend
 sato-agent balance
-sato-agent pay https://some-x402-api.example/data   # x402, USDC on Base
+sato-agent pay https://some-x402-api.example/data --chain base     # x402, USDC on Base
+sato-agent pay https://some-x402-api.example/data --chain solana   # x402, USDC on Solana
 sato-agent send --chain solana --to <address> --amount 5
 sato-agent register --name "My agent" --description "What it does"
 ```
@@ -44,7 +45,7 @@ sato-agent register --name "My agent" --description "What it does"
 | `address` / `balance` | Address and USDC + gas balance for this agent's chain(s) |
 | `policy set --chains <base\|solana\|base,solana> --per-tx <usd\|none> --per-day <usd\|none>` | The owner's choices (per day = rolling 24 hours). **There are no defaults:** nothing is spent until chains and both limits are set. |
 | `policy set [--allow <addrs>\|any] [--approval ask\|auto] [--check-gate off\|no\|caution] [--on-check-unavailable allow\|refuse]` | Optional choices: a recipient allowlist; ask the owner before every spend; let a Sato Hub `no` (or `caution`) stop a spend; what to do when the check can't run. **Anything that loosens a choice is logged as a raise.** |
-| `pay <url> [--method --data --header]` | Pays an x402 resource in USDC on Base, after Sato Hub reads its payment terms. A JSON `--data` gets a JSON content-type |
+| `pay <url> [--chain base\|solana] [--method --data --header]` | Pays an x402 resource in USDC on Base or on Solana mainnet, after Sato Hub reads its payment terms. Only USDC on that chain is paid. The chain is the owner's: an agent set to one chain pays there (`--chain` may be left out), an agent set to both must say `--chain`, and a `--chain` the owner did not choose is refused before anything is reserved. A JSON `--data` gets a JSON content-type |
 | `send --chain base\|solana --to <addr> --amount <usdc>` | Sends USDC, after Sato Hub checks the recipient |
 | `register --name --description [--image] [--service name=endpoint] [--x402-support]` | Registers in the ERC-8004 IdentityRegistry on Base (`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`), with the registration file stored onchain |
 | `check "<install command>" [--cluster mainnet-beta\|devnet] [--skip-check]` | First, Solana build receipts for the npm packages in the command (see below). Then Sato Check: does an install take a key, does the key leave, can it move funds on its own |
@@ -135,6 +136,7 @@ Every limit change is written to the ledger and shown in `status`. `pay` frames 
 - x402 payments are checked twice: only a payment option inside the limits can be chosen, and the limits are checked again just before signing.
 - Payment authorizations must expire within 5 minutes.
 - A signed payment always counts, even if the server rejects it, because the server could still settle it.
+- On Solana, the agent reads the transaction it just signed before sending it. It sends only one USDC transfer of the reserved amount from its own USDC account to the recipient's, with the fee payer the server named. Anything else is not sent, stays counted, and the command exits with code 4. The agent pays no SOL for an x402 payment: the server's facilitator pays the fee. A Solana payment is valid for about a minute (the life of its blockhash).
 - Every transaction is simulated before it is sent, and its hash is recorded before it is broadcast. Transactions from one wallet are signed one at a time, so two commands never reuse a nonce.
 - If the outcome is unclear, the spend stays counted, and the command exits with code 4: **do not retry**.
 - Solana sends to token accounts or other non-wallet addresses are refused.

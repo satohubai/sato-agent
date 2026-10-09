@@ -14,7 +14,8 @@ export class Refused extends Error {
 export class Pending extends Error {
   constructor(message, details = {}) {
     const counted = details.counted === false ? "" : " It stays counted against the limits.";
-    super(`${message}\nIt may still land.${counted} Do NOT retry; check ${details.explorer ?? "the explorer"} first.`);
+    const land = details.sent === false ? "" : "\nIt may still land."; // sent:false = signed but never sent
+    super(`${message}${land}${counted} Do NOT retry; check ${details.explorer ?? "the explorer"} first.`);
     this.details = details;
   }
 }

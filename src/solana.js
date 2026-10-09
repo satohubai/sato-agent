@@ -37,7 +37,7 @@ import { loadWallet, solanaSecret } from "./wallet.js";
 import { USER_AGENT } from "./version.js";
 
 export const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PZnBCPiW4JQ7Gr";
+const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"; // the real Token-2022 program id
 const LAMPORTS = 1_000_000_000;
 const explorer = (sig) => `https://solscan.io/tx/${sig}`;
 

@@ -99,7 +99,8 @@ export const swapsEnabled = (p) => Boolean(p) && Number.isInteger(p.max_slippage
 function parseBps(raw) {
   if (raw === undefined) return undefined;
   if (raw === "off") return "off";
-  if (typeof raw !== "string" || !/^\d+$/.test(raw) || Number(raw) < 1 || Number(raw) > 1000) throw new Error("--swap-slippage-bps must be a whole number from 1 to 1000 (basis points; 50 = 0.5%), or \"off\" to turn swaps off");
+  // 500 bps (5%) is the most either chain's swap path accepts.
+  if (typeof raw !== "string" || !/^\d+$/.test(raw) || Number(raw) < 1 || Number(raw) > 500) throw new Error("--swap-slippage-bps must be a whole number from 1 to 500 (basis points; 50 = 0.5%), or \"off\" to turn swaps off");
   return Number(raw);
 }
 
@@ -209,7 +210,7 @@ export function evaluate(policy, { usd, to, chain, kind, slippage_bps }, spent) 
   }
   if (kind === "swap") {
     if (!swapsEnabled(policy)) {
-      out.push({ rule: "swaps_not_enabled", limit: null, observed: null, message: "swaps are off: the owner turns them on with `sato-agent policy set --swap-slippage-bps <1-1000> --max-trades-per-day <n|none>`" });
+      out.push({ rule: "swaps_not_enabled", limit: null, observed: null, message: "swaps are off: the owner turns them on with `sato-agent policy set --swap-slippage-bps <1-500> --max-trades-per-day <n|none>`" });
     } else {
       if (slippage_bps !== undefined && slippage_bps > policy.max_slippage_bps) {
         out.push({ rule: "max_slippage_bps", limit: policy.max_slippage_bps, observed: slippage_bps, message: `slippage of ${slippage_bps} bps is over the owner's cap of ${policy.max_slippage_bps} bps` });

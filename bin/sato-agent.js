@@ -30,7 +30,7 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
   policy set --chains <base|solana|base,solana> --per-tx <usd|none> --per-day <usd|none>
              [--allow <addr,addr> | --allow any] [--check-gate off|no|caution]
              [--on-check-unavailable allow|refuse] [--approval auto|ask]
-             [--swap-slippage-bps <1-1000>|off --max-trades-per-day <n|none>]
+             [--swap-slippage-bps <1-500>|off --max-trades-per-day <n|none>]
                                          the owner's choices; nothing is spent until chains and both limits are set
   swap --chain base|solana --from <USDC|ETH|WETH|SOL> --to <...> --amount <n> [--slippage-bps <n>] [--dry-run]
                                          swap with USDC on one side; off until the owner sets swap caps; checked against an independent price
@@ -334,7 +334,8 @@ async function main() {
       }
       say(lines.join("\n"));
       const r = await prepared.execute();
-      return out(`Swapped. ${r.explorer}${r.received ? `\nReceived ${r.received.amount} ${r.received.asset}.` : r.amount_out ? `\nReceived ${r.amount_out} base units of ${d.buy.asset}.` : ""}${r.warnings?.length ? `\nNote: ${r.warnings.join("; ")}` : ""}`, { ...r, plan: d });
+      const rebuilt = r.rebuilt ? `\nNote: ${r.rebuilt.note}. New quote: about ${r.rebuilt.quoted} ${d.buy.asset}, at least ${r.rebuilt.minimum}.` : "";
+      return out(`Swapped. ${r.explorer}${rebuilt}${r.received ? `\nReceived ${r.received.amount} ${r.received.asset}.` : r.amount_out ? `\nReceived ${r.amount_out} base units of ${d.buy.asset}.` : ""}${r.warnings?.length ? `\nNote: ${r.warnings.join("; ")}` : ""}`, { ...r, plan: d });
     }
     case "register": {
       const services = (flags.service ?? []).map((s) => {

@@ -28,6 +28,7 @@ import * as sol from "./solana.js";
 import { USDC_MINT } from "../solana.js";
 
 const refuse = (rule, message, limit = null, observed = null) => new Refused([{ rule, limit, observed, message }]);
+const DISCLOSURE_MAX_AGE_MS = 120_000;
 
 const ASSETS = {
   base: { USDC: { decimals: 6 }, ETH: { decimals: 18, oracle: "ETH" }, WETH: { decimals: 18, oracle: "ETH" } },
@@ -95,6 +96,16 @@ function checkAgainstOracle(sized, implied) {
   return q.deviation_pct;
 }
 
+/** A new Chainlink reading for a rebuilt plan; no price, no swap. */
+async function freshOracle(sized, deps) {
+  try {
+    return { ...sized, oracle: await (deps.oraclePrice ?? oraclePrice)(sized.volatile) };
+  } catch (err) {
+    if (err instanceof PriceUnavailable) throw refuse("price_unavailable", `no independent ${sized.volatile} price right now (${err.message}); the kit does not swap without one`);
+    throw err;
+  }
+}
+
 /** Sato Hub's signed fee disclosure for a Solana swap (Sato quotes; the kit builds through Jupiter). */
 async function satoSolanaDisclosure(sized, deps) {
   const a = addresses();
@@ -115,10 +126,19 @@ async function satoSolanaDisclosure(sized, deps) {
   const body = r.structured;
   if (r.isError || !body) throw refuse("sato_quote_unavailable", "Sato Hub did not return a quote for this swap; nothing was signed");
   try {
-    await (deps.verifySignature ?? verifyHubSignature)(body);
+    // Same two-minute window as Base: a disclosure is for this swap, now.
+    await (deps.verifySignature ?? verifyHubSignature)(body, { maxAgeMs: DISCLOSURE_MAX_AGE_MS });
   } catch (err) {
     throw refuse("signature_unverified", `Sato Hub's quote could not be shown to come from Sato Hub (${err.message}); nothing was signed`);
   }
+  // The signed answer must be about THIS swap: same chain, pair and amount.
+  const mismatch = [
+    String(body.chain ?? "").toLowerCase() !== "solana" && "chain",
+    body.token_in !== mint[sized.from] && "token_in",
+    body.token_out !== mint[sized.to] && "token_out",
+    String(body.amount_in) !== amountIn && "amount_in",
+  ].filter(Boolean);
+  if (mismatch.length) throw refuse("response_mismatch", `Sato Hub's signed quote is about a different swap (${mismatch.join(", ")} differ); nothing was signed`);
   if (body.venue !== "jupiter-aggregator" && body.venue !== "jupiter") throw refuse("venue_unexpected", `Sato Hub chose ${body.venue ?? "no venue"}; this kit swaps on Solana through Jupiter only`);
   if (!Number.isInteger(body.sato_fee_bps)) throw refuse("fee_disclosure_missing", "Sato Hub's quote does not state its fee");
   return { feeBps: body.sato_fee_bps, disclosure: body.disclosure ?? null, route_id: body.route_id ?? null, receipt_url: body.receipt_url ?? null };
@@ -170,11 +190,15 @@ export async function prepareSwap(req, deps = {}) {
         return await (deps.executeSolanaSwap ?? sol.executeSolanaSwap)(plan, { usdNotional: sized.usd, ...(deps.solDeps ?? {}) });
       } catch (err) {
         if (!(err instanceof sol.PlanStale)) throw err;
+        // Rebuilt from scratch and held to every check again, with a fresh independent price.
         plan = await planOnce();
-        const v = await (deps.verifySolanaSwapPlan ?? sol.verifySolanaSwapPlan)(plan, { agent: plan.agent, from: plan.from, to: plan.to, amount_in: plan.amount_in }, deps.solDeps ?? {});
-        checkAgainstOracle(sized, impliedPrice(sized, sized.amountNum, Number(plan.quote.out_amount) / 10 ** ASSETS.solana[sized.to].decimals));
-        void v;
-        return (deps.executeSolanaSwap ?? sol.executeSolanaSwap)(plan, { usdNotional: sized.usd, ...(deps.solDeps ?? {}) });
+        await (deps.verifySolanaSwapPlan ?? sol.verifySolanaSwapPlan)(plan, { agent: plan.agent, from: plan.from, to: plan.to, amount_in: plan.amount_in }, deps.solDeps ?? {});
+        const fresh = await freshOracle(sized, deps);
+        const decimals = ASSETS.solana[sized.to].decimals;
+        checkAgainstOracle(fresh, impliedPrice(fresh, sized.amountNum, Number(plan.quote.out_amount) / 10 ** decimals));
+        const result = await (deps.executeSolanaSwap ?? sol.executeSolanaSwap)(plan, { usdNotional: sized.usd, ...(deps.solDeps ?? {}) });
+        // The owner saw the first quote; say plainly that this one replaced it.
+        return { ...result, rebuilt: { quoted: String(Number(plan.quote.out_amount) / 10 ** decimals), minimum: String(Number(plan.quote.min_out) / 10 ** decimals), note: "the first quote expired before signing; the kit rebuilt it and checked it again" } };
       }
     },
   };

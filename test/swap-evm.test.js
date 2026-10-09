@@ -13,13 +13,15 @@ const evm = await import("../src/swap/evm.js");
 const { Refused, Pending } = await import("../src/errors.js");
 const { setPolicy } = await import("../src/policy.js");
 const { actions, entries, spentLast24h } = await import("../src/ledger.js");
-const { decodeFunctionData, erc20Abi } = await import("viem");
+const { decodeFunctionData, encodeFunctionData, erc20Abi } = await import("viem");
 
 const {
   KYBER_ROUTER_BASE, NATIVE_PLACEHOLDER, SATO_FEE_RECIPIENT, TOKENS, WETH_BASE,
-  decimalToUnits, parseIntent, planBaseSwap, verifyBaseSwapPlan, executeBaseSwap, dryRunBaseSwap, summarizeBaseSwapPlan, assetDeltas,
+  decimalToUnits, parseIntent, planBaseSwap, verifyBaseSwapPlan, executeBaseSwap: executeBaseSwapRaw, dryRunBaseSwap, summarizeBaseSwapPlan, assetDeltas,
 } = evm;
 const USDC = TOKENS.USDC.address;
+// executeBaseSwap requires the caller's independent USD figure; the tests give it the plan's own unless they say otherwise.
+const executeBaseSwap = (plan, deps = {}) => executeBaseSwapRaw(plan, { usdNotional: plan?.usd, ...deps });
 
 const rules = async (p) => {
   try {
@@ -253,7 +255,9 @@ test("refuses without a pinned, readable fee disclosure", async () => {
   assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.disclosure = "  ") })), ["fee_disclosure_missing"]);
   assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.sato_fee_recipient = null) })), ["fee_disclosure_missing"]);
   assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.sato_fee_recipient = "0x000000000000000000000000000000000000dEaD") })), ["fee_recipient_not_pinned"]);
-  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.sato_fee_bps = 100) })), ["fee_over_ceiling"]);
+  // (the transaction still takes 15 bps, so it also differs from the disclosed rate)
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.sato_fee_bps = 100) })), ["fee_over_ceiling", "fee_not_as_disclosed"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.sato_fee_bps = 7.5) })), ["fee_disclosure_missing"]);
 });
 
 test("refuses a response that is about something else, or that carries no transaction", async () => {
@@ -295,7 +299,8 @@ test("refuses when the simulated balance changes are off", async () => {
   const toMe = (l) => l.address === NATIVE_PLACEHOLDER.toLowerCase() && l.topics[2] === topicAddr(SENDER);
   assert.deepEqual(await rules(verifyCase("usdc-to-eth", { editSim: (s) => bump(s.result[0].calls, toMe, (v) => v / 2n) })), ["output_below_min_out"]);
   // a quote that promised more than the trace shows
-  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.amount_out = (BigInt(r.amount_out) * 2n).toString()) })), ["output_below_min_out"]);
+  // (the transaction's own minimum is then far below the minimum the quote implies, which is refused before the trace is read)
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.amount_out = (BigInt(r.amount_out) * 2n).toString()) })), ["min_out_not_enforced"]);
   // a different token leaves the wallet in the same transaction
   const dai = "0x50c5725949a6f0c72e6c4a641f24049a917db0cb";
   assert.deepEqual(await rules(verifyCase("usdc-to-eth", { editSim: (s) => s.result[0].calls.at(-1).logs.push(transferLog(dai, SENDER, KYBER_ROUTER_BASE, 5n)) })), ["other_token_leaves"]);
@@ -311,11 +316,222 @@ test("refuses when the simulated balance changes are off", async () => {
   assert.deepEqual(await rules(verifyCase("usdc-to-eth", { editSim: (s) => bump(s.result[0].calls, toFee, (v) => v * 3n) })), ["outflow_exceeds_amount_in", "fee_exceeds_disclosed"]);
 });
 
+// ------------------------------------------------------------------ verify: the router calldata, field by field
+//
+// The recorded builds are REAL KyberSwap route/build answers (swap(SwapExecutionParams), selector 0xe21fd0e9). Each
+// test decodes the real calldata, changes ONE field, re-encodes it with the router ABI, and expects the one refusal.
+
+const { ROUTER_ABI, FLAGS } = { ROUTER_ABI: evm.KYBER_ROUTER_ABI, FLAGS: evm.KYBER_FLAGS };
+const STRANGER = "0x000000000000000000000000000000000000dEaD";
+const cp = (o) => (Array.isArray(o) ? o.map(cp) : o && typeof o === "object" ? Object.fromEntries(Object.entries(o).map(([k, v]) => [k, cp(v)])) : o);
+
+const decodeBuild = (data) => cp(decodeFunctionData({ abi: ROUTER_ABI, data }).args[0]);
+const encodeBuild = (execution) => encodeFunctionData({ abi: ROUTER_ABI, functionName: "swap", args: [execution] });
+/** An `edit` for verifyCase: change the decoded execution, put the re-encoded bytes back into the response. */
+const tamper = (change) => (r) => {
+  const ex = decodeBuild(r.tx.data);
+  change(ex.desc, ex, r);
+  r.tx.data = encodeBuild(ex);
+};
+
+test("the recorded builds decode with the router ABI and re-encode to the same bytes", () => {
+  for (const name of Object.keys(CASES)) {
+    const { tx } = satoResponse(name);
+    assert.equal(tx.data.slice(0, 10), evm.KYBER_SWAP_SELECTOR);
+    assert.equal(encodeBuild(decodeBuild(tx.data)).toLowerCase(), tx.data.toLowerCase(), name);
+    const d = decodeBuild(tx.data).desc;
+    assert.equal(d.dstReceiver, SENDER);
+    assert.deepEqual(d.feeReceivers, [SATO_FEE_RECIPIENT]);
+    assert.deepEqual(d.feeAmounts, [15n]);
+    assert.equal(d.permit, "0x");
+    assert.equal(d.flags, 0x280n, "IN_BPS (0x80) plus the 0x200 bit Kyber sets on every build");
+  }
+});
+
+for (const name of Object.keys(CASES)) {
+  test(`an honest build passes the calldata checks, and the minimum in the transaction is read: ${name}`, async () => {
+    const { plan } = await verifyCase(name);
+    assert.ok(plan.min_out_in_transaction >= plan.min_out - 1n && plan.min_out_in_transaction <= plan.min_out, `${plan.min_out_in_transaction} vs ${plan.min_out}`);
+    const s = summarizeBaseSwapPlan(plan);
+    assert.ok(s.buy.minimum_in_transaction);
+  });
+}
+
+test("minReturnAmount of 1 (the reviewed attack) is refused; Kyber's own rounding (one unit under) is accepted, two under is not", async () => {
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => (d.minReturnAmount = 1n)) })), ["min_out_not_enforced"]);
+  assert.deepEqual(await rules(verifyCase("eth-to-usdc", { edit: tamper((d) => (d.minReturnAmount = 1n)) })), ["min_out_not_enforced"]);
+  const quoted = BigInt(satoResponse("usdc-to-eth").amount_out);
+  const minOut = (quoted * 9950n) / 10_000n;
+  assert.equal(evm.requiredCalldataMin(minOut), minOut - 1n);
+  await verifyCase("usdc-to-eth", { edit: tamper((d) => (d.minReturnAmount = minOut - 1n)) });
+  await verifyCase("usdc-to-eth", { edit: tamper((d) => (d.minReturnAmount = minOut + 1000n)) }); // stricter than the owner asked: fine
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => (d.minReturnAmount = minOut - 2n)) })), ["min_out_not_enforced"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => (d.minReturnAmount = 0n)) })), ["min_out_not_enforced"]);
+});
+
+test("the minimum is read against min_out for every slippage the owner can set, including Kyber's own floor of the re-quote", () => {
+  // Kyber floors (route quote - 1) * (10000 - s) / 10000; the kit's min_out floors quote * (10000 - s) / 10000.
+  for (const s of [1, 5, 50, 100, 300, 500, 5000]) {
+    for (const quote of [1_000_000n, 399_851_666_998_140n, 40_145_191_458_367_072n, 24_841_409n]) {
+      const kit = (quote * BigInt(10_000 - s)) / 10_000n;
+      const kyber = ((quote - 1n) * BigInt(10_000 - s)) / 10_000n;
+      assert.ok(kyber >= evm.requiredCalldataMin(kit), `s=${s} quote=${quote}: Kyber ${kyber} vs required ${evm.requiredCalldataMin(kit)}`);
+    }
+  }
+});
+
+test("the recipient must be the agent's own wallet", async () => {
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => (d.dstReceiver = STRANGER)) })), ["recipient_not_taker"]);
+  assert.deepEqual(await rules(verifyCase("eth-to-usdc", { edit: tamper((d) => (d.dstReceiver = STRANGER)) })), ["recipient_not_taker"]);
+  // the router reads the zero address as "the sender"; the kit still wants the wallet spelled out
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => (d.dstReceiver = "0x0000000000000000000000000000000000000000")) })), ["recipient_not_taker"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => (d.dstReceiver = KYBER_ROUTER_BASE)) })), ["recipient_not_taker"]);
+});
+
+test("the tokens and the amount in the transaction must be the ones asked for", async () => {
+  const dai = "0x50c5725949a6f0c72e6c4a641f24049a917db0cb";
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => (d.srcToken = WETH_BASE)) })), ["calldata_mismatch"]);
+  assert.deepEqual(await rules(verifyCase("eth-to-usdc", { edit: tamper((d) => (d.srcToken = USDC)) })), ["calldata_mismatch"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => (d.dstToken = dai)) })), ["calldata_mismatch"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => (d.dstToken = WETH_BASE)) })), ["calldata_mismatch"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-weth", { edit: tamper((d) => (d.dstToken = NATIVE_PLACEHOLDER)) })), ["calldata_mismatch"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => (d.amount = d.amount + 1n)) })), ["calldata_mismatch"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => (d.amount = d.amount - 1n)) })), ["calldata_mismatch"]);
+  assert.deepEqual(await rules(verifyCase("eth-to-usdc", { edit: tamper((d) => (d.amount = d.amount / 2n)) })), ["calldata_mismatch"]);
+});
+
+test("no token permit rides along", async () => {
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => (d.permit = "0x1234")) })), ["calldata_mismatch"]);
+});
+
+test("the fee in the transaction is exactly the disclosed one: one receiver, the disclosed rate, in bps, from the input", async () => {
+  // an extra fee receiver skimming on top
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => { d.feeReceivers = [SATO_FEE_RECIPIENT, STRANGER]; d.feeAmounts = [15n, 50n]; }) })), ["fee_not_as_disclosed"]);
+  // the stranger first and the Sato address second, with the right rate for Sato: still two receivers
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => { d.feeReceivers = [STRANGER, SATO_FEE_RECIPIENT]; d.feeAmounts = [100n, 15n]; }) })), ["fee_not_as_disclosed"]);
+  // a different single receiver
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => (d.feeReceivers = [STRANGER])) })), ["fee_not_as_disclosed"]);
+  // a different rate (higher and lower)
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => (d.feeAmounts = [16n])) })), ["fee_not_as_disclosed"]);
+  assert.deepEqual(await rules(verifyCase("eth-to-usdc", { edit: tamper((d) => (d.feeAmounts = [14n])) })), ["fee_not_as_disclosed"]);
+  // fee-on-destination set: the fee would come out of the tokens bought
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => (d.flags = d.flags | FLAGS.FEE_ON_DST)) })), ["fee_not_as_disclosed"]);
+  // in-bps cleared: 15 would be read as 15 base units, not 0.15%
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => (d.flags = d.flags & ~FLAGS.FEE_IN_BPS)) })), ["fee_not_as_disclosed"]);
+  // no fee receivers at all while the response discloses 15 bps
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => { d.feeReceivers = []; d.feeAmounts = []; }) })), ["fee_not_as_disclosed"]);
+});
+
+test("a build with no fee passes the fee check only when the response discloses 0 bps", () => {
+  const { tx } = satoResponse("usdc-to-eth");
+  const intent = { ...parseIntent({ ...CASES["usdc-to-eth"], slippageBps: 50 }), taker: SENDER };
+  const minOut = (BigInt(satoResponse("usdc-to-eth").amount_out) * 9950n) / 10_000n;
+  const noFee = encodeBuild((() => { const ex = decodeBuild(tx.data); ex.desc.feeReceivers = []; ex.desc.feeAmounts = []; return ex; })());
+  assert.deepEqual(evm.checkRouterCalldata(noFee, { intent, minOut, feeBps: 0 }).refusals, []);
+  assert.deepEqual(evm.checkRouterCalldata(noFee, { intent, minOut, feeBps: 15 }).refusals.map((r) => r.rule), ["fee_not_as_disclosed"]);
+  // 0 disclosed but the transaction pays a receiver
+  assert.deepEqual(evm.checkRouterCalldata(tx.data, { intent, minOut, feeBps: 0 }).refusals.map((r) => r.rule), ["fee_not_as_disclosed"]);
+});
+
+test("router options that weaken the minimum, or that the kit does not know, are refused", async () => {
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => (d.flags = d.flags | FLAGS.PARTIAL_FILL)) })), ["min_out_not_enforced"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => (d.flags = d.flags | 0x20n)) })), ["calldata_mismatch"]); // simple-swap mode
+  assert.deepEqual(await rules(verifyCase("eth-to-usdc", { edit: tamper((d) => (d.flags = d.flags | 0x02n)) })), ["calldata_mismatch"]); // extra ETH
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => (d.flags = d.flags | 0x1000n)) })), ["calldata_mismatch"]);
+});
+
+test("a function the kit does not decode, or an encoding it cannot be sure of, is refused whole", async () => {
+  const good = satoResponse("usdc-to-eth").tx.data;
+  const swapped = (sel) => (r) => (r.tx.data = sel + good.slice(10));
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: swapped("0xdeadbeef") })), ["calldata_unrecognized"]);
+  // swapGeneric / swapSimpleMode selectors of the same router: real functions, not decoded here
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: swapped("0x59e50fed") })), ["calldata_unrecognized"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: swapped("0x8af033fb") })), ["calldata_unrecognized"]);
+  // the right selector with bytes that do not decode, and with bytes after the standard encoding
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.tx.data = good.slice(0, 200)) })), ["calldata_unrecognized"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.tx.data = `${good}00`) })), ["calldata_unrecognized"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.tx.data = "0xe21fd0e9") })), ["calldata_unrecognized"]);
+  // an address with dirty upper bits would be read differently by the contract: not the standard encoding
+  const dirty = `${good.slice(0, 10)}${good.slice(10).replace(/^(.{64})(.{24})/, "$1" + "ff".repeat(12))}`;
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.tx.data = dirty) })), ["calldata_unrecognized"]);
+});
+
+test("several things wrong at once are all reported", async () => {
+  const got = await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => { d.minReturnAmount = 1n; d.dstReceiver = STRANGER; }) }));
+  assert.deepEqual(got.sort(), ["min_out_not_enforced", "recipient_not_taker"]);
+});
+
+test("the refusal messages are plain words the owner can read", async () => {
+  const e = await verifyCase("usdc-to-eth", { edit: tamper((d) => (d.minReturnAmount = 1n)) }).catch((x) => x);
+  assert.match(e.message, /REFUSED min_out_not_enforced: the transaction itself would accept less ETH than the minimum/);
+  for (const word of ["safe", "secure", "trusted", "guaranteed"]) assert.doesNotMatch(e.message, new RegExp(word, "i"));
+});
+
+test("usdNotional is required to plan and to sign: no fallback to the simulated value", async () => {
+  let asked = 0;
+  const callTool = async () => {
+    asked++;
+    return { text: "", structured: satoResponse("usdc-to-eth"), isError: false };
+  };
+  for (const bad of [undefined, null, 0, -5, NaN, Infinity, "100"]) {
+    await assert.rejects(evm.planAndVerifyBaseSwap({ from: "USDC", to: "ETH", amount: "100", slippageBps: 50 }, { taker: SENDER, callTool, usdNotional: bad }), /usdNotional is required for planning a swap/, String(bad));
+    await assert.rejects(dryRunBaseSwap({ from: "USDC", to: "ETH", amount: "100", slippageBps: 50 }, { taker: SENDER, callTool, usdNotional: bad }), /usdNotional is required/);
+  }
+  assert.equal(asked, 0, "Sato Hub is not asked (that call writes a public record) when the figure is missing");
+  const plan = await planFor("usdc-to-eth");
+  const { c, state } = fakeChain({ address: SENDER });
+  const before = entries().filter((e) => e.kind === "swap").length;
+  for (const bad of [undefined, null, 0, -5, NaN, Infinity, "100"]) {
+    await assert.rejects(executeBaseSwapRaw(plan, { c, usdNotional: bad }), /usdNotional is required for signing a swap/, String(bad));
+  }
+  assert.equal(state.sent.length, 0);
+  assert.equal(entries().filter((e) => e.kind === "swap").length, before, "nothing was reserved");
+});
+
+// ------------------------------------------------------------------ verify: the simulation looks like the real chain
+
+test("the simulation carries the chain's base fee and real fees, so a zero base fee cannot give it away", async () => {
+  const base = 5_000_000n;
+  const params = evm.buildSimulationRequest({ taker: SENDER, calls: [{ to: USDC, data: "0x12", value: 0n }, { to: KYBER_ROUTER_BASE, data: "0x34", value: 255n }], baseFeePerGas: base, maxPriorityFeePerGas: 1_000_000n });
+  const block = params[0].blockStateCalls[0];
+  assert.deepEqual(block.blockOverrides, { baseFeePerGas: "0x4c4b40" });
+  for (const call of block.calls) {
+    assert.ok(BigInt(call.maxFeePerGas) >= base, "maxFeePerGas covers the base fee");
+    assert.equal(call.maxPriorityFeePerGas, "0xf4240");
+  }
+  assert.equal(params[0].validation, false);
+  assert.equal(params[0].traceTransfers, true);
+});
+
+test("the default simulation reads the latest block's base fee from the node before it simulates", async () => {
+  const sent = [];
+  const c = {
+    pub: {
+      getBlock: async () => ({ baseFeePerGas: 6_500_000n }),
+      estimateMaxPriorityFeePerGas: async () => 2_000_000n,
+      request: async (req) => {
+        sent.push(req);
+        return recordedSimulation("usdc-to-eth").result;
+      },
+    },
+  };
+  const { plan } = await verifyCase("usdc-to-eth", { deps: { simulate: undefined, c } });
+  assert.equal(plan.simulation.source, "eth_simulateV1");
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].method, "eth_simulateV1");
+  const [{ blockStateCalls }] = sent[0].params;
+  assert.equal(blockStateCalls[0].blockOverrides.baseFeePerGas, "0x632ea0");
+  assert.ok(blockStateCalls[0].calls.every((k) => BigInt(k.maxFeePerGas) >= 6_500_000n && k.maxPriorityFeePerGas === "0x1e8480"));
+  // a node that cannot give a base fee means no realistic simulation: refused, never run with a zero one
+  const noFee = { pub: { getBlock: async () => ({}), request: async () => assert.fail("must not simulate without a base fee") } };
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { deps: { simulate: undefined, c: noFee } })), ["simulation_unavailable"]);
+});
+
 test("a dry run is plan + verify and returns the summary; nothing is reserved", async () => {
   const response = satoResponse("usdc-to-eth");
   const out = await dryRunBaseSwap(
     { from: "USDC", to: "ETH", amount: "100", slippageBps: 50 },
-    { taker: SENDER, callTool: async () => ({ text: "", structured: response, isError: false }), verifySignature: passes, simulate: replay(recordedSimulation("usdc-to-eth")), readAllowance: async () => 0n },
+    { taker: SENDER, usdNotional: 100, callTool: async () => ({ text: "", structured: response, isError: false }), verifySignature: passes, simulate: replay(recordedSimulation("usdc-to-eth")), readAllowance: async () => 0n },
   );
   assert.equal(out.dry_run, true);
   assert.equal(out.simulated, true);
@@ -328,7 +544,7 @@ test("a dry run is plan + verify and returns the summary; nothing is reserved", 
 
 // ------------------------------------------------------------------ execute (scripted chain)
 
-setPolicy({ chains: "base", perTx: "150", perDay: "100000", swapSlippageBps: "1000", maxTradesPerDay: "none" });
+setPolicy({ chains: "base", perTx: "150", perDay: "100000", swapSlippageBps: "500", maxTradesPerDay: "none" });
 const lastSwap = () => actions().filter((a) => a.kind === "swap").at(-1);
 const reserved = () => spentLast24h().usd;
 
@@ -524,6 +740,121 @@ test("a swap is held to the swap caps, not the payee allowlist (it pays a pinned
   delete swapsOff.max_trades_per_day;
   assert.deepEqual(await rules(executeBaseSwap(plan, { c, policy: swapsOff })), ["swaps_not_enabled"]);
   assert.equal(state.sent.length, 0);
+});
+
+test("what counts against the limits is the larger of the plan's measured value and the caller's figure", async () => {
+  const plan = await planFor("eth-to-usdc"); // measured ~ $25
+  const { c } = fakeChain({ address: SENDER, receipts: [{ status: "success", logs: [transferLog(USDC, KYBER_ROUTER_BASE, SENDER, 24_840_000n)] }] });
+  await executeBaseSwapRaw(plan, { c, usdNotional: 60 });
+  assert.equal(lastSwap().usd, 60);
+});
+
+// A clock that says "now" for the first `fresh` reads and `late` ms later after that.
+const agingClock = (fresh, late = 3 * 60_000) => {
+  let n = 0;
+  return () => (n++ < fresh ? Date.now() : Date.now() + late);
+};
+
+test("a plan that ages out while the approval goes through is refused BEFORE the swap is signed, and the approval is set back to 0", async () => {
+  const before = reserved();
+  const plan = await planFor("usdc-to-eth");
+  const { c, state } = fakeChain({ address: SENDER, receipts: ["success", "success"] });
+  const e = await executeBaseSwap(plan, { c, clock: agingClock(1) }).catch((x) => x);
+  assert.ok(e instanceof Refused);
+  assert.deepEqual(e.refusals.map((r) => r.rule), ["plan_expired"]);
+  assert.match(e.message, /was not signed; plan it again/);
+  assert.match(e.message, /approval granted for this swap was set back to 0/);
+  assert.equal(state.sent.length, 2, "approve, then the reset; no swap");
+  assert.deepEqual(state.sent.map((t) => decodeFunctionData({ abi: erc20Abi, data: t.data }).args[1]), [100_000_000n, 0n]);
+  assert.ok(state.sent.every((t) => t.to === USDC), "nothing was sent to the router");
+  assert.equal(state.allowance, 0n);
+  assert.equal(lastSwap().status, "failed");
+  assert.match(lastSwap().reason, /plan expired before the swap was signed/);
+  assert.equal(lastSwap().allowance, "reset");
+  assert.equal(reserved(), before, "the reservation is given back");
+});
+
+test("a plan that ages out before an ETH sale is signed is refused with nothing sent", async () => {
+  const before = reserved();
+  const plan = await planFor("eth-to-usdc");
+  const { c, state } = fakeChain({ address: SENDER });
+  assert.deepEqual(await rules(executeBaseSwap(plan, { c, clock: agingClock(1) })), ["plan_expired"]);
+  assert.equal(state.sent.length, 0);
+  assert.equal(reserved(), before);
+});
+
+test("an allowance that was already there is not reset when the plan expires", async () => {
+  const plan = await planFor("usdc-to-weth", { allowance: 500_000_000n, editSim: (s) => s.result[0].calls.shift() });
+  const { c, state } = fakeChain({ address: SENDER, allowance: 500_000_000n });
+  assert.deepEqual(await rules(executeBaseSwap(plan, { c, clock: agingClock(1) })), ["plan_expired"]);
+  assert.equal(state.sent.length, 0);
+  assert.equal(state.allowance, 500_000_000n);
+});
+
+test("a plan still fresh when the swap is signed goes through (the clock is read twice)", async () => {
+  const plan = await planFor("usdc-to-weth", { allowance: 500_000_000n, editSim: (s) => s.result[0].calls.shift() });
+  const { c } = fakeChain({ address: SENDER, allowance: 500_000_000n, receipts: [{ status: "success", logs: [transferLog(WETH_BASE, KYBER_ROUTER_BASE, SENDER, 40_000_000_000_000_000n)] }] });
+  let reads = 0;
+  const out = await executeBaseSwap(plan, { c, clock: () => (reads++, Date.now()) });
+  assert.equal(reads, 2);
+  assert.equal(out.received.asset, "WETH");
+});
+
+const { paths, withLock } = await import("../src/store.js");
+
+test("a swap runs under the base-swap lock, and the lock is let go on success and on failure", async () => {
+  const lockFile = paths.lock("base-swap");
+  const seen = [];
+  const plan = await planFor("usdc-to-eth");
+  const { c } = fakeChain({ address: SENDER, receipts: ["success", "revert", "success"] });
+  await assert.rejects(executeBaseSwap(plan, { c, readAllowance: async () => (seen.push(existsSync(lockFile)), 0n) }), /transaction reverted/);
+  assert.ok(seen.length > 0 && seen.every(Boolean), "the lock was held while the swap ran");
+  assert.equal(existsSync(lockFile), false, "released after a failure");
+  const plan2 = await planFor("eth-to-usdc");
+  const chain2 = fakeChain({ address: SENDER, receipts: [{ status: "success", logs: [transferLog(USDC, KYBER_ROUTER_BASE, SENDER, 24_840_000n)] }] });
+  await executeBaseSwap(plan2, { c: chain2.c });
+  assert.equal(existsSync(lockFile), false, "released after a success");
+});
+
+test("while another swap holds the lock a second one waits, then gives up with nothing reserved or sent", async () => {
+  const before = reserved();
+  const plan = await planFor("usdc-to-eth");
+  const { c, state } = fakeChain({ address: SENDER });
+  await withLock(
+    async () => {
+      await assert.rejects(executeBaseSwap(plan, { c, lockWaitMs: 150 }), /another base-swap is in progress/);
+    },
+    { name: "base-swap" },
+  );
+  assert.equal(state.sent.length, 0);
+  assert.equal(reserved(), before);
+});
+
+test("two swaps started together do not interleave: approve, swap, then the next approve, swap", async () => {
+  const planA = await planFor("usdc-to-eth");
+  const planB = await planFor("usdc-to-weth");
+  const spend = { status: "success", spends: 100_000_000n };
+  const { c, state } = fakeChain({ address: SENDER, receipts: ["success", spend, "success", spend] });
+  // receipts take real time, so without the lock the two swaps would overlap
+  const waitForReceipt = c.pub.waitForTransactionReceipt;
+  c.pub.waitForTransactionReceipt = async (a) => (await new Promise((r) => setTimeout(r, 40)), waitForReceipt(a));
+  const order = [];
+  const tag = (p) => async (...a) => (order.push(p), state.allowance);
+  const [a, b] = await Promise.allSettled([
+    executeBaseSwap(planA, { c, readAllowance: tag("A") }),
+    executeBaseSwap(planB, { c, readAllowance: tag("B") }),
+  ]);
+  assert.equal(a.status, "fulfilled", a.reason?.message);
+  assert.equal(b.status, "fulfilled", b.reason?.message);
+  const kinds = state.sent.map((t) => (t.to === USDC ? `approve ${decodeFunctionData({ abi: erc20Abi, data: t.data }).args[1]}` : `swap ${t.data === planA.tx.data ? "A" : "B"}`));
+  assert.equal(kinds.length, 4);
+  assert.match(kinds[0], /^approve 100000000/);
+  assert.match(kinds[1], /^swap [AB]/);
+  assert.match(kinds[2], /^approve 100000000/);
+  assert.match(kinds[3], /^swap [AB]/);
+  assert.notEqual(kinds[1], kinds[3], "each swap ran once");
+  // every read of the first swap came before any read of the second
+  assert.equal(order.filter((x, i) => x !== order[i - 1]).length, 2, `the swaps never alternate: ${order.join("")}`);
 });
 
 test("fixtures are the recorded ones", () => {

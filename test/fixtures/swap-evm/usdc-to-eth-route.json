@@ -5,14 +5,14 @@
   "routeSummary": {
    "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
    "amountIn": "100000000",
-   "amountInUsd": "100.01272320691487",
+   "amountInUsd": "100.18377148501791",
    "tokenOut": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-   "amountOut": "40145191458367072",
-   "amountOutUsd": "99.85882708552784",
-   "gas": "715498",
+   "amountOut": "40114556705296776",
+   "amountOutUsd": "100.05484653186407",
+   "gas": "605498",
    "gasPrice": "6000000",
-   "gasUsd": "0.010678557774891313",
-   "l1FeeUsd": "0.00002386764041867717",
+   "gasUsd": "0.009061500030090252",
+   "l1FeeUsd": "0.000026608671273566494",
    "extraFee": {
     "feeAmount": "15",
     "chargeFeeBy": "currency_in",
@@ -22,56 +22,79 @@
    "route": [
     [
      {
-      "pool": "elfomofi_0x4200000000000000000000000000000000000006_0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "pool": "0xe37072bbde68f74333c8b99c572dc5f9b66927cf",
       "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
       "tokenOut": "0x4200000000000000000000000000000000000006",
       "swapAmount": "99850000",
-      "amountOut": "40145191458367072",
-      "exchange": "elfomofi",
-      "poolType": "elfomofi",
+      "amountOut": "40114556705296776",
+      "exchange": "spire-prop",
+      "poolType": "spire-prop",
       "poolExtra": {
-       "approvalAddress": "0xf0f0F0F0FB0d738452EfD03A28e8be14C76d5f73",
-       "blockNumber": 52366572
+       "blockNumber": 52367811,
+       "entrypoint": "0x98c1d9e102eb2806d902b13186bdc7892ac4ffba",
+       "base": "0x4200000000000000000000000000000000000006",
+       "approvalAddress": "0x98c1d9e102eb2806d902b13186bdc7892ac4ffba",
+       "validUntil": 1791524975
       },
       "extra": {
+       "AmountIn": [
+        99850000,
+        0,
+        0,
+        0
+       ],
+       "AmountOut": [
+        40114095173051040,
+        0,
+        0,
+        0
+       ],
+       "Cursor": [
+        40114095173051040,
+        0,
+        0,
+        0
+       ],
+       "FillSeq": 8211,
+       "IndexIn": 1,
        "_ce": {
         "prCnt": 1,
-        "tgtAmtOut": "40145191458367072",
+        "tgtAmtOut": "40114556705296776",
         "ces": [
          {
-          "pool": "0xb4cb800910b228ed3d0834cf79d697127bbb00e5",
+          "pool": "0x72ab388e2e2f6facef59e3c3fa2c4e29011c2d38",
           "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
           "tokenOut": "0x4200000000000000000000000000000000000006",
           "swapAmount": "99850000",
-          "amountOut": "40142754894970373",
-          "exchange": "uniswapv3",
-          "poolType": "uniswapv3",
+          "amountOut": "40114840089022571",
+          "exchange": "pancake-v3",
+          "poolType": "pancake-v3",
           "poolExtra": {
            "swapFee": 100,
            "priceLimit": "1461446703485210103287273052203988822378723970341",
-           "blockNumber": 52366573
+           "blockNumber": 52367811
           },
           "extra": {
            "rAI": "0",
-           "nSqrtRx96": "3951211901077228163163901",
-           "nT": -198132
+           "nSqrtRx96": "3952574306117657361926693",
+           "nT": -198125
           }
          }
         ]
        },
-       "_cs": "16183147478880643596",
-       "_ts": "1791522494",
-       "ri": "5b155b0fQFVFGKP2"
+       "_cs": "4578896131081142747",
+       "_ts": "1791524972",
+       "ri": "679e60e6DdNOobTV"
       }
      }
     ]
    ],
    "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
-   "routeID": "5b155b0fQFVFGKP2",
-   "checksum": "16183147478880643596",
-   "timestamp": 1791522494
+   "routeID": "679e60e6DdNOobTV",
+   "checksum": "4578896131081142747",
+   "timestamp": 1791524972
   },
   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
  },
- "requestId": "5b155b0f-4055-4518-a3f6-0441b083b111"
+ "requestId": "679e60e6-0dd3-4ea1-b4d5-d43153df030e"
 }

@@ -15,6 +15,13 @@ const UA = "SatoHub-swap-dev/1.0";
 const HOST = "https://aggregator-api.kyberswap.com/base/api/v1";
 const RPC = process.env.SATO_AGENT_BASE_RPC || "https://mainnet.base.org";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const rpc = async (method, params) => {
+  const res = await (
+    await fetch(RPC, { method: "POST", headers: { "content-type": "application/json", "user-agent": UA }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), signal: AbortSignal.timeout(30_000) })
+  ).json();
+  if (res.error || res.result === undefined) throw new Error(`${method}: ${JSON.stringify(res).slice(0, 300)}`);
+  return res.result;
+};
 
 const cases = [
   { name: "usdc-to-eth", from: "USDC", to: "ETH", units: 100_000_000n },
@@ -40,15 +47,9 @@ for (const k of cases) {
   const calls = [];
   if (!tin.native) calls.push({ to: tin.address, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [KYBER_ROUTER_BASE, k.units] }) });
   calls.push({ to: b.routerAddress, data: b.data, value: BigInt(b.transactionValue) });
-  const sim = await (
-    await fetch(RPC, {
-      method: "POST",
-      headers: { "content-type": "application/json", "user-agent": UA },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_simulateV1", params: buildSimulationRequest({ taker: SENDER, calls }) }),
-      signal: AbortSignal.timeout(30_000),
-    })
-  ).json();
-  if (!sim.result) throw new Error(`${k.name}: ${JSON.stringify(sim).slice(0, 300)}`);
+  // the simulation carries the latest block's base fee, as the kit's own does
+  const baseFeePerGas = BigInt((await rpc("eth_getBlockByNumber", ["latest", false])).baseFeePerGas);
+  const sim = { result: await rpc("eth_simulateV1", buildSimulationRequest({ taker: SENDER, calls, baseFeePerGas, maxPriorityFeePerGas: 1_000_000n })) };
   // Keep the simulated calls and the block number; the rest of the block header is not read.
   const trimmed = { result: [{ number: sim.result[0].number, calls: sim.result[0].calls }] };
   fs.writeFileSync(`${dir}${k.name}-route.json`, JSON.stringify(route, null, 1) + "\n");

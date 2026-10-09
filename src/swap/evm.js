@@ -7,17 +7,25 @@
 //            the pinned Kyber router; chain id 8453; value is the amount for an
 //            ETH sale and 0 otherwise; Sato's own simulation says ok; the fee
 //            disclosure names the pinned recipient; min_out is computed HERE;
+//            the router CALLDATA is decoded and its own fields are checked (the
+//            tokens, the amount, who receives the output, the minimum the router
+//            itself will enforce, the fee receivers and amounts, no permit);
 //            and OUR OWN simulation (eth_simulateV1 with traceTransfers) of
 //            [approve, swap] from the agent's address shows the agent gives up
 //            at most amount_in, receives at least min_out, and loses nothing else.
-//   execute  reserve against the owner's limits, approve the exact amount to the
-//            pinned router if the allowance is short, sign the swap locally with
-//            its hash recorded before broadcast, wait for the receipt, read the
-//            output actually received, and record it.
+//   execute  one Base swap at a time (a lock), reserve against the owner's
+//            limits, approve the exact amount to the pinned router if the
+//            allowance is short, check the plan's age again right before signing
+//            the swap, sign it locally with its hash recorded before broadcast,
+//            wait for the receipt, read the output actually received, record it.
 //
 // Sato Hub's response is a SUGGESTION. Its signature proves who produced the
 // bytes, not that the transaction is good for the agent; the checks that decide
-// are the pinned addresses and the kit's own simulation.
+// are the pinned addresses, the decoded calldata and the kit's own simulation.
+// The minimum is written INTO the transaction (desc.minReturnAmount) and the kit
+// checks it before signing, so a swap that would pay less than the minimum fails
+// onchain instead of completing. The simulation cannot be the only guard: a pool
+// can behave differently in a simulation than on the real chain.
 //
 // Every build-tx call writes a public record at Sato Hub (a receipt row), also
 // when only a dry run is wanted. There is no way to ask for a transaction
@@ -27,11 +35,12 @@
 // reservation back. A signed swap whose outcome is unknown (no receipt, a
 // broadcast error) stays counted and throws Pending: do not retry.
 
-import { encodeFunctionData, erc20Abi, getAddress, isAddress, parseEventLogs, toHex } from "viem";
+import { decodeFunctionData, encodeFunctionData, erc20Abi, getAddress, isAddress, parseEventLogs, toHex } from "viem";
 import { Pending, Refused, Rejected } from "../errors.js";
 import { clients, signAndSend, USDC_BASE } from "../base.js";
 import { loadPolicy } from "../policy.js";
 import { record, release, reserve } from "../ledger.js";
+import { withLock } from "../store.js";
 import { callTool as satoCallTool } from "../satohub.js";
 import { unitsToUsd } from "../amount.js";
 
@@ -55,6 +64,64 @@ export const TOKENS = Object.freeze({
   ETH: Object.freeze({ symbol: "ETH", address: NATIVE_PLACEHOLDER, decimals: 18, native: true }),
 });
 
+// The router entry point the kit decodes. Source: MetaAggregationRouterV2 at KYBER_ROUTER_BASE, verified on Sourcify
+// (chain 8453, full match, 2024-08-08): swap(SwapExecutionParams) = selector 0xe21fd0e9, with
+// SwapExecutionParams { callTarget, approveTarget, targetData, SwapDescriptionV2 desc, clientData } and
+// SwapDescriptionV2 { srcToken, dstToken, srcReceivers[], srcAmounts[], feeReceivers[], feeAmounts[], dstReceiver,
+// amount, minReturnAmount, flags, permit }. A selector this kit does not decode is refused.
+export const KYBER_SWAP_SELECTOR = "0xe21fd0e9";
+export const KYBER_ROUTER_ABI = Object.freeze([
+  {
+    type: "function",
+    name: "swap",
+    stateMutability: "payable",
+    inputs: [
+      {
+        name: "execution",
+        type: "tuple",
+        components: [
+          { name: "callTarget", type: "address" },
+          { name: "approveTarget", type: "address" },
+          { name: "targetData", type: "bytes" },
+          {
+            name: "desc",
+            type: "tuple",
+            components: [
+              { name: "srcToken", type: "address" },
+              { name: "dstToken", type: "address" },
+              { name: "srcReceivers", type: "address[]" },
+              { name: "srcAmounts", type: "uint256[]" },
+              { name: "feeReceivers", type: "address[]" },
+              { name: "feeAmounts", type: "uint256[]" },
+              { name: "dstReceiver", type: "address" },
+              { name: "amount", type: "uint256" },
+              { name: "minReturnAmount", type: "uint256" },
+              { name: "flags", type: "uint256" },
+              { name: "permit", type: "bytes" },
+            ],
+          },
+          { name: "clientData", type: "bytes" },
+        ],
+      },
+    ],
+    outputs: [
+      { name: "returnAmount", type: "uint256" },
+      { name: "gasUsed", type: "uint256" },
+    ],
+  },
+]);
+/**
+ * desc.flags bits, from the router source (a flag is "set" when `flags & bit != 0`).
+ * Kyber's live builds for these pairs carry 0x280 = IN_BPS (0x80) + 0x200; the router itself reads no 0x200 bit.
+ */
+export const KYBER_FLAGS = Object.freeze({
+  PARTIAL_FILL: 0x01n, // the router then checks returnAmount * amount >= minReturnAmount * spent: a weaker floor
+  FEE_ON_DST: 0x40n, // the fee is taken from the OUTPUT instead of the input
+  FEE_IN_BPS: 0x80n, // feeAmounts are basis points of the amount, not absolute units
+});
+/** Every bit a build may carry: IN_BPS, plus 0x200 which Kyber sets on every live build and the router does not read. */
+const KYBER_ALLOWED_FLAGS = 0x80n | 0x200n;
+
 /** How long Sato's signature, and a verified plan, stay usable. Prices move; the plan is rebuilt after this. */
 export const MAX_AGE_MS = 120_000;
 const MAX_FUTURE_SKEW_MS = 60_000;
@@ -62,6 +129,17 @@ const MAX_FUTURE_SKEW_MS = 60_000;
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const TRANSFER_SINGLE_TOPIC = "0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62";
 const TRANSFER_BATCH_TOPIC = "0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb";
+
+/**
+ * The USD value of the swap, from the caller's independent price check. Required: without it a library
+ * caller could fall back to the value the simulation shows, which a hostile response could shape.
+ */
+function requireUsdNotional(v, what) {
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
+    throw new Error(`usdNotional is required for ${what}: the swap's USD value from an independent price check, as a positive number (got ${v === undefined ? "nothing" : String(v)})`);
+  }
+  return v;
+}
 
 const lc = (s) => String(s).toLowerCase();
 const same = (a, b) => typeof a === "string" && typeof b === "string" && lc(a) === lc(b);
@@ -245,7 +323,8 @@ function staticChecks(response, intent) {
 
   // (f) the fee disclosure
   const feeBps = response.sato_fee_bps;
-  if (typeof feeBps !== "number" || !Number.isFinite(feeBps) || feeBps < 0 || typeof response.sato_fee_recipient !== "string" || typeof response.disclosure !== "string" || !response.disclosure.trim()) {
+  const feeDisclosed = typeof feeBps === "number" && Number.isInteger(feeBps) && feeBps >= 0 && typeof response.sato_fee_recipient === "string" && typeof response.disclosure === "string" && response.disclosure.trim() !== "";
+  if (!feeDisclosed) {
     out.push(refusal("fee_disclosure_missing", "the response does not state the Sato Hub fee (rate, recipient and sentence)"));
   } else {
     if (!same(response.sato_fee_recipient, SATO_FEE_RECIPIENT)) out.push(refusal("fee_recipient_not_pinned", "the fee goes to an address this kit does not know", SATO_FEE_RECIPIENT, response.sato_fee_recipient));
@@ -260,18 +339,100 @@ function staticChecks(response, intent) {
     minOut = (quoted * BigInt(10_000 - intent.slippageBps)) / 10_000n;
     if (minOut <= 0n) out.push(refusal("min_out_invalid", "the minimum output works out to zero", null, quoted.toString()));
   }
-  return { refusals: out, facts: { value: value ?? 0n, quoted, minOut } };
+
+  // (h) the router calldata: what the contract itself will do, decoded, not what the response says it does
+  let calldata = null;
+  if (typeof tx.data === "string" && /^0x([0-9a-fA-F]{2}){4,}$/.test(tx.data)) {
+    const checked = checkRouterCalldata(tx.data, { intent, minOut: minOut !== null && minOut > 0n ? minOut : null, feeBps: feeDisclosed ? feeBps : null });
+    out.push(...checked.refusals);
+    calldata = checked.facts;
+  }
+  return { refusals: out, facts: { value: value ?? 0n, quoted, minOut, calldata } };
+}
+
+/**
+ * The smallest minReturnAmount the kit accepts in the calldata for a given min_out. Kyber builds from its own
+ * re-quote of the route, which is one base unit below the route quote in every live build we recorded, and then
+ * floors; so its floor is min_out or min_out - 1. The kit's min_out is floor(quote * (10000 - slippage) / 10000);
+ * a calldata floor below min_out - 1 is not Kyber rounding, it is a weaker minimum than the owner's slippage allows.
+ */
+export function requiredCalldataMin(minOut) {
+  const r = minOut - 1n;
+  return r > 1n ? r : 1n;
+}
+
+/**
+ * Decode the transaction data sent to the pinned router and check the fields the router acts on.
+ * Returns { refusals, facts }. Anything this kit cannot decode, or that does not re-encode to the
+ * same bytes (so the decoder and the contract could read it differently), is refused whole.
+ */
+export function checkRouterCalldata(data, { intent, minOut, feeBps }) {
+  const out = [];
+  const unrecognized = (why) => ({ refusals: [refusal("calldata_unrecognized", `the transaction calls the router in a way this kit does not read (${why}), so it will not sign it`, KYBER_SWAP_SELECTOR, String(data).slice(0, 10))], facts: null });
+  if (String(data).slice(0, 10).toLowerCase() !== KYBER_SWAP_SELECTOR) return unrecognized("it is not the router's swap function");
+  let decoded;
+  try {
+    decoded = decodeFunctionData({ abi: KYBER_ROUTER_ABI, data });
+    const again = encodeFunctionData({ abi: KYBER_ROUTER_ABI, functionName: "swap", args: decoded.args });
+    if (lc(again) !== lc(data)) return unrecognized("its encoding is not the standard one");
+  } catch {
+    return unrecognized("it does not decode");
+  }
+  const d = decoded.args[0].desc;
+
+  if (!same(d.srcToken, intent.tokenIn.address)) out.push(refusal("calldata_mismatch", `the transaction sells a different token than ${intent.tokenIn.symbol}`, intent.tokenIn.address, d.srcToken));
+  if (!same(d.dstToken, intent.tokenOut.address)) out.push(refusal("calldata_mismatch", `the transaction buys a different token than ${intent.tokenOut.symbol}`, intent.tokenOut.address, d.dstToken));
+  if (d.amount !== intent.amountIn) out.push(refusal("calldata_mismatch", "the transaction sells a different amount than the one asked for", intent.amountIn.toString(), d.amount.toString()));
+  if (!same(d.dstReceiver, intent.taker)) out.push(refusal("recipient_not_taker", "the transaction sends the bought tokens to an address that is not the agent's wallet", intent.taker, d.dstReceiver));
+  if (d.permit !== "0x") out.push(refusal("calldata_mismatch", "the transaction carries a token permit, which this kit does not allow", "0x", String(d.permit).slice(0, 74)));
+
+  // the minimum the router itself enforces
+  const flags = d.flags;
+  if (minOut !== null) {
+    const need = requiredCalldataMin(minOut);
+    if (d.minReturnAmount < need) out.push(refusal("min_out_not_enforced", `the transaction itself would accept less ${intent.tokenOut.symbol} than the minimum, so it would not stop a worse price`, need.toString(), d.minReturnAmount.toString()));
+  }
+  if ((flags & KYBER_FLAGS.PARTIAL_FILL) !== 0n) out.push(refusal("min_out_not_enforced", "the transaction allows a partial fill, which weakens the router's own minimum", "0", flags.toString()));
+  if ((flags & ~(KYBER_ALLOWED_FLAGS | KYBER_FLAGS.FEE_ON_DST | KYBER_FLAGS.PARTIAL_FILL)) !== 0n) out.push(refusal("calldata_mismatch", "the transaction sets router options this kit does not know", `0x${KYBER_ALLOWED_FLAGS.toString(16)}`, `0x${flags.toString(16)}`));
+
+  // the fee: exactly the one disclosed receiver and rate, in bps, taken from the input
+  if (feeBps !== null) {
+    const receivers = d.feeReceivers;
+    const amounts = d.feeAmounts;
+    if (feeBps === 0) {
+      if (receivers.length !== 0 || amounts.length !== 0) out.push(refusal("fee_not_as_disclosed", "the response says there is no fee, but the transaction pays fee receivers", "none", receivers.join(",")));
+    } else {
+      if (receivers.length !== 1 || !same(receivers[0], SATO_FEE_RECIPIENT)) out.push(refusal("fee_not_as_disclosed", "the transaction pays fee receivers other than the one Sato Hub disclosed", SATO_FEE_RECIPIENT, receivers.join(",") || "none"));
+      else if (amounts.length !== 1 || amounts[0] !== BigInt(feeBps)) out.push(refusal("fee_not_as_disclosed", "the transaction takes a fee rate other than the one Sato Hub disclosed", `${feeBps} bps`, amounts.map(String).join(",") || "none"));
+      if ((flags & KYBER_FLAGS.FEE_IN_BPS) === 0n) out.push(refusal("fee_not_as_disclosed", "the transaction does not count its fee in basis points, so the fee amount would be read differently", "in bps", `flags 0x${flags.toString(16)}`));
+    }
+    if ((flags & KYBER_FLAGS.FEE_ON_DST) !== 0n) out.push(refusal("fee_not_as_disclosed", "the transaction takes its fee from the tokens bought instead of the tokens sold", "taken from the input", `flags 0x${flags.toString(16)}`));
+  }
+  return {
+    refusals: out,
+    facts: { min_return_amount: d.minReturnAmount, flags, dst_receiver: getAddress(d.dstReceiver), fee_receivers: d.feeReceivers.map((a) => getAddress(a)), fee_amounts: [...d.feeAmounts], amount: d.amount },
+  };
 }
 
 // ---------------------------------------------------------------- verify: the kit's own simulation
 
-/** The eth_simulateV1 parameters for [approve?, swap] from the agent, against the latest block. */
-export function buildSimulationRequest({ taker, calls }) {
+/**
+ * The eth_simulateV1 parameters for [approve?, swap] from the agent, against the latest block.
+ *
+ * With `baseFeePerGas` the simulated block carries the real chain's base fee and every call carries a
+ * real-looking fee (maxFeePerGas, maxPriorityFeePerGas), so `block.basefee == 0` and `tx.gasprice == 0`
+ * cannot tell a pool that this is a simulation. (eth_simulateV1 runs with a zero base fee by default.)
+ */
+export function buildSimulationRequest({ taker, calls, baseFeePerGas, maxPriorityFeePerGas }) {
+  const realistic = typeof baseFeePerGas === "bigint" && baseFeePerGas > 0n;
+  const tip = typeof maxPriorityFeePerGas === "bigint" && maxPriorityFeePerGas >= 0n ? maxPriorityFeePerGas : 0n;
+  const fees = realistic ? { maxFeePerGas: toHex((baseFeePerGas * 12n) / 10n + tip), maxPriorityFeePerGas: toHex(tip) } : {};
   return [
     {
       blockStateCalls: [
         {
-          calls: calls.map((c) => ({ from: taker, to: c.to, data: c.data, ...(c.value ? { value: toHex(c.value) } : {}) })),
+          ...(realistic ? { blockOverrides: { baseFeePerGas: toHex(baseFeePerGas) } } : {}),
+          calls: calls.map((c) => ({ from: taker, to: c.to, data: c.data, ...(c.value ? { value: toHex(c.value) } : {}), ...fees })),
         },
       ],
       traceTransfers: true,
@@ -281,8 +442,24 @@ export function buildSimulationRequest({ taker, calls }) {
   ];
 }
 
-async function defaultSimulate({ taker, calls, c }) {
-  return c.pub.request({ method: "eth_simulateV1", params: buildSimulationRequest({ taker, calls }) });
+/** The latest block's base fee and a priority fee, read from the node the swap will be sent through. */
+async function simulationFees(c) {
+  const block = await c.pub.getBlock({ blockTag: "latest" });
+  const baseFeePerGas = block?.baseFeePerGas;
+  if (typeof baseFeePerGas !== "bigint" || baseFeePerGas <= 0n) throw new Error("the latest block has no base fee to simulate with");
+  let tip = 1_000_000n; // 0.001 gwei: Base's usual tip, if the node cannot say
+  try {
+    const t = await c.pub.estimateMaxPriorityFeePerGas();
+    if (typeof t === "bigint" && t >= 0n) tip = t;
+  } catch {
+    /* keep the fallback */
+  }
+  return { baseFeePerGas, maxPriorityFeePerGas: tip };
+}
+
+export async function defaultSimulate({ taker, calls, c }) {
+  const fees = await simulationFees(c);
+  return c.pub.request({ method: "eth_simulateV1", params: buildSimulationRequest({ taker, calls, ...fees }) });
 }
 
 function revertNote(call) {
@@ -473,6 +650,8 @@ export async function verifyBaseSwapPlan(response, intent, deps = {}) {
     amount_in: intent.amountIn,
     quoted_out: facts.quoted,
     min_out: facts.minOut,
+    /** What the router itself will enforce, as decoded from the transaction (at most 1 base unit under min_out). */
+    min_out_in_transaction: facts.calldata.min_return_amount,
     slippage_bps: intent.slippageBps,
     usd,
     router: getAddress(tx.to),
@@ -488,6 +667,7 @@ export async function verifyBaseSwapPlan(response, intent, deps = {}) {
 
 /** Plan with Sato Hub, then verify. What the CLI calls for both a real swap and a dry run. */
 export async function planAndVerifyBaseSwap(args, deps = {}) {
+  requireUsdNotional(deps.usdNotional, "planning a swap"); // before Sato Hub is asked: that call writes a public record
   const { response, intent } = await planBaseSwap(args, deps);
   return verifyBaseSwapPlan(response, intent, deps);
 }
@@ -501,7 +681,7 @@ export function summarizeBaseSwapPlan(plan) {
     route_id: plan.route_id,
     receipt_url: plan.receipt_url,
     sell: { asset: plan.from, amount: d(plan.amount_in, plan.token_in) },
-    buy: { asset: plan.to, quoted: d(plan.quoted_out, plan.token_out), minimum: d(plan.min_out, plan.token_out), slippage_bps: plan.slippage_bps },
+    buy: { asset: plan.to, quoted: d(plan.quoted_out, plan.token_out), minimum: d(plan.min_out, plan.token_out), minimum_in_transaction: plan.min_out_in_transaction === undefined ? null : d(plan.min_out_in_transaction, plan.token_out), slippage_bps: plan.slippage_bps },
     usd: plan.usd,
     router: plan.router,
     approval: plan.approval.needed ? { token: plan.from, spender: plan.approval.spender, amount: d(plan.approval.amount, plan.token_in), exact: true } : null,
@@ -563,23 +743,38 @@ async function measureOutput({ plan, receipt, c }) {
  * allowance is still open, how much, and to whom. After an unknown swap outcome the
  * allowance is left alone, because the swap may still land and use it.
  *
- * deps: { c, policy, readAllowance, now, maxAgeMs }
+ * The whole sequence runs under one lock ("base-swap"), so two swaps never interleave
+ * (one's exact approval overwriting the other's, or one's reset cancelling the other's).
+ * The plan's age is checked when the lock is taken AND again right before the swap is
+ * signed (the approval wait can be long): a plan that has aged out by then is refused
+ * with plan_expired, nothing is spent and the approval is set back to 0.
+ *
+ * deps: { c, policy, readAllowance, now, clock, maxAgeMs, lockWaitMs, usdNotional (required) }
  */
 export async function executeBaseSwap(plan, deps = {}) {
   if (!plan || !VERIFIED.has(plan)) throw new Refused([refusal("plan_not_verified", "only a plan that passed verifyBaseSwapPlan can be signed")]);
-  const now = deps.now ?? Date.now();
-  if (now - plan.verified_at_ms > (deps.maxAgeMs ?? MAX_AGE_MS)) {
+  const usdNotional = requireUsdNotional(deps.usdNotional, "signing a swap");
+  return withLock(() => executeLocked(plan, { ...deps, usdNotional }), { name: "base-swap", waitMs: deps.lockWaitMs ?? 120_000 });
+}
+
+async function executeLocked(plan, deps) {
+  const clock = deps.clock ?? (() => deps.now ?? Date.now());
+  const maxAge = deps.maxAgeMs ?? MAX_AGE_MS;
+  const now = clock();
+  if (now - plan.verified_at_ms > maxAge) {
     throw new Refused([refusal("plan_stale", "the checked plan is more than two minutes old; plan it again", "120s", plan.verified_at)]);
   }
   const c = deps.c ?? clients();
   if (!same(c.account.address, plan.taker)) throw new Refused([refusal("taker_mismatch", "the plan was built for a different wallet than the one signing", plan.taker, c.account.address)]);
-  if (!(plan.usd > 0)) throw new Refused([refusal("usd_unknown", "the swap's USD value is unknown, so it cannot be held to the limits")]);
+  // The larger of what verify measured and the caller's independent figure is what counts against the limits.
+  const usd = Math.max(plan.usd, deps.usdNotional);
+  if (!(usd > 0)) throw new Refused([refusal("usd_unknown", "the swap's USD value is unknown, so it cannot be held to the limits")]);
 
   const display = (units, token) => unitsToDecimal(units, token.decimals);
   const entry = await reserve(deps.policy ?? loadPolicy(), {
     kind: "swap",
     chain: "base",
-    usd: plan.usd,
+    usd,
     to: plan.router,
     venue: plan.venue,
     asset_in: plan.from,
@@ -653,6 +848,13 @@ export async function executeBaseSwap(plan, deps = {}) {
   }
 
   // --- the swap
+  // The approval wait can take a while. Prices move, so the plan's age is checked again right before signing.
+  const ageNow = clock();
+  if (ageNow - plan.verified_at_ms > maxAge) {
+    release(entry, "plan expired before the swap was signed", { plan_verified_at: plan.verified_at });
+    const expired = new Refused([refusal("plan_expired", "the checked plan became more than two minutes old while the approval was going through, so the swap was not signed; plan it again", "120s", plan.verified_at)]);
+    throw approvedHere ? withNote(expired, await resetAllowance()) : expired;
+  }
   let receipt;
   try {
     receipt = await signAndSend(c, { to: plan.tx.to, data: plan.tx.data, value: plan.tx.value }, (hash) => record({ id: entry.id, status: "signed", step: "swap", tx: hash }));
@@ -702,7 +904,7 @@ export async function executeBaseSwap(plan, deps = {}) {
     sold: { asset: plan.from, amount: display(plan.amount_in, plan.token_in) },
     received: outUnits === null ? null : { asset: plan.to, amount: display(outUnits, plan.token_out), basis: outBasis },
     minimum: { asset: plan.to, amount: display(plan.min_out, plan.token_out) },
-    usd: plan.usd,
+    usd,
     sato_fee: { bps: plan.fee.bps, recipient: plan.fee.recipient },
     allowance: allowance?.state ?? null,
     warnings,

@@ -5,14 +5,14 @@
   "routeSummary": {
    "tokenIn": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
    "amountIn": "10000000000000000",
-   "amountInUsd": "24.87441794594188",
+   "amountInUsd": "24.94202451159938",
    "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
-   "amountOut": "24841409",
-   "amountOutUsd": "24.84456962386764",
-   "gas": "356167",
+   "amountOut": "24850122",
+   "amountOutUsd": "24.853666823668863",
+   "gas": "543667",
    "gasPrice": "6000000",
-   "gasUsd": "0.005315668089931369",
-   "l1FeeUsd": "0.000024143276114970507",
+   "gasUsd": "0.008136093384088619",
+   "l1FeeUsd": "0.00002660839978244277",
    "extraFee": {
     "feeAmount": "15",
     "chargeFeeBy": "currency_in",
@@ -26,11 +26,11 @@
       "tokenIn": "0x4200000000000000000000000000000000000006",
       "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
       "swapAmount": "9985000000000000",
-      "amountOut": "24841409",
+      "amountOut": "24850122",
       "exchange": "uniswap-v4-fairflow",
       "poolType": "uniswap-v4",
       "poolExtra": {
-       "blockNumber": 52366454,
+       "blockNumber": 52367784,
        "router": "0x6ff5693b99212da76ad316178a184ab56d299b43",
        "permit2Addr": "0x000000000022d473030f116ddee9f6b43ac78ba3",
        "tokenIn": "0x0000000000000000000000000000000000000000",
@@ -43,37 +43,84 @@
       },
       "extra": {
        "HookSwapInfo": null,
-       "_cs": "6656364868313832312",
+       "_ce": {
+        "prCnt": 1,
+        "tgtAmtOut": "24850122",
+        "ces": [
+         {
+          "pool": "tidefiprop_0x4200000000000000000000000000000000000006_0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "tokenIn": "0x4200000000000000000000000000000000000006",
+          "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "swapAmount": "9985000000000000",
+          "amountOut": "24843189",
+          "exchange": "tidefi-prop",
+          "poolType": "tidefi-prop",
+          "poolExtra": {
+           "approvalAddress": "0x74ffeda219cc30735729f903642e13ffb658555e",
+           "blockNumber": 52367812
+          },
+          "extra": null
+         },
+         {
+          "pool": "0x0520ba367636a1ae5d80f387c3a25de728a656ac9b87bd6427413eab4159c7cb",
+          "tokenIn": "0x4200000000000000000000000000000000000006",
+          "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "swapAmount": "9985000000000000",
+          "amountOut": "24859046",
+          "exchange": "uniswap-v4-fee",
+          "poolType": "uniswap-v4",
+          "poolExtra": {
+           "blockNumber": 52367769,
+           "router": "0x6ff5693b99212da76ad316178a184ab56d299b43",
+           "permit2Addr": "0x000000000022d473030f116ddee9f6b43ac78ba3",
+           "tokenIn": "0x0000000000000000000000000000000000000000",
+           "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+           "fee": 8388608,
+           "tickSpacing": 10,
+           "hookAddress": "0xfad27bc5ef16a0a2aa3049953c25a48e8858b0c0",
+           "hookData": "",
+           "priceLimit": "1640705514254275716075799"
+          },
+          "extra": {
+           "rAI": "0",
+           "nSqrtRx96": "3953192320352481334143225",
+           "nT": -198122,
+           "HookSwapInfo": null
+          }
+         }
+        ]
+       },
+       "_cs": "7906858658776991056",
        "_ss": {
         "pool": "0x0000efc4ec03a7c47d3a38a9be7ff1d52dd01b99",
         "tokenIn": "0x4200000000000000000000000000000000000006",
         "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
         "swapAmount": "9985000000000000",
-        "amountOut": "24832925",
+        "amountOut": "24847192",
         "exchange": "lunarbase",
         "poolType": "lunarbase",
         "poolExtra": {
-         "blockHash": "0x27d3da4fadd315dc7d7911ed8c9b9d42de5e2887db4347d3fcc5b70706ca27da",
-         "blockNumber": 52366574,
+         "blockHash": "0x94cd460585ece1212f1ed01c237952627ce4ba34892d8085107a933f55623cf5",
+         "blockNumber": 52367813,
          "n": true
         },
         "extra": {}
        },
-       "_ts": "1791522498",
-       "nSqrtRx96": "3951806731915941390556704",
-       "nT": -198129,
+       "_ts": "1791524976",
+       "nSqrtRx96": "3953052898051219373228925",
+       "nT": -198122,
        "rAI": "0",
-       "ri": "78127fddymZKdbyJ"
+       "ri": "5183189bgTNFM6zb"
       }
      }
     ]
    ],
    "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
-   "routeID": "78127fddymZKdbyJ",
-   "checksum": "6656364868313832312",
-   "timestamp": 1791522498
+   "routeID": "5183189bgTNFM6zb",
+   "checksum": "7906858658776991056",
+   "timestamp": 1791524976
   },
   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
  },
- "requestId": "78127fdd-ca66-4a75-bc89-c9f854076be4"
+ "requestId": "5183189b-8133-4533-acdb-74cb57ee27b4"
 }

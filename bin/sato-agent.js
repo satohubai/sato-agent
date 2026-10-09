@@ -33,7 +33,7 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
   policy set --chains <base|solana|base,solana> --per-tx <usd|none> --per-day <usd|none>
              [--allow <addr,addr> | --allow any] [--check-gate off|no|caution]
              [--on-check-unavailable allow|refuse] [--approval auto|ask]
-             [--swap-slippage-bps <1-500>|off --max-trades-per-day <n|none>]
+             [--swaps on|off] [--swap-slippage-bps <1-500>|none] [--max-trades-per-day <n|none>]
                                          the owner's choices; nothing is spent until chains and both limits are set
   swap --chain base|solana --from <USDC|ETH|WETH|SOL> --to <...> --amount <n> [--slippage-bps <n>] [--dry-run]
                                          swap with USDC on one side; off until the owner sets swap caps; checked against an independent price
@@ -96,6 +96,7 @@ try {
       "skip-check": { type: "boolean" },
       "dry-run": { type: "boolean" },
       "swap-slippage-bps": { type: "string" },
+      swaps: { type: "string" },
       "max-trades-per-day": { type: "string" },
       from: { type: "string" },
       "slippage-bps": { type: "string" },
@@ -125,7 +126,7 @@ function policyText(p) {
     `recipients:      ${p.allow_recipients ? p.allow_recipients.join(", ") : "any"}`,
     `Sato Hub checks: ${p.check_gate && p.check_gate !== "off" ? `stop a spend on "${p.check_gate === "caution" ? "caution or no" : "no"}"${p.on_check_unavailable ? ` · if a check can't run: ${p.on_check_unavailable}` : ""}` : "inform only"}`,
     `approval:        ${p.approval === "ask" ? "ask the owner before every spend" : "act within the limits"}`,
-    `swaps:           ${Number.isInteger(p.max_slippage_bps) ? `on · slippage up to ${p.max_slippage_bps} bps · ${p.max_trades_per_day === null ? "no trade cap" : `${p.max_trades_per_day} per 24 hours`}` : "off"}`,
+    `swaps:           ${p.swaps_off === true ? "off" : `on · ${Number.isInteger(p.max_slippage_bps) ? `slippage up to ${p.max_slippage_bps} bps` : "slippage chosen per trade"} · ${Number.isInteger(p.max_trades_per_day) ? `${p.max_trades_per_day} per 24 hours` : "no trade cap"}`}`,
   ].join("\n");
 }
 
@@ -256,6 +257,7 @@ async function main() {
               onCheckUnavailable: flags["on-check-unavailable"],
               swapSlippageBps: flags["swap-slippage-bps"],
               maxTradesPerDay: flags["max-trades-per-day"],
+              swaps: flags.swaps,
             }),
           { name: "policy" },
         );

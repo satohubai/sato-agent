@@ -768,9 +768,7 @@ test("a swap is held to the swap caps, not the payee allowlist (it pays a pinned
   const withAllowlist = { ...base, allow_recipients: ["0x000000000000000000000000000000000000dEaD"], max_trades_per_day: 0 };
   // The allowlist is not the reason; the trade cap is.
   assert.deepEqual(await rules(executeBaseSwap(plan, { c, policy: withAllowlist })), ["max_trades_per_day"]);
-  const swapsOff = { ...base };
-  delete swapsOff.max_slippage_bps;
-  delete swapsOff.max_trades_per_day;
+  const swapsOff = { ...base, swaps_off: true };
   assert.deepEqual(await rules(executeBaseSwap(plan, { c, policy: swapsOff })), ["swaps_not_enabled"]);
   assert.equal(state.sent.length, 0);
 });

@@ -52,11 +52,11 @@ const basePlan = ({ sellAmount, quoted, usd }) => ({
 });
 
 test("swaps off: refused before any price or quote is fetched", async () => {
-  setPolicy({ swapSlippageBps: "off" });
+  setPolicy({ swaps: "off" });
   let priced = false;
   assert.deepEqual(await rules(sizeSwap({ chain: "base", from: "USDC", to: "ETH", amount: "10" }, { oraclePrice: async () => ((priced = true), eth(2500)()) })), ["swaps_not_enabled"]);
   assert.equal(priced, false, "no price is read for a swap the owner hasn't allowed");
-  setPolicy({ swapSlippageBps: "100", maxTradesPerDay: "5" });
+  setPolicy({ swaps: "on" });
 });
 
 test("no independent price, no swap", async () => {

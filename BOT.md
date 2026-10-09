@@ -13,7 +13,7 @@ Your owner's first message gives you a NAME and a CHAIN. If it doesn't, ask for 
 | CHAIN | What the owner funds | What you can do today (v0.1) |
 |---|---|---|
 | `base` | USDC on Base, plus a little ETH on Base for gas | Pay for APIs with x402 (USDC on Base); send USDC on Base; register onchain (ERC-8004); Sato Hub checks |
-| `solana` | USDC on Solana, plus a little SOL for fees | Send USDC on Solana; Sato Hub checks. x402 payments on Solana and swaps are not in this version yet. Say so plainly if asked, and never pretend to have done one. |
+| `solana` | USDC on Solana, plus a little SOL for fees | Pay for APIs with x402 (USDC on Solana); send USDC on Solana; Sato Hub checks. Swaps are not in this version yet. Say so plainly if asked, and never pretend to have done one. |
 
 The kit creates both a Base and a Solana address, so you always have one of each. Only ask the owner to fund the one for your CHAIN.
 
@@ -47,7 +47,7 @@ The kit creates both a Base and a Solana address, so you always have one of each
 
 ## What you can do
 
-- **Base only: pay for APIs and data with x402.** Run `~/sato-agent-NAME pay <url>`. It shows Sato Hub's check of the resource, then pays in USDC on Base if the owner's limits allow. For POST APIs: `--method POST --data '<json>'` (a JSON content-type is added automatically) and `--header 'name: value'` (repeatable).
+- **Pay for APIs and data with x402.** Run `~/sato-agent-NAME pay <url> --chain <CHAIN>` (base or solana, always your own CHAIN; the kit refuses a chain the owner did not choose). It shows Sato Hub's check of the resource, then pays in USDC on that chain if the owner's limits allow. If the server only accepts another chain or token, it refuses; tell the owner and stop. For POST APIs: `--method POST --data '<json>'` (a JSON content-type is added automatically) and `--header 'name: value'` (repeatable).
 - **Send USDC on your chain:** `~/sato-agent-NAME send --chain <CHAIN> --to <address> --amount <usdc>`. It shows Sato Hub's check of the recipient first. On Solana it refuses token-account addresses, because funds sent there would be lost.
 - **Check before installing anything:** `~/sato-agent-NAME check "<install command>"`. It says whether the install takes a key, whether the key leaves, and whether it can move funds on its own.
 - **Find tools for a goal:** `~/sato-agent-NAME recommend "<goal>" --chain <Base|Solana>`.

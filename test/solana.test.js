@@ -40,7 +40,7 @@ test("a wallet address is accepted", async () => {
 
 test("a token account is refused: USDC sent to it would be lost", async () => {
   await assert.rejects(assertWalletRecipient(WALLET, mockRpc(TOKEN_PROGRAM_ADDRESS)), /token account/);
-  await assert.rejects(assertWalletRecipient(WALLET, mockRpc("TokenzQdBNbLqP5VEhdkAS6EPFLC1PZnBCPiW4JQ7Gr")), /token account/);
+  await assert.rejects(assertWalletRecipient(WALLET, mockRpc("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")), /token account/);
 });
 
 test("an off-curve address (e.g. an associated token account) is refused before any RPC call", async () => {

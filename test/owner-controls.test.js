@@ -215,6 +215,15 @@ test("CLI: pay sends --header values and a JSON content-type for JSON bodies", a
   assert.equal((await run(["pay", webUrl, "--header", "no-colon", "--skip-check"])).code, 2);
 });
 
+test("CLI: a Base-only agent refuses `pay --chain solana` before anything is reserved", async () => {
+  const before = readFileSync(join(home, "ledger.jsonl"), "utf8").split("\n").filter((l) => l.includes('"submitted"')).length;
+  const r = await run(["pay", webUrl, "--chain", "solana", "--skip-check"]);
+  assert.equal(r.code, 3);
+  assert.match(r.stderr, /chain_not_allowed/);
+  const after = readFileSync(join(home, "ledger.jsonl"), "utf8").split("\n").filter((l) => l.includes('"submitted"')).length;
+  assert.equal(after, before, "nothing reserved");
+});
+
 test("deleting policy.json and starting over is still flagged as a raise", async () => {
   rmSync(join(home, "policy.json"));
   const r = await run(["policy", "set", "--chains", "base,solana", "--per-tx", "none", "--per-day", "none"]);

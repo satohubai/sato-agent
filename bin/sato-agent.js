@@ -355,7 +355,7 @@ async function main() {
       });
       if (flags["dry-run"]) {
         if (!chosen) {
-          return out(`DRY RUN: the checks passed. The server did not state its price to an unpaid ${method} with an empty body, so the price is set at pay time, up to the per-transaction limit. Nothing was paid or signed.`, { dry_run: true, url, terms: null, sato_hub_check: check });
+          return out(`DRY RUN: the checks passed. The price is not known until the real request, which is sent only after approval; the server can then charge up to $${perTx} (the per-transaction limit), and the price and payee are not bound. Nothing was paid or signed.`, { dry_run: true, url, terms: null, sato_hub_check: check });
         }
         const terms = { usd: chosen.usd, chain: payChain, pay_to: chosen.pay_to, network: chosen.network, x402_version: chosen.version, offers: quote.offers };
         return out(`DRY RUN: the server asks ${chosen.usd} USDC on ${payChain} to ${chosen.pay_to}, and the checks passed (Sato Hub's check is above). Nothing was paid or signed.`, { dry_run: true, url, terms, sato_hub_check: check });

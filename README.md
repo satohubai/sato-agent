@@ -8,9 +8,18 @@ It works on any always-on machine with Node 20.18+, not only Grok Bot.
 
 Tell your Bot:
 
-> Read https://github.com/satohubai/sato-agent/blob/main/BOT.md and follow the setup.
+> Read https://github.com/satohubai/sato-agent/blob/main/BOT.md and follow the setup. NAME = base, CHAIN = base.
 
 It installs the kit, creates its wallet, asks you for your limits, and asks you to fund it. You fund it with what you are willing to let it spend.
+
+Two Bots, one kit:
+
+| Bot | Message | Today (v0.1) |
+|---|---|---|
+| **Sato Base Agent** | `NAME = base, CHAIN = base` | x402 payments, USDC sends, ERC-8004 identity, Sato Hub checks |
+| **Sato Solana Agent** | `NAME = solana, CHAIN = solana` | USDC sends (wallet recipients only), Sato Hub checks. x402 on Solana and swaps are next. |
+
+Each Bot keeps its own wallet, limits and ledger, even on the same Grok Bot computer.
 
 ## Quickstart (any machine)
 

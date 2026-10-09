@@ -105,7 +105,8 @@ const baseChain = (account) => ({
     const left = validBefore - Date.now() / 1000;
     if (!Number.isFinite(validBefore) || left > MAX_AUTH_WINDOW_S + 30) {
       seen.push({ rule: "authorization_window", limit: MAX_AUTH_WINDOW_S, observed: Number.isFinite(left) ? Math.round(left) : "unknown", message: "the signed authorization would stay valid too long (or its expiry could not be read); it was not sent" });
-      throw new Error("authorization window check failed; payment not sent");
+      // Signed, so it stays counted (never released), exactly like a rejected Solana payload.
+      throw new SignedPayloadRejected([`the signed authorization would stay valid ${Number.isFinite(left) ? `${Math.round(left)} s` : "for an unknown time"} (limit ${MAX_AUTH_WINDOW_S} s)`]);
     }
     return {};
   },

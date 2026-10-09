@@ -312,25 +312,39 @@ async function main() {
         console.log(`The server did not ask for payment (HTTP ${quote.status}). Nothing was paid or signed.\n\n${untrustedBody(url, quote.body)}`);
         return;
       }
-      if (!quote.offers.length) throw new Refused(quote.refusals);
-      const chosen = quote.offers[0]; // cheapest first
+      if (!quote.unquoted && !quote.offers.length) throw new Refused(quote.refusals);
+      // Unquoted: a non-GET request whose terms an empty-body ask did not show. The real
+      // request goes out only after approval; the price is then the server's, capped by
+      // the per-transaction limit (the approval says so).
+      const chosen = quote.unquoted ? null : quote.offers[0]; // cheapest first
       const check = await beforeSpend({
         chain: payChain,
         // The approval covers the quoted price and payee; `pay` refuses a higher price
         // (or another payee) at pay time.
-        intent: { cmd: "pay", chain: payChain, url, method, data: flags.data ?? null, headers: redactHeaders(headers), price: `${chosen.usd} USDC on ${payChain} to ${chosen.pay_to}` },
+        intent: {
+          cmd: "pay",
+          chain: payChain,
+          url,
+          method,
+          data: flags.data ?? null,
+          headers: redactHeaders(headers),
+          price: chosen ? `${chosen.usd} USDC on ${payChain} to ${chosen.pay_to}` : "not stated before the real request; set by the server at pay time, up to the per-transaction limit; payee not bound",
+        },
         // Sato Hub probes with GET unless told the method (never the body or headers).
         checkArgs: { x402: url, ...(method !== "GET" ? { x402_method: method } : {}) },
         expectKind: "x402",
-        usd: chosen.usd,
-        to: chosen.pay_to,
+        usd: chosen?.usd,
+        to: chosen?.pay_to,
       });
       if (flags["dry-run"]) {
+        if (!chosen) {
+          return out(`DRY RUN: the checks passed. The server did not state its price to an unpaid ${method} with an empty body, so the price is set at pay time, up to the per-transaction limit. Nothing was paid or signed.`, { dry_run: true, url, terms: null, sato_hub_check: check });
+        }
         const terms = { usd: chosen.usd, chain: payChain, pay_to: chosen.pay_to, network: chosen.network, x402_version: chosen.version, offers: quote.offers };
         return out(`DRY RUN: the server asks ${chosen.usd} USDC on ${payChain} to ${chosen.pay_to}, and the checks passed (Sato Hub's check is above). Nothing was paid or signed.`, { dry_run: true, url, terms, sato_hub_check: check });
       }
-      say(`The server asks ${chosen.usd} USDC on ${payChain} to ${chosen.pay_to}.`);
-      const r = await pay(url, { chain: payChain, method, body: flags.data, headers, maxUsd: chosen.usd, payTo: chosen.pay_to });
+      if (chosen) say(`The server asks ${chosen.usd} USDC on ${payChain} to ${chosen.pay_to}.`);
+      const r = await pay(url, { chain: payChain, method, body: flags.data, headers, ...(chosen ? { maxUsd: chosen.usd, payTo: chosen.pay_to } : {}) });
       const head = r.settled
         ? `Paid ${r.usd} USDC on ${r.chain} to ${r.pay_to} (HTTP ${r.status})\n  ${r.explorer}`
         : r.signed

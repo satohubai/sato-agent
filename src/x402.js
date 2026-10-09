@@ -309,8 +309,19 @@ const MAX_REFUSALS = 10;
  */
 export async function quoteX402(url, { chain: requestedChain, method = "GET", body, headers = {}, account, signer, scheme, rpc, rpcTimeoutMs, fetchImpl = fetch, timeoutMs = 60_000 } = {}) {
   const { policy, chain } = await prepare({ chain: requestedChain, headers, account, signer, scheme, rpc, rpcTimeoutMs });
+  // The quote goes out BEFORE the owner approves. A GET is the request itself (safe to
+  // repeat). Any other method could DO something, and its body and headers (an API key)
+  // are the owner's to release: so the quote asks with the same method, an empty JSON
+  // body and none of the caller's headers. If that does not show the terms, the result is
+  // `unquoted` (never `free`), and the real request only goes out after approval.
+  const verb = String(method).toUpperCase();
+  const probeOnly = verb !== "GET";
+  const withBody = ["POST", "PUT", "PATCH"].includes(verb);
+  const init = probeOnly
+    ? requestInit({ method: verb, body: withBody ? "{}" : undefined, headers: withBody ? { "content-type": "application/json" } : {}, timeoutMs })
+    : requestInit({ method, body, headers, timeoutMs });
   // Built as a Request, exactly as wrapFetchWithPayment builds the one `pay` sends.
-  const res = await fetchImpl(new Request(url, requestInit({ method, body, headers, timeoutMs })));
+  const res = await fetchImpl(new Request(url, init));
   let text = "";
   try {
     text = await res.text();
@@ -319,6 +330,8 @@ export async function quoteX402(url, { chain: requestedChain, method = "GET", bo
   }
   const base = { status: res.status, chain: chain.name };
   if (res.status !== 402) {
+    // An empty-body probe that gets no 402 says nothing about the real request: unquoted, not free.
+    if (probeOnly) return { ...base, free: false, unquoted: true, offers: [], refusals: [] };
     return { ...base, free: true, offers: [], refusals: [], content_type: cleanOrNull(res.headers.get("content-type"), 200), body: text };
   }
   const unreadable = (why) => ({ ...base, free: false, offers: [], refusals: [{ rule: "terms_unreadable", limit: "x402 v1 or v2 payment terms", observed: null, message: `the server answered 402 but its payment terms could not be read (${why}); nothing was paid` }] });

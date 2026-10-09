@@ -74,7 +74,7 @@ before(async () => {
     req.on("end", () => {
       const path = new URL(req.url, "http://x").pathname;
       const sig = req.headers["payment-signature"] ?? req.headers["x-payment"] ?? null;
-      hits.push({ path, method: req.method, sig, ua: req.headers["user-agent"], body, type: req.headers["content-type"] });
+      hits.push({ path, method: req.method, sig, ua: req.headers["user-agent"], body, type: req.headers["content-type"], auth: req.headers.authorization ?? null });
       if (path === "/free") {
         res.writeHead(200, { "content-type": "text/plain" });
         return res.end("hello \u001b[31mfree\u001b[0m");
@@ -83,7 +83,12 @@ before(async () => {
         res.writeHead(402, { "PAYMENT-REQUIRED": "!!not base64!!" });
         return res.end("{}");
       }
-      const seller = sellers[path];
+      // A seller that validates the body before its paywall: an empty body gets 422, a real one gets terms.
+      if (path === "/post-validates" && !sig && body === "{}") {
+        res.writeHead(422, { "content-type": "text/plain" });
+        return res.end("missing field q");
+      }
+      const seller = path === "/post-validates" ? sellers["/post"] : sellers[path];
       if (!seller) {
         res.writeHead(404);
         return res.end("nope");
@@ -338,7 +343,7 @@ test("CLI: a free server (HTTP 200) is not paid, asks no approval and uses no pa
   setPolicy({ approval: "auto" });
 });
 
-test("CLI: a POST pay sends x402_method to Sato Hub, never the body or headers; the quote carries the body and headers", async () => {
+test("CLI: a POST pay sends x402_method to Sato Hub, never the body or headers; the quote (before approval) sends neither the body nor the headers", async () => {
   reset();
   const secret = "Bearer sk-SECRET-TERMS-123";
   const r = await run(["pay", `${origin}/post`, "--method", "post", "--data", '{"q":"hello world"}', "--header", `authorization: ${secret}`, "--dry-run", "--json"]);
@@ -348,13 +353,32 @@ test("CLI: a POST pay sends x402_method to Sato Hub, never the body or headers; 
   assert.doesNotMatch(JSON.stringify(hubCalls), /hello world|sk-SECRET/);
   const q = hits.find((h) => h.path === "/post");
   assert.equal(q.method, "POST");
-  assert.equal(q.body, '{"q":"hello world"}');
+  assert.equal(q.body, "{}", "the owner's body is not released before approval");
+  assert.equal(q.auth, null, "nor the owner's headers (an API key)");
   assert.equal(q.type, "application/json");
   assert.equal(q.sig, null);
+  assert.equal(JSON.parse(r.stdout).terms.usd, 0.01, "the empty-body ask still read the price");
   // A GET sends the URL alone, as before.
   hubCalls = [];
   await run(["pay", `${origin}/v2/ok`, "--dry-run", "--json"]);
   assert.deepEqual(hubCalls[0], { x402: `${origin}/v2/ok` });
+});
+
+test("CLI: a POST seller that checks the body before its paywall is unquoted: the approval says the price is not known, and the real body goes out only after it", async () => {
+  reset();
+  setPolicy({ approval: "ask" });
+  const args = ["pay", `${origin}/post-validates`, "--method", "POST", "--data", '{"q":"hello world"}', "--skip-check"];
+  const ask = await run(args);
+  assert.equal(ask.code, 5, ask.stderr);
+  assert.match(ask.stdout + ask.stderr, /not stated before the real request/);
+  const before = hits.filter((h) => h.path === "/post-validates");
+  assert.deepEqual(before.map((h) => h.body), ["{}"], "only the empty-body ask went out before approval");
+  const code = (ask.stdout + ask.stderr).match(/--approve ([0-9a-f]{8})/)[1];
+  const go = await run([...args, "--approve", code, "--json"]);
+  assert.equal(go.code, 0, go.stderr);
+  assert.equal(JSON.parse(go.stdout).settled, true);
+  assert.ok(hits.some((h) => h.path === "/post-validates" && h.body === '{"q":"hello world"}'), "the real body went out after approval");
+  setPolicy({ approval: "auto" });
 });
 
 test("CLI: --dry-run shows the quoted price, chain and payee, signs nothing and needs no approval", async () => {

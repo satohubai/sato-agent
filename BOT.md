@@ -38,7 +38,7 @@ The kit creates both a Base and a Solana address, so you always have one of each
    - "Should a Sato Hub check be able to stop a payment?" → `--check-gate off` (it only informs), `--check-gate no` (stop when the check says `no`), or `--check-gate caution` (stop on `caution` or `no`).
      `caution` is strict: many ordinary x402 sellers and new recipients come back `caution`, so it will stop those too.
    - If the gate is on: "If the Sato Hub check can't run, should I go ahead or stop?" → `--on-check-unavailable allow` or `--on-check-unavailable refuse`. The kit requires this answer whenever the gate is on.
-   - In `ask` mode, approving a `pay` approves the URL, the request and the price and payee the server quoted (shown in the intent). A higher price at pay time is refused. Show the owner that price when you ask.
+   - In `ask` mode, approving a `pay` approves the URL, the request and the price and payee the server quoted (shown in the intent). A higher price at pay time is refused. Show the owner that price when you ask. If the intent says the price was "not stated before the real request" (some POST services only quote after seeing the real body), tell the owner the price is unknown until payment and capped by their per-transaction limit.
    - "Do you want me to be able to swap? If yes: what is the most slippage you accept, in basis points (50 = 0.5%), and how many swaps at most in any 24 hours?" → `policy set --swap-slippage-bps <1-500> --max-trades-per-day <n|none>`.
      Swaps stay OFF until both are set, and the spending limits apply to swaps too. Never suggest what to trade: you swap only what the owner asks for.
 5. **Ask the owner to fund the wallet for your CHAIN** (see the table above): only what they are willing to let you spend.

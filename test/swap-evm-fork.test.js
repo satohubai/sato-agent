@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import test, { after, before } from "node:test";
-import { createPublicClient, decodeFunctionData, encodeAbiParameters, erc20Abi, http, keccak256, pad, toHex } from "viem";
+import { createPublicClient, decodeFunctionData, encodeAbiParameters, encodeFunctionData, erc20Abi, http, keccak256, pad, toHex } from "viem";
 import { base } from "viem/chains";
 import { freshHome } from "./helpers.js";
 import { passes, satoResponseFrom } from "./swap-evm-helpers.js";
@@ -118,6 +118,7 @@ test("fork: USDC -> ETH, real route, real simulation, exact approval, balances m
   // a dry run does everything but sign
   const dry = await dryRunBaseSwap({ from: "USDC", to: "ETH", amount: "50", slippageBps: 100 }, {
     taker: me,
+    usdNotional: 50,
     verifySignature: passes,
     callTool: async (_n, args) => ({ text: "", structured: await liveSatoResponse({ tokenIn: args.token_in, tokenOut: args.token_out, units: BigInt(args.amount_in), slippageBps: args.slippage_bps }), isError: false }),
   });
@@ -135,7 +136,7 @@ test("fork: USDC -> ETH, real route, real simulation, exact approval, balances m
   assert.equal(plan.simulation.fee_seen, 75_000n, "15 bps of 50 USDC reached the fee address");
   assert.equal(await allowanceOf(me), 0n);
 
-  const out = await executeBaseSwap(plan);
+  const out = await executeBaseSwap(plan, { usdNotional: plan.usd });
 
   assert.equal(await usdcOf(me), usdc0 - 50_000_000n, "exactly the amount left");
   const eth1 = await pub.getBalance({ address: me });
@@ -168,7 +169,7 @@ test("fork: ETH -> USDC, native value, USDC arrives within min_out", { skip: !en
   const plan = await verify({ usdNotional: 25 });
   assert.equal(plan.approval.needed, false);
   assert.equal(plan.tx.value, 10n ** 16n);
-  const out = await executeBaseSwap(plan);
+  const out = await executeBaseSwap(plan, { usdNotional: plan.usd });
   assert.equal(out.approve_tx, null);
   const usdc1 = await usdcOf(me);
   assert.ok(usdc1 - usdc0 >= plan.min_out, `received ${usdc1 - usdc0} >= min_out ${plan.min_out}`);
@@ -183,7 +184,7 @@ test("fork: USDC -> WETH delivers WETH", { skip: !enabled }, async () => {
   const w0 = await weth(me);
   const { verify } = await planLive({ from: "USDC", to: "WETH", amount: "20" });
   const plan = await verify();
-  const out = await executeBaseSwap(plan);
+  const out = await executeBaseSwap(plan, { usdNotional: plan.usd });
   const w1 = await weth(me);
   assert.ok(w1 - w0 >= plan.min_out);
   assert.equal(out.received.amount, evm.unitsToDecimal(w1 - w0, 18));
@@ -201,4 +202,50 @@ test("fork: a stranger's router is refused before any simulation or signature", 
   const { response, intent } = await planLive({ from: "USDC", to: "ETH", amount: "10" });
   response.tx.to = "0x0000000000001fF3684f28c67538d4D072C22734";
   await assert.rejects(verifyBaseSwapPlan(response, intent, { verifySignature: passes }), (e) => e instanceof Refused && e.refusals[0].rule === "router_not_pinned");
+});
+
+// The adversarial review's attack: a build whose own floor is 1 unit. The kit's simulation would still pass it (the pool
+// can pay in a simulation); the transaction itself is what has to carry the minimum.
+const tamperedLive = async (change) => {
+  const live = await planLive({ from: "USDC", to: "ETH", amount: "10" });
+  const ex = decodeFunctionData({ abi: evm.KYBER_ROUTER_ABI, data: live.response.tx.data }).args[0];
+  const copy = JSON.parse(JSON.stringify(ex, (_k, v) => (typeof v === "bigint" ? `${v}n` : v)), (_k, v) => (typeof v === "string" && /^\d+n$/.test(v) ? BigInt(v.slice(0, -1)) : v));
+  change(copy.desc);
+  live.response.tx.data = encodeFunctionData({ abi: evm.KYBER_ROUTER_ABI, functionName: "swap", args: [copy] });
+  return live;
+};
+
+test("fork: a live Kyber build with minReturnAmount = 1 is refused as min_out_not_enforced", { skip: !enabled }, async () => {
+  const honest = await planLive({ from: "USDC", to: "ETH", amount: "10" });
+  const plan = await honest.verify();
+  assert.ok(plan.min_out_in_transaction >= plan.min_out - 1n && plan.min_out_in_transaction <= plan.min_out, "an honest live build carries Kyber's own rounding of the minimum");
+  const { response, intent } = await tamperedLive((d) => (d.minReturnAmount = 1n));
+  await assert.rejects(verifyBaseSwapPlan(response, intent, { verifySignature: passes }), (e) => e instanceof Refused && e.refusals.map((r) => r.rule).join() === "min_out_not_enforced");
+});
+
+test("fork: a live build that pays someone else, or takes a second fee, is refused", { skip: !enabled }, async () => {
+  const stranger = "0x000000000000000000000000000000000000dEaD";
+  let t = await tamperedLive((d) => (d.dstReceiver = stranger));
+  await assert.rejects(verifyBaseSwapPlan(t.response, t.intent, { verifySignature: passes }), (e) => e instanceof Refused && e.refusals.map((r) => r.rule).join() === "recipient_not_taker");
+  t = await tamperedLive((d) => { d.feeReceivers = [...d.feeReceivers, stranger]; d.feeAmounts = [...d.feeAmounts, 100n]; });
+  await assert.rejects(verifyBaseSwapPlan(t.response, t.intent, { verifySignature: passes }), (e) => e instanceof Refused && e.refusals.map((r) => r.rule).join() === "fee_not_as_disclosed");
+});
+
+test("fork: the kit's simulation runs with the chain's real base fee, so BASEFEE is not zero inside it", { skip: !enabled }, async () => {
+  // a contract that returns the BASEFEE opcode: 48 5f 52 60 20 5f f3
+  const probe = "0x00000000000000000000000000000000000b45ef";
+  const code = "0x485f5260205ff3";
+  const latest = await pub.getBlock({ blockTag: "latest" });
+  assert.ok(latest.baseFeePerGas > 0n);
+  const call = async (params) => {
+    params[0].blockStateCalls[0].stateOverrides = { [probe]: { code } };
+    params[0].blockStateCalls[0].calls = [{ from: me, to: probe, data: "0x" }];
+    const [blk] = await rpc("eth_simulateV1", params);
+    assert.equal(blk.calls[0].status, "0x1");
+    return BigInt(blk.calls[0].returnData);
+  };
+  const plain = await call(evm.buildSimulationRequest({ taker: me, calls: [{ to: probe, data: "0x" }] }));
+  assert.equal(plain, 0n, "eth_simulateV1's default block has a zero base fee: exactly what a hostile pool could look for");
+  const real = await call(evm.buildSimulationRequest({ taker: me, calls: [{ to: probe, data: "0x" }], baseFeePerGas: latest.baseFeePerGas, maxPriorityFeePerGas: 1_000_000n }));
+  assert.equal(real, latest.baseFeePerGas);
 });

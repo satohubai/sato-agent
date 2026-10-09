@@ -104,7 +104,7 @@ before(async () => {
   me = initWallet().base;
   await rpc("anvil_setBalance", [me, toHex(10n ** 18n)]); // 1 ETH
   await giveUsdc(me, 500_000_000n); // 500 USDC
-  setPolicy({ chains: "base", perTx: "1000", perDay: "10000" });
+  setPolicy({ chains: "base", perTx: "1000", perDay: "10000", swapSlippageBps: "100", maxTradesPerDay: "none" });
 });
 after(() => anvil?.kill());
 process.on("exit", () => anvil?.kill());

@@ -633,7 +633,7 @@ async function setup(fxName = USDC_SOL, o = {}) {
   const deps = { rpc: rig.rpc, signer, now: () => plan.built_at + 2_000, sleep: async () => {}, minGapMs: 0, pollMs: 0, ...(o.deps ?? {}) };
   return { signer, fx, plan, rig, deps };
 }
-const policyAllow = (perTx = "50", perDay = "100") => setPolicy({ perTx, perDay, chains: "solana" });
+const policyAllow = (perTx = "50", perDay = "100") => setPolicy({ perTx, perDay, chains: "solana", swapSlippageBps: "500", maxTradesPerDay: "none" });
 const rowsOf = (id) => entries().filter((e) => e.id === id);
 const lastRows = () => entries().filter((e) => e.kind === "swap" || e.status);
 

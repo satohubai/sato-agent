@@ -19,6 +19,7 @@ import * as solana from "../src/solana.js";
 import { pay } from "../src/x402.js";
 import { MCP_URL, checkInstall, customEndpoint, gateRefusals, recommend, runCheck } from "../src/satohub.js";
 import { usdcUnits, unitsToUsd } from "../src/amount.js";
+import { prepareSwap, sizeSwap } from "../src/swap/run.js";
 
 const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, with the owner's limits
 
@@ -29,7 +30,10 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
   policy set --chains <base|solana|base,solana> --per-tx <usd|none> --per-day <usd|none>
              [--allow <addr,addr> | --allow any] [--check-gate off|no|caution]
              [--on-check-unavailable allow|refuse] [--approval auto|ask]
+             [--swap-slippage-bps <1-1000>|off --max-trades-per-day <n|none>]
                                          the owner's choices; nothing is spent until chains and both limits are set
+  swap --chain base|solana --from <USDC|ETH|WETH|SOL> --to <...> --amount <n> [--slippage-bps <n>] [--dry-run]
+                                         swap with USDC on one side; off until the owner sets swap caps; checked against an independent price
   send --chain base|solana --to <address> --amount <usdc> [--approve <code>]
                                          send USDC (Sato Hub checks the recipient first)
   pay <url> [--method POST --data <body> --header 'k: v' ...] [--approve <code>]
@@ -292,6 +296,45 @@ async function main() {
       if (flags.json) return out("", { ...r, sato_hub_check: check });
       console.log(`${head}\n\n${bodyText}`);
       return;
+    }
+    case "swap": {
+      const chain = (flags.chain || "").toLowerCase();
+      if (!["base", "solana"].includes(chain) || !flags.from || !flags.to || !flags.amount) {
+        throw new UsageError("swap --chain base|solana --from <USDC|ETH|WETH|SOL> --to <...> --amount <n> [--slippage-bps <n>] [--dry-run]");
+      }
+      let slippageBps;
+      if (flags["slippage-bps"] !== undefined) {
+        if (!/^\d+$/.test(flags["slippage-bps"])) throw new UsageError("--slippage-bps must be a whole number of basis points");
+        slippageBps = Number(flags["slippage-bps"]);
+      }
+      const req = { chain, from: flags.from, to: flags.to, amount: flags.amount, slippageBps };
+      // The owner's choices and an independent price first (refuses before anything is quoted)...
+      const sized = await sizeSwap(req);
+      // ...then the owner's approval of this exact swap, before any quote is built
+      // (a quote lives about a minute; an approval can take longer).
+      await beforeSpend({
+        chain,
+        intent: { cmd: "swap", chain, from: sized.from, to: sized.to, amount: sized.amount, slippage_bps: sized.slippageBps, price: "the quote must sit within the oracle tolerance; the minimum out is set by the slippage" },
+        checkArgs: null,
+        usd: sized.usd,
+      });
+      const prepared = await prepareSwap(req);
+      const d = prepared.display;
+      const lines = [
+        `${d.chain === "base" ? "Base" : "Solana"} swap via ${d.venue}: sell ${d.sell.amount} ${d.sell.asset} for about ${d.buy.quoted} ${d.buy.asset} (at least ${d.buy.minimum}, slippage ${d.buy.slippage_bps} bps)`,
+        `Independent price: ${d.oracle.source} says $${d.oracle.usd} (${d.oracle.age_s}s old); the quote is ${d.oracle.deviation_pct}% from it.`,
+        `Held to your limits as $${d.usd_held_to_limits}.`,
+        `Sato Hub fee: ${d.sato_fee.bps} bps. ${d.sato_fee.disclosure ?? ""}`.trim(),
+        ...(d.approval ? [`Approval first: exactly ${d.approval.amount} ${d.approval.token} to the pinned router ${d.approval.spender} (never unlimited).`] : []),
+        ...(Array.isArray(d.disclosure) ? d.disclosure : []),
+        `The kit's own simulation passed: ${JSON.stringify(d.simulation)}`,
+      ];
+      if (flags["dry-run"]) {
+        return out(`DRY RUN: every check passed. Nothing was signed or sent, and nothing counts against the limits.\n${lines.join("\n")}`, { dry_run: true, ...d });
+      }
+      say(lines.join("\n"));
+      const r = await prepared.execute();
+      return out(`Swapped. ${r.explorer}${r.received ? `\nReceived ${r.received.amount} ${r.received.asset}.` : r.amount_out ? `\nReceived ${r.amount_out} base units of ${d.buy.asset}.` : ""}${r.warnings?.length ? `\nNote: ${r.warnings.join("; ")}` : ""}`, { ...r, plan: d });
     }
     case "register": {
       const services = (flags.service ?? []).map((s) => {

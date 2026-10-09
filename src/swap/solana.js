@@ -72,8 +72,12 @@ export const SATO_FEE_ACCOUNTS = Object.freeze({
   [USDC_MINT]: "FMEXEnUt2fxKkZewdWq5PKebLw4vs1ddyayJjKap4LGo",
   [WSOL_MINT]: "HnyyFHhp3LQ6VfRn1AhPHSwboYYQa1HT7REaMfzsA8gx",
 });
-/** The kit refuses a platform fee above this, whatever Sato's schedule says (Sato's own top rate today is 25). */
-export const FEE_BPS_MAX = 100;
+/**
+ * The kit refuses a platform fee above this, whatever a response says. Sato's
+ * published same-chain rate is 3 bps stable-to-stable and 15 bps with a volatile
+ * leg (USDC <-> SOL is volatile); 25 bps is cross-chain only. Same ceiling as Base.
+ */
+export const FEE_BPS_MAX = 15;
 
 export const JUPITER_PROGRAM = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
 const SYSTEM_PROGRAM = "11111111111111111111111111111111";

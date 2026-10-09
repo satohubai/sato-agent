@@ -16,15 +16,15 @@ Two Bots, one kit:
 
 | Bot | Message | Today (v0.1) |
 |---|---|---|
-| **Sato Base Agent** | `NAME = base, CHAIN = base` | x402 payments, USDC sends, ERC-8004 identity, Sato Hub checks |
-| **Sato Solana Agent** | `NAME = solana, CHAIN = solana` | USDC sends (wallet recipients only), Sato Hub checks. x402 on Solana and swaps are next. |
+| **Sato Base Agent** | `NAME = base, CHAIN = base` | x402 payments, USDC sends, swaps USDC ↔ ETH/WETH, ERC-8004 identity, Sato Hub checks |
+| **Sato Solana Agent** | `NAME = solana, CHAIN = solana` | USDC sends (wallet recipients only), swaps USDC ↔ SOL via Jupiter, Sato Hub checks. x402 on Solana is next. |
 
 Each Bot keeps its own wallet, limits and ledger, even on the same Grok Bot computer.
 
 ## Quickstart (any machine)
 
 ```sh
-npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.1.1
+npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.2.0
 alias sato-agent=~/.sato-agent-cli/node_modules/.bin/sato-agent
 
 sato-agent init                                     # this agent's own wallet
@@ -45,6 +45,7 @@ sato-agent register --name "My agent" --description "What it does"
 | `policy set --chains <base\|solana\|base,solana> --per-tx <usd\|none> --per-day <usd\|none>` | The owner's choices (per day = rolling 24 hours). **There are no defaults:** nothing is spent until chains and both limits are set. |
 | `policy set [--allow <addrs>\|any] [--approval ask\|auto] [--check-gate off\|no\|caution] [--on-check-unavailable allow\|refuse]` | Optional choices: a recipient allowlist; ask the owner before every spend; let a Sato Hub `no` (or `caution`) stop a spend; what to do when the check can't run. **Anything that loosens a choice is logged as a raise.** |
 | `pay <url> [--method --data --header]` | Pays an x402 resource in USDC on Base, after Sato Hub reads its payment terms. A JSON `--data` gets a JSON content-type |
+| `swap --chain base\|solana --from <asset> --to <asset> --amount <n> [--slippage-bps <n>] [--dry-run]` | Swaps with USDC on one side (Base: ETH, WETH; Solana: SOL). Off until the owner sets `--swap-slippage-bps` and `--max-trades-per-day`. See "How swaps are checked" below. |
 | `send --chain base\|solana --to <addr> --amount <usdc>` | Sends USDC, after Sato Hub checks the recipient |
 | `register --name --description [--image] [--service name=endpoint] [--x402-support]` | Registers in the ERC-8004 IdentityRegistry on Base (`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`), with the registration file stored onchain |
 | `check "<install command>"` | Sato Check: does an install take a key, does the key leave, can it move funds on its own |
@@ -88,6 +89,16 @@ Every limit change is written to the ledger and shown in `status`. `pay` frames 
 - So the limits stop mistakes, runaway loops, and an agent that follows its rules. They don't stop a compromised agent, or a prompt injection it obeys.
 - **The hard bound is what you fund the wallet with.** Use a wallet dedicated to the agent, never your main wallet, and fund it with what you're willing to let it spend.
 - On Grok Bot, every Bot in your account shares one computer, so every one of your Bots can read the key file.
+
+## How swaps are checked
+
+Nothing is signed until all of these pass:
+- **The owner's choices:** swaps turned on, slippage under the owner's cap, trades per 24 hours, the USD limits. A swap counts against the same per-transaction and 24-hour limits as any spend.
+- **An independent price.** Chainlink ETH/USD or SOL/USD, read on Base. Selling ETH or SOL is valued at that price, never at the quote. With no fresh price, there is no swap, and a quote more than 3% (ETH) or 5% (SOL) from it is refused.
+- **Sato Hub's signature** on the quote and on its fee disclosure.
+- **On Base:** the transaction must go to the pinned KyberSwap router on chain 8453, with the right value. The kit runs its own simulation (`eth_simulateV1`) of the approval plus the swap: the wallet may lose at most the amount sold, must receive at least the minimum, and must lose nothing else. Approvals are for the exact amount only, never unlimited, and any leftover allowance is set back to 0.
+- **On Solana:** the kit builds the transaction through Jupiter itself. It decodes it with its lookup tables and allows only pinned programs (and only the exact wrap, unwrap and create-account steps). The agent must be the only signer and the fee payer, the priority fee is capped, and the kit runs its own simulation of the balance changes. A transaction close to expiry is rebuilt and checked again, never re-signed.
+- **The Sato Hub fee** is shown before signing. It is taken inside the swap (3 bps for stablecoin pairs, 15 bps with ETH or SOL), and the kit refuses anything above 15 bps or to an address it doesn't pin.
 
 ## Files, network and privacy
 

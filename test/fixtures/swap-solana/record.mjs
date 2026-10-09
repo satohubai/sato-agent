@@ -19,11 +19,15 @@ const here = (f) => new URL(f, import.meta.url);
 const plain = (v) => JSON.parse(JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x)));
 
 const CASES = [
-  { file: "usdc-to-sol.json", from: "USDC", to: "SOL", amount: "25" },
-  { file: "sol-to-usdc.json", from: "SOL", to: "USDC", amount: "0.5" },
+  { file: "usdc-to-sol.json", from: "USDC", to: "SOL", amount: "25", fee: 15 },
+  { file: "sol-to-usdc.json", from: "SOL", to: "USDC", amount: "0.5", fee: 15 },
+  // No Sato fee: Jupiter's route instruction then names no fee account (its program id stands in).
+  { file: "usdc-to-sol-nofee.json", from: "USDC", to: "SOL", amount: "10", fee: 0 },
 ];
 
-for (const c of CASES) {
+// `node record.mjs usdc-to-sol-nofee.json` records just that case (the others are left as they are).
+const only = process.argv.slice(2);
+for (const c of CASES.filter((x) => only.length === 0 || only.includes(x.file))) {
   const http = [];
   const calls = [];
   const recFetch = async (url, init) => {
@@ -48,12 +52,12 @@ for (const c of CASES) {
       };
     },
   });
-  const deps = { agent: WALLET, satoFeeBps: 15, fetch: recFetch, userAgent: UA, rpc };
+  const deps = { agent: WALLET, satoFeeBps: c.fee, fetch: recFetch, userAgent: UA, rpc };
   const plan = await planSolanaSwap({ from: c.from, to: c.to, amount: c.amount, slippageBps: 50 }, deps);
   const verification = await verifySolanaSwapPlan(plan, { agent: WALLET, from: c.from, to: c.to, amount: c.amount }, deps);
   writeFileSync(
     here(c.file),
-    JSON.stringify({ recorded_at: new Date().toISOString(), wallet: WALLET, request: { from: c.from, to: c.to, amount: c.amount, slippageBps: 50, satoFeeBps: 15 }, built_at: plan.built_at, http, rpc: calls, verification }, null, 1) + "\n",
+    JSON.stringify({ recorded_at: new Date().toISOString(), wallet: WALLET, request: { from: c.from, to: c.to, amount: c.amount, slippageBps: 50, satoFeeBps: c.fee }, built_at: plan.built_at, http, rpc: calls, verification }, null, 1) + "\n",
   );
   console.log(c.file, "ok", plan.disclosure.join(" | "));
   console.log(JSON.stringify(verification.simulated));

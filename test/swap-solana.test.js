@@ -257,6 +257,7 @@ test("plan: USDC -> SOL asks Jupiter for the quote, then the build, with the pin
   assert.equal(body.userPublicKey, WALLET);
   assert.equal(body.feeAccount, "FMEXEnUt2fxKkZewdWq5PKebLw4vs1ddyayJjKap4LGo");
   assert.equal(body.wrapAndUnwrapSol, true);
+  assert.equal(body.useSharedAccounts, false, "the plain route instruction is asked for: it is the only one the kit decodes");
   assert.equal(body.dynamicComputeUnitLimit, true);
   assert.equal(body.prioritizationFeeLamports.priorityLevelWithMaxLamports.maxLamports, 100_000);
   assert.ok(body.prioritizationFeeLamports.priorityLevelWithMaxLamports.maxLamports <= S.PRIORITY_MAX_LAMPORTS);

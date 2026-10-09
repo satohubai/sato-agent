@@ -420,6 +420,10 @@ export async function planSolanaSwap({ from, to, amount, slippageBps }, deps = {
     userPublicKey: agent,
     quoteResponse: quote,
     wrapAndUnwrapSol: true,
+    // Ask for the plain `route` instruction, the only one this kit decodes. Left to
+    // itself Jupiter sometimes answers with `shared_accounts_route` (seen live on
+    // 2026-10-09, about one build in three), which the kit would then refuse.
+    useSharedAccounts: false,
     dynamicComputeUnitLimit: true,
     // Capped, not "auto": Jupiter picks a level, we bound what it may cost.
     prioritizationFeeLamports: { priorityLevelWithMaxLamports: { maxLamports: PRIORITY_MAX_LAMPORTS, priorityLevel: "high" } },

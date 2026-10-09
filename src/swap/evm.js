@@ -239,6 +239,10 @@ export async function planBaseSwap({ from, to, amount, slippageBps }, deps = {})
     amount_in: intent.amountIn.toString(),
     taker: intent.taker,
     slippage_bps: intent.slippageBps,
+    // Ask Sato Hub for KyberSwap only: it is the one router this kit decodes. Sato Hub then never
+    // answers with another venue, and says so by name if KyberSwap cannot quote. (A Sato Hub that
+    // predates the pin ignores the field; the venue check below still refuses anything else.)
+    venue: VENUE,
     response_format: "json",
     ...(intent.usd_hint !== null ? { usd_notional: intent.usd_hint } : {}),
     // No `recipient`: Sato only gate-checks it and no venue honours it. The output goes to the taker.

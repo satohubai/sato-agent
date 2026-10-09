@@ -99,6 +99,7 @@ test("plan asks Sato Hub for build-tx with pinned addresses, base units, the age
     amount_in: "100000000",
     taker: SENDER, // checksummed
     slippage_bps: 50,
+    venue: "kyberswap", // Sato Hub is asked for the one router the kit decodes
     response_format: "json",
     usd_notional: 100,
   });

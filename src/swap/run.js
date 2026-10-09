@@ -121,6 +121,8 @@ async function satoSolanaDisclosure(sized, deps) {
     taker: a.solana,
     slippage_bps: sized.slippageBps,
     usd_notional: sized.usd,
+    // Jupiter only: the kit builds through Jupiter, so the fee disclosure must be Jupiter's.
+    venue: "jupiter-aggregator",
     response_format: "json",
   });
   const body = r.structured;

@@ -100,6 +100,11 @@ test("Solana: Sato's signed fee disclosure is required; an unverifiable one stop
     verifySignature: async () => { throw new Error("bad_signature"); },
   };
   assert.deepEqual(await rules(prepareSwap({ chain: "solana", from: "USDC", to: "SOL", amount: "11" }, deps)), ["signature_unverified"]);
+  // Sato Hub is asked for Jupiter by name...
+  let asked;
+  await prepareSwap({ chain: "solana", from: "USDC", to: "SOL", amount: "11" }, { ...deps, callTool: async (_n, args) => ((asked = args), { structured: satoBody, isError: false }) }).catch(() => {});
+  assert.equal(asked.venue, "jupiter-aggregator");
+  // ...and an answer naming another venue (an older Sato Hub ignores the pin) is still refused.
   const wrongVenue = { ...deps, verifySignature: async () => ({ ok: true }), callTool: async () => ({ structured: { ...satoBody, venue: "raydium" } }) };
   assert.deepEqual(await rules(prepareSwap({ chain: "solana", from: "USDC", to: "SOL", amount: "11" }, wrongVenue)), ["venue_unexpected"]);
   // a genuine signature on an answer about a different swap is not a disclosure for this one

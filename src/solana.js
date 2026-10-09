@@ -37,7 +37,10 @@ import { loadWallet, solanaSecret } from "./wallet.js";
 import { USER_AGENT } from "./version.js";
 
 export const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PZnBCPiW4JQ7Gr";
+// From @solana-program/token-2022 0.19.0 (TOKEN_2022_PROGRAM_ADDRESS); confirmed
+// executable on mainnet 2026-10-09. (v0.1.x had a wrong id here, so token-2022
+// token accounts slipped past the recipient check.)
+export const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 const LAMPORTS = 1_000_000_000;
 const explorer = (sig) => `https://solscan.io/tx/${sig}`;
 

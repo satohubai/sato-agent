@@ -24,7 +24,7 @@
 // Everything a server sends (amounts, addresses, receipts, error text) is
 // checked or cleaned (src/text.js) before it is printed or written to the ledger.
 
-import { wrapFetchWithPayment, x402Client, decodePaymentResponseHeader } from "@x402/fetch";
+import { wrapFetchWithPayment, x402Client, x402HTTPClient, decodePaymentResponseHeader } from "@x402/fetch";
 import { ExactEvmScheme } from "@x402/evm";
 import { ExactEvmSchemeV1 } from "@x402/evm/v1";
 import { isAddress } from "viem";
@@ -220,8 +220,28 @@ async function solanaChain({ signer, scheme, rpc, rpcTimeoutMs }) {
   };
 }
 
-function check(policy, raw, chain, version) {
+/**
+ * The terms the owner approved, when a price was quoted first (see quoteX402):
+ * `maxUsd` is the price the owner saw, `payTo` the payee they saw. A server that
+ * asks for more, or names someone else, at pay time is refused before anything
+ * is reserved or signed. Undefined = no binding (a call that was never quoted).
+ */
+function boundTerms({ maxUsd, payTo } = {}) {
+  if (maxUsd === undefined) return null;
+  if (typeof maxUsd !== "number" || !Number.isFinite(maxUsd) || !(maxUsd > 0)) throw new Error("maxUsd must be a positive number of dollars");
+  return { maxUsd, maxUnits: BigInt(Math.round(maxUsd * 1e6)), payTo };
+}
+const samePayee = (a, b) => (String(b).startsWith("0x") ? String(a).toLowerCase() === String(b).toLowerCase() : a === b);
+
+// The one guard. `pay` runs it on every offer and again right before reserving;
+// `quoteX402` runs it on every offer before anything is asked of the owner, so
+// what is quoted can never drift from what would be paid.
+function check(policy, raw, chain, version, bound = null) {
   const req = view(raw, version);
+  // x402 only pairs an offer with a signer by scheme name; this kit has "exact".
+  if (req.raw?.scheme !== "exact") {
+    return [{ rule: "scheme", limit: "exact", observed: req.raw?.scheme ?? null, message: "the server asks for a payment scheme other than \"exact\"; this kit signs \"exact\" payments and nothing else" }];
+  }
   if (!chain.accepts(req)) {
     return [{ rule: "asset", limit: chain.limit, observed: `${raw.asset} on ${raw.network}`, message: chain.refusal }];
   }
@@ -239,7 +259,116 @@ function check(policy, raw, chain, version) {
   } catch {
     return [{ rule: "amount", limit: "positive integer atomic units", observed: req.amount ?? null, message: "the server's amount is not a positive whole number of atomic USDC units that can be counted exactly" }];
   }
+  if (bound) {
+    if (unitsOf(req) > bound.maxUnits) {
+      return [{ rule: "price_changed", limit: bound.maxUsd, observed: usd, message: `the server now asks $${usd}, more than the $${bound.maxUsd} the owner approved; nothing was signed` }];
+    }
+    if (bound.payTo !== undefined && !samePayee(req.payTo, bound.payTo)) {
+      return [{ rule: "payee_changed", limit: bound.payTo, observed: req.payTo, message: "the server now names a different payee than the one the owner approved; nothing was signed" }];
+    }
+  }
   return evaluate(policy, { usd, to: req.payTo, chain: chain.name }, spentLast24h());
+}
+
+/** What `pay` and `quoteX402` both do first: the owner's chain, and a chain object (no network call, nothing signed). */
+async function prepare({ chain: requestedChain, headers, account, signer, scheme, rpc, rpcTimeoutMs }) {
+  const policy = loadPolicy();
+  const { chain: chainName, refusals } = resolvePayChain(policy, requestedChain);
+  // No limits, no chains chosen, or a chain the owner did not choose: nothing reserved, nothing fetched.
+  if (refusals.length) throw new Refused(refusals);
+  const reserved = Object.keys(headers).filter((k) => RESERVED_HEADERS.includes(k.toLowerCase()));
+  if (reserved.length) throw new Error(`header ${reserved.join(", ")} is reserved for the payment exchange`);
+  const chain = chainName === "solana" ? await solanaChain({ signer, scheme, rpc, rpcTimeoutMs }) : baseChain(account ?? evmAccount(), scheme);
+  return { policy, chain };
+}
+
+// The request, built the same way for the quote and for the payment.
+const requestInit = ({ method, body, headers, timeoutMs }) => ({ method, body, headers: { ...headers, "user-agent": USER_AGENT }, signal: AbortSignal.timeout(timeoutMs) });
+
+const MAX_OFFERS = 20; // a server's list is capped: only this many offers are read
+const MAX_REFUSALS = 10;
+
+/**
+ * Ask what `url` would charge, WITHOUT paying: one unpaid request, made the way
+ * `pay` makes it (same method, body, headers, user-agent and timeout). Nothing is
+ * reserved, nothing is signed.
+ *
+ * Returns `{ status, free, chain, offers, refusals, ... }`:
+ *   - `free: true` when the server did not answer 402 (it did not ask for payment);
+ *     then `body` and `content_type` carry its answer (untrusted content).
+ *   - `offers`: the 402 offers this agent could pay, cheapest first. Each runs
+ *     through the SAME guard `pay` uses (`check`), so an offer on another chain or
+ *     asset, over a limit, to a payee the owner did not allow, or with a window
+ *     or transfer method the kit will not sign, is not an offer. Each is
+ *     `{ usd, pay_to, network, version, chain, amount_atomic }`.
+ *   - `refusals`: why the others are not (and, with no offers, why nothing can be paid).
+ * The terms are read by x402's own parser (`x402HTTPClient.getPaymentRequiredResponse`,
+ * exported by @x402/fetch, the code `pay` runs): the v2 `PAYMENT-REQUIRED` header
+ * (decodePaymentRequiredHeader in @x402/core/http), else a v1 JSON body
+ * `{ x402Version: 1, accepts }`. Everything the server sent is cleaned (src/text.js).
+ */
+export async function quoteX402(url, { chain: requestedChain, method = "GET", body, headers = {}, account, signer, scheme, rpc, rpcTimeoutMs, fetchImpl = fetch, timeoutMs = 60_000 } = {}) {
+  const { policy, chain } = await prepare({ chain: requestedChain, headers, account, signer, scheme, rpc, rpcTimeoutMs });
+  // The quote goes out BEFORE the owner approves. A GET is the request itself (safe to
+  // repeat). Any other method could DO something, and its body and headers (an API key)
+  // are the owner's to release: so the quote asks with the same method, an empty JSON
+  // body and none of the caller's headers. If that does not show the terms, the result is
+  // `unquoted` (never `free`), and the real request only goes out after approval.
+  const verb = String(method).toUpperCase();
+  const probeOnly = verb !== "GET";
+  const withBody = ["POST", "PUT", "PATCH"].includes(verb);
+  const init = probeOnly
+    ? requestInit({ method: verb, body: withBody ? "{}" : undefined, headers: withBody ? { "content-type": "application/json" } : {}, timeoutMs })
+    : requestInit({ method, body, headers, timeoutMs });
+  // Built as a Request, exactly as wrapFetchWithPayment builds the one `pay` sends.
+  const res = await fetchImpl(new Request(url, init));
+  let text = "";
+  try {
+    text = await res.text();
+  } catch (err) {
+    text = res.status === 402 ? "" : `(the response body could not be read: ${clean(err.message, 200)})`;
+  }
+  const base = { status: res.status, chain: chain.name };
+  if (res.status !== 402) {
+    // An empty-body probe that gets no 402 says nothing about the real request: unquoted, not free.
+    if (probeOnly) return { ...base, free: false, unquoted: true, offers: [], refusals: [] };
+    return { ...base, free: true, offers: [], refusals: [], content_type: cleanOrNull(res.headers.get("content-type"), 200), body: text };
+  }
+  const unreadable = (why) => ({ ...base, free: false, offers: [], refusals: [{ rule: "terms_unreadable", limit: "x402 v1 or v2 payment terms", observed: null, message: `the server answered 402 but its payment terms could not be read (${why}); nothing was paid` }] });
+
+  let parsedBody;
+  try {
+    parsedBody = text ? JSON.parse(text) : undefined;
+  } catch {
+    /* not JSON: a v2 server carries its terms in the header */
+  }
+  let required;
+  try {
+    required = new x402HTTPClient(new x402Client()).getPaymentRequiredResponse((name) => res.headers.get(name), parsedBody);
+  } catch (err) {
+    return unreadable(clean(err.message, 120));
+  }
+  const version = required?.x402Version ?? 2;
+  if ((version !== 1 && version !== 2) || !Array.isArray(required.accepts)) return unreadable(version === 1 || version === 2 ? "no list of offers" : `x402 version ${clean(JSON.stringify(version) ?? "unknown", 20)} is not supported`);
+
+  const found = [];
+  const refusals = [];
+  required.accepts.slice(0, MAX_OFFERS).forEach((raw, index) => {
+    try {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("an offer is not an object");
+      const r = check(policy, raw, chain, version);
+      if (r.length) return refusals.push(...cleanRefusals(r));
+      const req = view(raw, version);
+      const units = unitsOf(req);
+      found.push({ index, units, offer: { usd: unitsToUsd(units), pay_to: clean(req.payTo, 100), network: req.network, version, chain: chain.name, amount_atomic: units.toString() } });
+    } catch (err) {
+      refusals.push(...cleanRefusals([{ rule: "terms_unreadable", limit: "x402 v1 or v2 payment terms", observed: null, message: `an offer could not be read (${clean(err.message, 120)})` }]));
+    }
+  });
+  found.sort((a, b) => (a.units < b.units ? -1 : a.units > b.units ? 1 : a.index - b.index));
+  const offers = found.map((f) => f.offer);
+  if (!offers.length && !refusals.length) refusals.push({ rule: "no_offer", limit: "at least one offer", observed: 0, message: "the server asked for payment but offered nothing" });
+  return { ...base, free: false, version, offers, refusals: refusals.slice(0, MAX_REFUSALS) };
 }
 
 /**
@@ -248,19 +377,14 @@ function check(policy, raw, chain, version) {
  * (Base) and `signer` / `scheme` / `rpc` / `rpcTimeoutMs` (Solana) are for tests;
  * by default they come from the agent's own wallet and SATO_AGENT_SOLANA_RPC.
  */
-export async function pay(url, { chain: requestedChain, method = "GET", body, headers = {}, account, signer, scheme, rpc, rpcTimeoutMs, fetchImpl = fetch, timeoutMs = 60_000 } = {}) {
-  const policy = loadPolicy();
-  const { chain: chainName, refusals } = resolvePayChain(policy, requestedChain);
-  // No limits, no chains chosen, or a chain the owner did not choose: nothing reserved, nothing fetched.
-  if (refusals.length) throw new Refused(refusals);
-  const reserved = Object.keys(headers).filter((k) => RESERVED_HEADERS.includes(k.toLowerCase()));
-  if (reserved.length) throw new Error(`header ${reserved.join(", ")} is reserved for the payment exchange`);
-  const chain = chainName === "solana" ? await solanaChain({ signer, scheme, rpc, rpcTimeoutMs }) : baseChain(account ?? evmAccount(), scheme);
+export async function pay(url, { chain: requestedChain, method = "GET", body, headers = {}, maxUsd, payTo, account, signer, scheme, rpc, rpcTimeoutMs, fetchImpl = fetch, timeoutMs = 60_000 } = {}) {
+  const bound = boundTerms({ maxUsd, payTo }); // the price (and payee) the owner approved, if one was quoted first
+  const { policy, chain } = await prepare({ chain: requestedChain, headers, account, signer, scheme, rpc, rpcTimeoutMs });
 
   const seen = [];
   const guard = (version, reqs) =>
     reqs.filter((req) => {
-      const r = check(policy, req, chain, version);
+      const r = check(policy, req, chain, version, bound);
       seen.push(...cleanRefusals(r));
       return r.length === 0;
     });
@@ -271,6 +395,9 @@ export async function pay(url, { chain: requestedChain, method = "GET", body, he
       { x402Version: 1, network: chain.v1Network, client: chain.schemeV1 }, // v1 servers: same guard, same hooks
     ],
     policies: [guard],
+    // A quoted price is a price: when the owner approved one, the cheapest offer inside it is
+    // taken (the offer that was quoted), not whichever the server lists first.
+    ...(bound ? { paymentRequirementsSelector: (ver, accepts) => accepts.reduce((best, r) => (BigInt(view(r, ver).amount) < BigInt(view(best, ver).amount) ? r : best)) } : {}),
     // x402's built-in controls ($1 default, default assets) run before policies and
     // would answer for the owner. The guard is stricter (USDC on one chain only, short
     // authorization windows) and applies the owner's limits, so it is the only
@@ -286,7 +413,7 @@ export async function pay(url, { chain: requestedChain, method = "GET", body, he
   let version = 2; // x402 protocol version of the payment being made
   client.onBeforePaymentCreation(async ({ paymentRequired, selectedRequirements: raw }) => {
     version = paymentRequired?.x402Version ?? 2;
-    const pre = check(loadPolicy(), raw, chain, version);
+    const pre = check(loadPolicy(), raw, chain, version, bound);
     if (pre.length) {
       seen.push(...cleanRefusals(pre));
       return { abort: true, reason: pre.map((x) => x.rule).join(",") };
@@ -330,7 +457,7 @@ export async function pay(url, { chain: requestedChain, method = "GET", body, he
   const paidFetch = wrapFetchWithPayment(fetchImpl, client);
   let res;
   try {
-    res = await paidFetch(url, { method, body, headers: { ...headers, "user-agent": USER_AGENT }, signal: AbortSignal.timeout(timeoutMs) });
+    res = await paidFetch(url, requestInit({ method, body, headers, timeoutMs }));
   } catch (err) {
     if (rejected) {
       throw new Pending(`A payment of ${entry.usd} USDC to ${entry.to} was signed, but the signed ${chain.signedThing} did not match what was reserved (${rejected.problems.join("; ")}). It was NOT sent.`, {

@@ -12,6 +12,7 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
+import { encodePaymentRequiredHeader } from "@x402/core/http";
 import { freshHome } from "./helpers.js";
 
 const home = freshHome();
@@ -29,6 +30,7 @@ let mode = { verdict: "go" }; // what the mock answers
 let lastArgs = null; // what the mock was asked
 let web;
 let webUrl;
+let x402Url; // a seller that answers 402
 let lastHeaders = null;
 
 // Real Preflight precedence (onchain-agent-app lib/mcp/tools.ts): one target per call.
@@ -71,11 +73,18 @@ before(async () => {
   mcpUrl = `http://127.0.0.1:${mcp.address().port}/api/mcp`;
   web = createServer((req, res) => {
     lastHeaders = req.headers;
+    if (req.url === "/x402" && !req.headers["payment-signature"]) {
+      // A seller that asks for $0.01 of USDC on Base (nothing here ever settles).
+      const accepts = [{ scheme: "exact", network: "eip155:8453", asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", amount: "10000", payTo: "0x1111111111111111111111111111111111111111", maxTimeoutSeconds: 60, extra: { name: "USD Coin", version: "2" } }];
+      res.writeHead(402, { "PAYMENT-REQUIRED": encodePaymentRequiredHeader({ x402Version: 2, resource: { url: "http://x/x402" }, accepts }) });
+      return res.end("{}");
+    }
     res.writeHead(200, { "content-type": "application/json" });
     res.end('{"free":true}');
   });
   await new Promise((r) => web.listen(0, "127.0.0.1", r));
   webUrl = `http://127.0.0.1:${web.address().port}/thing`;
+  x402Url = `http://127.0.0.1:${web.address().port}/x402`;
 });
 after(() => {
   mcp.close();
@@ -210,12 +219,14 @@ test("CLI: approval mode needs the owner's yes for the exact intent, once; --ski
   assert.equal(over.code, 3, "over the limit is refused BEFORE asking for approval");
 });
 
-test("CLI: pay in approval mode never stores or prints header values, and says the price is not bound", async () => {
+test("CLI: pay in approval mode never stores or prints header values, and says the approval covers the quoted price and payee", async () => {
   await run(["policy", "set", "--check-gate", "off"]);
-  const r = await run(["pay", webUrl, "--header", "Authorization: Bearer sk-SECRET123", "--skip-check"]);
+  const r = await run(["pay", x402Url, "--header", "Authorization: Bearer sk-SECRET123", "--skip-check"]);
   assert.equal(r.code, 5);
   assert.doesNotMatch(r.stdout + r.stderr, /sk-SECRET123/);
-  assert.match(r.stderr, /does not fix the price/);
+  assert.match(r.stderr, /0\.01 USDC on /);
+  assert.match(r.stderr, /approval covers the price and payee quoted above/);
+  assert.doesNotMatch(r.stderr, /does not fix the price/);
   for (const f of ["ledger.jsonl", "approvals.json"]) assert.doesNotMatch(readFileSync(join(home, f), "utf8"), /sk-SECRET123/, f);
   assert.equal((await run(["pay", webUrl, "--header", "X-Payment: x", "--skip-check"])).code, 2, "payment headers are reserved");
   const back = await run(["policy", "set", "--approval", "auto"]);
@@ -261,10 +272,13 @@ test("status rounds money and lists one row per spend", async () => {
 
 test("pay --dry-run runs the check and pays nothing; history and proof show every action with its explorer link", async () => {
   lastHeaders = null;
-  const d = await run(["pay", webUrl, "--chain", "base", "--dry-run", "--json"]); // the policy allows both chains, so pay must name one
+  const d = await run(["pay", x402Url, "--chain", "base", "--dry-run", "--json"]); // the policy allows both chains, so pay must name one
   assert.equal(d.code, 0);
-  assert.equal(JSON.parse(d.stdout).dry_run, true);
-  assert.equal(lastHeaders, null, "a dry run never contacts the resource");
+  const dry = JSON.parse(d.stdout);
+  assert.equal(dry.dry_run, true);
+  assert.equal(dry.terms.usd, 0.01, "the quoted price is shown");
+  assert.ok(lastHeaders, "a dry run asks the server its price (one unpaid request)");
+  assert.equal(lastHeaders["payment-signature"], undefined, "and never sends a payment");
   const x = record({ status: "submitted", kind: "x402", chain: "base", usd: 0.001, to: DEAD, url: "https://example.com/r" });
   record({ id: x.id, status: "confirmed", tx: "0x" + "ab".repeat(32) });
   record({ kind: "register", status: "registered", chain: "base", usd: 0, agent_id: "4242", tx: "0x" + "cd".repeat(32) });

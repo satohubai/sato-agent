@@ -3,8 +3,9 @@
 // A spend command run without --approve does NOT spend: it records the exact
 // intent under a short random code and exits 5. For `send` that is the chain,
 // recipient and amount. For `pay` it is the URL, method, body and header names
-// (values hashed): the server sets the price and payee at pay time, capped by
-// the per-transaction limit, so an approval does not fix the price. The agent
+// (values hashed) and the price and payee the server quoted before approval
+// (a higher price or another payee at pay time is refused); when the server
+// would not quote, the per-transaction limit caps the price. The agent
 // shows the owner the intent; when the owner says yes, the agent re-runs the
 // SAME command with `--approve <code>`. The code is single-use, expires after
 // APPROVAL_TTL_MS, and only matches the identical intent.

@@ -42,7 +42,7 @@ export const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 // token accounts slipped past the recipient check.)
 export const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 const LAMPORTS = 1_000_000_000;
-const explorer = (sig) => `https://solscan.io/tx/${sig}`;
+export const explorer = (sig) => `https://solscan.io/tx/${sig}`;
 
 export function rpc() {
   const url = process.env.SATO_AGENT_SOLANA_RPC || "https://api.mainnet-beta.solana.com";

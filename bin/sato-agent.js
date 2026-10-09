@@ -54,7 +54,7 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
   history [--since 24h|7d|30d|all]       every action, one row each, with its explorer link
   proof                                  a shareable card: this agent's wallet, onchain id and every action with its tx link
 
-Add --dry-run to send or pay to run every check (and, for send, the simulation) without signing or spending.
+Add --dry-run to send, pay or swap to run every check (and, for send and swap, the simulation) without signing or spending.
 
 Add --json for machine-readable output. Files: ${home()} (SATO_AGENT_HOME to move).
 Exit codes: 3 refused (nothing signed) · 4 signed but not confirmed (do NOT retry) · 5 needs the owner's approval (nothing spent).
@@ -165,7 +165,8 @@ async function beforeSpend({ chain, intent, checkArgs, expectKind, usd, to }) {
   if (early.length) throw new Refused(early);
   intent = { ...intent, skip_check: Boolean(flags["skip-check"]) };
   let check = null;
-  if (flags["skip-check"]) {
+  // A swap has no Sato Hub check to skip (its checks are the kit's own), so --skip-check only matters where a check runs.
+  if (checkArgs && flags["skip-check"]) {
     recordCheckEvent({ status: "skipped", intent });
     const r = gateRefusals(policy, {}, { skipped: true });
     if (r.length) throw new Refused(r);
@@ -351,10 +352,12 @@ async function main() {
         ...(Array.isArray(d.disclosure) ? d.disclosure : []),
         `The kit's own simulation passed: ${JSON.stringify(d.simulation)}`,
       ];
+      // Route labels (Jupiter) and the fee sentence (Sato Hub) are server text: one cleaned line each.
+      const shown = lines.map((l) => clean(l, 1000)).join("\n");
       if (flags["dry-run"]) {
-        return out(`DRY RUN: every check passed. Nothing was signed or sent, and nothing counts against the limits.\n${lines.join("\n")}`, { dry_run: true, ...d });
+        return out(`DRY RUN: every check passed. Nothing was signed or sent, and nothing counts against the limits.\n${shown}`, { dry_run: true, ...d });
       }
-      say(lines.join("\n"));
+      say(shown);
       const r = await prepared.execute();
       const rebuilt = r.rebuilt ? `\nNote: ${r.rebuilt.note}. New quote: about ${r.rebuilt.quoted} ${d.buy.asset}, at least ${r.rebuilt.minimum}.` : "";
       return out(`Swapped. ${r.explorer}${rebuilt}${r.received ? `\nReceived ${r.received.amount} ${r.received.asset}.` : r.amount_out ? `\nReceived ${r.amount_out} base units of ${d.buy.asset}.` : ""}${r.warnings?.length ? `\nNote: ${r.warnings.join("; ")}` : ""}`, { ...r, plan: d });
@@ -440,7 +443,7 @@ async function main() {
         "",
         ...chains.map((c) => `${c === "base" ? "Base wallet:  " : "Solana wallet:"} ${a[c]}  ${c === "base" ? `https://basescan.org/address/${a.base}` : `https://solscan.io/account/${a.solana}`}`),
         agentId ? `ERC-8004 agent: ${agentId} on Base (registry 0x8004A169FB4a3325136EB29fA0ceB6D2e539a432)` : "ERC-8004 agent: not registered",
-        `confirmed onchain actions: ${onchain.length} · USDC moved: $${roundUsd(spent)}`,
+        `confirmed onchain actions: ${onchain.length} · value moved (sends, payments and swaps, in USD): $${roundUsd(spent)}`,
         "",
         ...onchain.slice(-15).map((x) => `${x.first_ts.slice(0, 16).replace("T", " ")}Z  ${x.kind}  ${x.kind.startsWith("register") ? `agent ${x.agent_id}` : `$${roundUsd(Number(x.usd) || 0)}`}  ${x.explorer}`),
         "",
@@ -455,7 +458,7 @@ async function main() {
       // One row per spend (its lines share an id), latest status wins.
       const spends = new Map();
       for (const e of ledger.rows) {
-        if (!["send", "x402"].includes(e.kind) && !(e.id && spends.has(e.id))) continue;
+        if (!["send", "x402", "swap"].includes(e.kind) && !(e.id && spends.has(e.id))) continue;
         const prev = spends.get(e.id) ?? {};
         spends.set(e.id, { ...prev, ...Object.fromEntries(Object.entries(e).filter(([, v]) => v !== null && v !== undefined)) });
       }

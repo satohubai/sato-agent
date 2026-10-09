@@ -204,7 +204,9 @@ export async function prepareSwap(req, deps = {}) {
         const fresh = await freshOracle(sized, deps);
         const decimals = ASSETS.solana[sized.to].decimals;
         checkAgainstOracle(fresh, impliedPrice(fresh, sized.amountNum, Number(plan.quote.out_amount) / 10 ** decimals));
-        const result = await (deps.executeSolanaSwap ?? sol.executeSolanaSwap)(plan, { ...(deps.solDeps ?? {}), usdNotional: sized.usd, intent: intentFor(plan) });
+        // SOL sold is valued again at the new price; the larger of the two readings counts against the limits.
+        const usdNow = sized.from === "USDC" ? sized.usd : Math.max(sized.usd, roundUsd(sized.amountNum * fresh.oracle.usd));
+        const result = await (deps.executeSolanaSwap ?? sol.executeSolanaSwap)(plan, { ...(deps.solDeps ?? {}), usdNotional: usdNow, intent: intentFor(plan) });
         // The owner saw the first quote; say plainly that this one replaced it.
         return { ...result, rebuilt: { quoted: String(Number(plan.quote.out_amount) / 10 ** decimals), minimum: String(Number(plan.quote.min_out) / 10 ** decimals), note: "the first quote expired before signing; the kit rebuilt it and checked it again" } };
       }

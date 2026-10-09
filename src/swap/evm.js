@@ -70,6 +70,8 @@ export const TOKENS = Object.freeze({
 // SwapDescriptionV2 { srcToken, dstToken, srcReceivers[], srcAmounts[], feeReceivers[], feeAmounts[], dstReceiver,
 // amount, minReturnAmount, flags, permit }. A selector this kit does not decode is refused.
 export const KYBER_SWAP_SELECTOR = "0xe21fd0e9";
+/** KyberSwap's executor on Base: the only `callTarget` accepted (seen on every live build). */
+export const KYBER_EXECUTOR_BASE = "0x8F10B468b06c6FD214B65F87778827F7D113f996";
 export const KYBER_ROUTER_ABI = Object.freeze([
   {
     type: "function",
@@ -193,8 +195,9 @@ export function parseIntent({ from, to, amount, slippageBps }) {
   if (tokenIn.symbol === tokenOut.symbol) throw new Error("--from and --to are the same token");
   if (tokenIn.symbol !== "USDC" && tokenOut.symbol !== "USDC") throw new Error("only USDC <-> ETH and USDC <-> WETH swaps are supported on Base");
   const amountIn = decimalToUnits(amount, tokenIn.decimals, `${tokenIn.symbol} amount`);
-  if (!Number.isInteger(slippageBps) || slippageBps < 1 || slippageBps > 5000) {
-    throw new Error(`slippage must be a whole number of basis points from 1 to 5000 (got ${slippageBps})`);
+  // 500 bps is the most the owner's policy can allow; a library caller is held to the same cap.
+  if (!Number.isInteger(slippageBps) || slippageBps < 1 || slippageBps > 500) {
+    throw new Error(`slippage must be a whole number of basis points from 1 to 500 (got ${slippageBps})`);
   }
   return { from: tokenIn.symbol, to: tokenOut.symbol, tokenIn, tokenOut, amount: unitsToDecimal(amountIn, tokenIn.decimals), amountIn, slippageBps };
 }
@@ -379,6 +382,10 @@ export function checkRouterCalldata(data, { intent, minOut, feeBps }) {
     return unrecognized("it does not decode");
   }
   const d = decoded.args[0].desc;
+  // The contract the router hands the input to. The router does not restrict it, so the kit does:
+  // only Kyber's own executor (every live build on 2026-10-09, 66 of 66). A rotated executor is
+  // refused until the kit is updated, never followed.
+  if (!same(decoded.args[0].callTarget, KYBER_EXECUTOR_BASE)) out.push(refusal("executor_not_pinned", "the swap hands the tokens to a contract that is not KyberSwap's executor; update the kit if KyberSwap changed it", KYBER_EXECUTOR_BASE, decoded.args[0].callTarget));
 
   if (!same(d.srcToken, intent.tokenIn.address)) out.push(refusal("calldata_mismatch", `the transaction sells a different token than ${intent.tokenIn.symbol}`, intent.tokenIn.address, d.srcToken));
   if (!same(d.dstToken, intent.tokenOut.address)) out.push(refusal("calldata_mismatch", `the transaction buys a different token than ${intent.tokenOut.symbol}`, intent.tokenOut.address, d.dstToken));
@@ -783,6 +790,7 @@ async function executeLocked(plan, deps) {
     amount_in_units: plan.amount_in.toString(),
     min_out: display(plan.min_out, plan.token_out),
     min_out_units: plan.min_out.toString(),
+    slippage_bps: plan.slippage_bps, // held to the owner's cap again, under the lock
     route_id: plan.route_id,
     sato_fee_bps: plan.fee.bps,
     sato_fee_recipient: plan.fee.recipient,

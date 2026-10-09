@@ -411,7 +411,11 @@ export async function planSolanaSwap({ from, to, amount, slippageBps }, deps = {
     throw new Refused([refuse("solana_swap.fee_account_unpinned", `the fee account ${d.feeAccount} is not the one this kit pins for ${a.symbol} (${pinned}); update the kit rather than follow it`)]);
   }
 
-  const q = new URLSearchParams({ inputMint: a.mint, outputMint: b.mint, amount: units.toString(), slippageBps: String(slip), swapMode: "ExactIn", restrictIntermediateTokens: "true" });
+  // Direct routes only: a route through a third token (USDC -> USDT -> SOL) makes Jupiter create
+  // the agent's account for that token, a step the kit does not allow, so a fresh wallet would be
+  // refused (seen live, 2026-10-09). USDC/SOL has deep direct pools; on large trades a split
+  // route could have priced a little better.
+  const q = new URLSearchParams({ inputMint: a.mint, outputMint: b.mint, amount: units.toString(), slippageBps: String(slip), swapMode: "ExactIn", onlyDirectRoutes: "true", restrictIntermediateTokens: "true" });
   if (feeBps > 0) q.set("platformFeeBps", String(feeBps));
   const quote = await jupiter(`/quote?${q}`, {}, d);
   checkQuote(quote, { a, b, units, slip, feeBps });
@@ -1117,6 +1121,7 @@ export async function executeSolanaSwap(plan, deps = {}) {
     asset_out: plan.to,
     amount_in: plan.amount_in,
     min_out: plan.quote.min_out,
+    slippage_bps: plan.quote.slippage_bps, // held to the owner's cap again, under the lock
   });
 
   let signed;

@@ -271,7 +271,12 @@ test("refuses a response that is about something else, or that carries no transa
 test("min_out must work out to something", async () => {
   assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.amount_out = "0") })), ["min_out_invalid"]);
   assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => delete r.amount_out })), ["min_out_invalid"]);
-  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.amount_out = "1") , slippageBps: 5000 })), ["min_out_invalid"]);
+  // a 1-unit quote less any slippage rounds down to 0
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.amount_out = "1"), slippageBps: 100 })), ["min_out_invalid"]);
+});
+
+test("slippage above the policy maximum (500 bps) is refused for library callers too", () => {
+  assert.throws(() => evm.parseIntent({ from: "USDC", to: "ETH", amount: "1", slippageBps: 501 }), /1 to 500/);
 });
 
 test("refuses to sign blind: no kit simulation means no swap", async () => {
@@ -333,6 +338,11 @@ const tamper = (change) => (r) => {
   change(ex.desc, ex, r);
   r.tx.data = encodeBuild(ex);
 };
+
+test("the input can only be handed to KyberSwap's executor (the router itself does not restrict it)", async () => {
+  for (const name of Object.keys(CASES)) assert.equal(decodeBuild(satoResponse(name).tx.data).callTarget.toLowerCase(), evm.KYBER_EXECUTOR_BASE.toLowerCase(), name);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((_d, ex) => (ex.callTarget = STRANGER)) })), ["executor_not_pinned"]);
+});
 
 test("the recorded builds decode with the router ABI and re-encode to the same bytes", () => {
   for (const name of Object.keys(CASES)) {

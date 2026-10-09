@@ -250,6 +250,7 @@ test("plan: USDC -> SOL asks Jupiter for the quote, then the build, with the pin
   assert.equal(quote.searchParams.get("amount"), "25000000");
   assert.equal(quote.searchParams.get("slippageBps"), "50");
   assert.equal(quote.searchParams.get("platformFeeBps"), "15");
+  assert.equal(quote.searchParams.get("onlyDirectRoutes"), "true", "no route through a third token: the kit refuses to create accounts for one");
   assert.equal(calls[0].init.method, "GET");
   assert.equal(calls[1].url, "https://api.jup.ag/swap/v1/swap");
   assert.equal(calls[1].init.method, "POST");

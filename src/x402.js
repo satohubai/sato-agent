@@ -315,8 +315,14 @@ export async function quoteX402(url, { chain: requestedChain, method = "GET", bo
   // body and none of the caller's headers. If that does not show the terms, the result is
   // `unquoted` (never `free`), and the real request only goes out after approval.
   const verb = String(method).toUpperCase();
-  const probeOnly = verb !== "GET";
-  const withBody = ["POST", "PUT", "PATCH"].includes(verb);
+  // PUT, PATCH and DELETE change or remove something on their first request: no unpaid ask
+  // at all; the price is unknown until the real request, after approval.
+  if (["PUT", "PATCH", "DELETE"].includes(verb)) return { status: null, chain: chain.name, free: false, unquoted: true, offers: [], refusals: [] };
+  // A GET with the caller's headers (often an API key) asks WITHOUT them: those headers go
+  // out only after the Sato Hub check, the owner's gate and approval. A POST asks with an
+  // empty JSON body and none of the caller's headers.
+  const probeOnly = verb !== "GET" || Object.keys(headers).length > 0;
+  const withBody = verb === "POST";
   const init = probeOnly
     ? requestInit({ method: verb, body: withBody ? "{}" : undefined, headers: withBody ? { "content-type": "application/json" } : {}, timeoutMs })
     : requestInit({ method, body, headers, timeoutMs });

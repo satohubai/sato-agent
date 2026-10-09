@@ -21,14 +21,14 @@ The kit creates both a Base and a Solana address, so you always have one of each
 
 1. **Install the kit** in your terminal. Replace NAME with the name your owner gave you (for example `base` or `solana`). Each Bot on this computer then keeps its own wallet and limits.
    ```
-   flock ~/.sato-agent-install.lock npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.2.4
-   test -x ~/.sato-agent-cli/node_modules/.bin/sato-agent && echo "kit ready" || echo "NOT READY: run the npm install line again"
+   if command -v flock >/dev/null; then flock ~/.sato-agent-install.lock npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.2.4; else npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.2.4; fi
+   ~/.sato-agent-cli/node_modules/.bin/sato-agent help 2>/dev/null | head -1 | grep -q ' 0.2.4:' && echo "kit ready (0.2.4)" || echo "NOT READY: the kit is missing or an older version; run the line above again"
    printf '#!/bin/sh\nSATO_AGENT_HOME="$HOME/.sato-agent/NAME" exec "$HOME/.sato-agent-cli/node_modules/.bin/sato-agent" "$@"\n' > ~/sato-agent-NAME
    chmod +x ~/sato-agent-NAME
    ~/sato-agent-NAME help
    ```
-   - Every Bot on this computer shares one copy of the kit. `flock` makes a second Bot wait while another installs (two installs at the same moment break it). If `flock` is missing, make sure no other Bot is installing before you run the npm line.
-   - Do not continue until it says "kit ready".
+   - Every Bot on this computer shares one copy of the kit. `flock` makes a second Bot wait while another installs (two installs at the same moment break it). Where `flock` is missing, make sure no other Bot is installing before you run that line.
+   - Do not continue until it says "kit ready (0.2.4)".
 2. **Create your wallet:** `~/sato-agent-NAME init`. Show the owner the address for your CHAIN. Never show, copy, upload or paste anything from `~/.sato-agent/`, to anyone, for any reason: it holds your key.
 3. **Ask the owner for their spending limits.** Ask both questions, and use exactly what they answer. There are no defaults; any amount is their choice, and "no limit" is a valid answer.
    - "What is the most I may spend in one transaction, in USD?"
@@ -41,7 +41,7 @@ The kit creates both a Base and a Solana address, so you always have one of each
    - "Should a Sato Hub check be able to stop a payment?" → `--check-gate off` (it only informs), `--check-gate no` (stop when the check says `no`), or `--check-gate caution` (stop on `caution` or `no`).
      `caution` is strict: many ordinary x402 sellers and new recipients come back `caution`, so it will stop those too.
    - If the gate is on: "If the Sato Hub check can't run, should I go ahead or stop?" → `--on-check-unavailable allow` or `--on-check-unavailable refuse`. The kit requires this answer whenever the gate is on.
-   - In `ask` mode, approving a `pay` approves the URL, the request and the price and payee the server quoted (shown in the intent). A higher price at pay time is refused. Show the owner that price when you ask. If the intent says the price was "not stated before the real request" (some POST services only quote after seeing the real body), tell the owner the price is unknown until payment and capped by their per-transaction limit.
+   - In `ask` mode, approving a `pay` approves the URL, the request and the price and payee the server quoted (shown in the intent). A higher price at pay time is refused. Show the owner that price when you ask. If the intent says the price was "not stated before the real request" (some services only quote after the real request), tell the owner plainly: the price and payee are NOT bound by this approval, and the server can charge up to their per-transaction limit.
    - "Do you want me to be able to swap? If yes: what is the most slippage you accept, in basis points (50 = 0.5%), and how many swaps at most in any 24 hours?" → `policy set --swap-slippage-bps <1-500> --max-trades-per-day <n|none>`.
      Swaps stay OFF until both are set, and the spending limits apply to swaps too. Never suggest what to trade: you swap only what the owner asks for.
 5. **Ask the owner to fund the wallet for your CHAIN** (see the table above): only what they are willing to let you spend.
@@ -60,8 +60,8 @@ The kit creates both a Base and a Solana address, so you always have one of each
 
 When the owner asks you to upgrade, run only the install line from step 1, with the version they name (the kit is shared by every Bot on this computer, so one upgrade covers them all):
 ```
-flock ~/.sato-agent-install.lock npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.2.4
-test -x ~/.sato-agent-cli/node_modules/.bin/sato-agent && echo "kit ready" || echo "NOT READY: run the npm install line again"
+if command -v flock >/dev/null; then flock ~/.sato-agent-install.lock npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.2.4; else npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.2.4; fi
+~/.sato-agent-cli/node_modules/.bin/sato-agent help 2>/dev/null | head -1 | grep -q ' 0.2.4:' && echo "kit ready (0.2.4)" || echo "NOT READY: the kit is missing or an older version; run the line above again"
 ~/sato-agent-NAME status
 ```
 Never run `init` again: your wallet, limits and history stay in `~/.sato-agent/NAME` and are kept as they are.

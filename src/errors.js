@@ -29,7 +29,13 @@ export class Rejected extends Error {}
 /** Approval mode: nothing was spent; the owner must approve this exact intent. CLI exit code 5. */
 export class NeedsApproval extends Error {
   constructor(intent, approval) {
-    const priceNote = intent.cmd === "pay" ? "\nNote: the approval covers the price and payee quoted above. If the server asks a higher price (or names another payee) when the payment is made, it is refused and nothing is signed." : "";
+    // Only a quoted price is bound. An unquoted one says so, with the cap that applies instead.
+    const priceNote =
+      intent.cmd !== "pay"
+        ? ""
+        : intent.price_bound
+          ? "\nNote: the approval covers the price and payee quoted above. If the server asks a higher price (or names another payee) when the payment is made, it is refused and nothing is signed."
+          : `\nNote: the server did not state its price before the real request, so the price and payee are NOT bound by this approval. The server sets them when paying, up to ${intent.price_cap ?? "the per-transaction limit"}.`;
     super(`Needs the owner's approval. Nothing was spent.\nIntent: ${JSON.stringify(intent)}${priceNote}\nIf the owner approves, re-run the same command with --approve ${approval.code} (valid until ${approval.expires_at}, once).`);
     this.intent = intent;
     this.approval = approval;

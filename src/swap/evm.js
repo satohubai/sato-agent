@@ -755,11 +755,6 @@ const approveData = (amount) => encodeFunctionData({ abi: erc20Abi, functionName
 const errText = (err) => String(err?.shortMessage || err?.message || err);
 
 /**
- * Read what the agent actually received, from the receipt. ERC-20: the Transfer
- * logs in it. ETH: the balance change across the block, with gas and the L1 data
- * fee added back (native transfers leave no log). Returns null if it can't be read.
- */
-/**
  * What the agent received, and how that was read: { units, basis } or null.
  * - a token: its Transfer logs in the receipt ("receipt_logs");
  * - native ETH (no Transfer log): the pinned router's own Swapped event in the receipt
@@ -960,8 +955,8 @@ async function executeLocked(plan, deps) {
   const warnings = [];
   const measured = await measureOutput({ plan, receipt, c });
   const outUnits = measured?.units ?? null;
-  // ERC-20: exact, from the receipt's Transfer logs. ETH leaves no log, so it is the balance change with the
-  // receipt's gas and L1 fee added back: close, but a fee component the receipt does not show makes it read slightly low.
+  // ERC-20: exact, from the receipt's Transfer logs. ETH: exact, from the router's Swapped event; only when that is
+  // missing, the balance change with the receipt's gas and L1 fee added back (close, but it can read slightly low).
   const outBasis = measured?.basis ?? null;
   if (outUnits === null) warnings.push("could not read the amount received from the receipt");
   else if (outUnits < plan.min_out) warnings.push(`received ${display(outUnits, plan.token_out)} ${plan.to}, below the minimum of ${display(plan.min_out, plan.token_out)}`);

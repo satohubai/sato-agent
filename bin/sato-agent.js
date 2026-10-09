@@ -327,6 +327,11 @@ async function main() {
       // request goes out only after approval; the price is then the server's, capped by
       // the per-transaction limit (the approval says so).
       const chosen = quote.unquoted ? null : quote.offers[0]; // cheapest first
+      // An unknown price needs a cap the owner chose: with no per-transaction limit it could be anything.
+      const perTx = policy?.max_usd_per_tx ?? null;
+      if (!chosen && perTx === null) {
+        throw new Refused([{ rule: "price_unknown_no_limit", limit: "a per-transaction limit", observed: null, message: "the server did not state its price before the real request, and there is no per-transaction limit to cap it; nothing was sent or paid. The owner can set one with `policy set --per-tx <usd>`." }]);
+      }
       const check = await beforeSpend({
         chain: payChain,
         // The approval covers the quoted price and payee; `pay` refuses a higher price
@@ -338,7 +343,9 @@ async function main() {
           method,
           data: flags.data ?? null,
           headers: redactHeaders(headers),
-          price: chosen ? `${chosen.usd} USDC on ${payChain} to ${chosen.pay_to}` : "not stated before the real request; set by the server at pay time, up to the per-transaction limit; payee not bound",
+          price: chosen ? `${chosen.usd} USDC on ${payChain} to ${chosen.pay_to}` : `not stated before the real request; set by the server at pay time, up to $${perTx} (the per-transaction limit); payee not bound`,
+          price_bound: Boolean(chosen),
+          ...(chosen ? {} : { price_cap: `$${perTx} (the per-transaction limit)` }),
         },
         // Sato Hub probes with GET unless told the method (never the body or headers).
         checkArgs: { x402: url, ...(method !== "GET" ? { x402_method: method } : {}) },

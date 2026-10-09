@@ -381,6 +381,52 @@ test("CLI: a POST seller that checks the body before its paywall is unquoted: th
   setPolicy({ approval: "auto" });
 });
 
+test("CLI: an unquoted approval says the price and payee are NOT bound, names the cap, and needs a per-transaction limit", async () => {
+  reset();
+  setPolicy({ approval: "ask" });
+  const args = ["pay", `${origin}/post-validates`, "--method", "POST", "--data", '{"q":"x"}', "--skip-check"];
+  const ask = await run(args);
+  assert.equal(ask.code, 5, ask.stderr);
+  const text = ask.stdout + ask.stderr;
+  assert.match(text, /NOT bound by this approval/);
+  assert.match(text, /up to \$1 \(the per-transaction limit\)/);
+  assert.doesNotMatch(text, /the approval covers the price and payee quoted above/, "never the quoted-price note on an unbound price");
+  // no per-transaction limit: an unknown price has no cap, so it is refused before anyone is asked
+  setPolicy({ perTx: "none" });
+  const none = await run(args);
+  assert.equal(none.code, 3, none.stderr);
+  assert.match(none.stderr, /price_unknown_no_limit/);
+  assert.doesNotMatch(none.stdout + none.stderr, /--approve/);
+  setPolicy({ perTx: "1", approval: "auto" });
+});
+
+test("CLI: a GET with the owner's headers asks its price without them; they go out only after the check and approval", async () => {
+  reset();
+  setPolicy({ approval: "ask" });
+  const secret = "Bearer OWNER-KEY-123";
+  const ask = await run(["pay", `${origin}/free`, "--header", `authorization: ${secret}`, "--skip-check"]);
+  assert.equal(ask.code, 5, "a 200 to a header-less ask is not proof the real request is free: the owner is asked");
+  assert.deepEqual(hits.filter((h) => h.path === "/free").map((h) => h.auth), [null], "the key did not go out before approval");
+  // a quoted GET with headers: the ask carried no key, and the price is bound
+  reset();
+  const q = await run(["pay", `${origin}/v2/ok`, "--header", `authorization: ${secret}`, "--skip-check"]);
+  assert.equal(q.code, 5);
+  assert.match(q.stdout + q.stderr, /the approval covers the price and payee quoted above/);
+  assert.equal(hits.find((h) => h.path === "/v2/ok").auth, null);
+  setPolicy({ approval: "auto" });
+});
+
+test("CLI: PUT, PATCH and DELETE send nothing before approval (they act on their first request)", async () => {
+  reset();
+  setPolicy({ approval: "ask" });
+  for (const m of ["PUT", "PATCH", "DELETE"]) {
+    const r = await run(["pay", `${origin}/post`, "--method", m, "--skip-check"]);
+    assert.equal(r.code, 5, `${m}: ${r.stderr}`);
+  }
+  assert.equal(hits.filter((h) => h.path === "/post").length, 0, "no request reached the server");
+  setPolicy({ approval: "auto" });
+});
+
 test("CLI: --dry-run shows the quoted price, chain and payee, signs nothing and needs no approval", async () => {
   reset();
   setPolicy({ approval: "ask" });

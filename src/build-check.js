@@ -8,13 +8,20 @@
 
 import { DEPLOYMENTS, SAS_PROGRAM_ID, jsonRpcOverFetch, matchBuild, normalizeCluster, readReceiptsFromChain, rpcUrlFor } from "./receipts.js";
 import { digestFromManifest, fetchManifest, parseInstallCommand } from "./npm.js";
+import { clean } from "./text.js";
 
 export const HEADER = "Solana build receipt (dated Sato Check reading, written onchain; it describes, it does not decide)";
+
+// Packages are compared with what registry.npmjs.org serves. A project or user
+// .npmrc can send the real install somewhere else, which this does not read.
+export const NPMRC_NOTE = "Compared with what registry.npmjs.org serves. A project or user .npmrc can redirect an install to another registry; this check does not read it.";
 
 const STATUS_TEXT = {
   same_build: "same build as recorded",
   different_build: "different build",
   no_reading: "no reading for this build",
+  receipt_expired: "a receipt existed for this build but it has expired",
+  not_a_sato_receipt: "an account exists at the receipt address but it is not a Sato Hub receipt",
   chain_unreadable: "the chain could not be read (this is not the same as no reading)",
   build_unchecked: "this build could not be fetched to compare",
 };
@@ -95,12 +102,18 @@ export async function checkBuilds(command, { cluster = "mainnet-beta", fetch: fe
       continue;
     }
     const r = chain.get(`${e.subject_id}@${e.version}`);
-    if (!r || !r.ok) {
+    if (r?.untrusted) {
+      // Something is at the receipt address, but it failed a check: not a reading at all.
+      e.status = "not_a_sato_receipt";
+      e.error = r.error;
+    } else if (!r || !r.ok) {
       e.status = "chain_unreadable";
       e.error = r?.error ?? "no answer from the chain";
+    } else if (r.expired) {
+      e.status = "receipt_expired";
+      if (r.note) e.note = r.note;
     } else if (!r.receipt) {
       e.status = "no_reading";
-      if (r.note) e.note = r.note;
     } else {
       e.receipt = r.receipt;
     }
@@ -136,17 +149,14 @@ export async function checkBuilds(command, { cluster = "mainnet-beta", fetch: fe
         return "the configured Solana RPC";
       }
     })(),
+    registry_note: NPMRC_NOTE,
   };
 }
 
 // ── printing ─────────────────────────────────────────────────────────────────
 
-/** Text that came from the chain or the registry is shown as plain, short, single-line text. */
-export function clean(value, max = 200) {
-  // Control characters, zero-width and bidi marks, and line/paragraph separators all become a space.
-  const s = String(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").trim();
-  return s.length > max ? `${s.slice(0, max)}…` : s;
-}
+// Text that came from the chain or the registry is shown as plain, short, single-line text (src/text.js).
+export { clean };
 
 const shownUrl = (u) => {
   try {
@@ -170,7 +180,9 @@ function entryText(e) {
     lines.push(`  npm tarball sha256   ${e.installed_sha256}`);
     lines.push(`  recorded sha256      ${e.receipt.digest_hex}`);
   } else if (e.status === "no_reading") {
-    lines.push(`  No receipt exists on Solana for this exact version${e.note ? ` (${clean(e.note, 100)})` : ""}. That means no reading was written; it does not mean anything is wrong.`);
+    lines.push("  No receipt exists on Solana for this exact version. That means no reading was written; it does not mean anything is wrong.");
+  } else if (e.status === "receipt_expired") {
+    lines.push(`  A receipt existed for this build but it has expired${e.note ? ` (${clean(e.note, 100)})` : ""}, so it is not shown as a current reading.`);
   }
   if (e.error) lines.push(`  ${e.status === "chain_unreadable" ? "error from the chain read" : "reason"}: ${clean(e.error, 300)}`);
   if (e.receipt) {
@@ -197,6 +209,8 @@ export function renderReceipts(report) {
     out.push(`Read from Solana ${report.deployment.cluster} through ${clean(report.rpc_host, 100)}, with no key and no call to Sato Hub.`);
     out.push("");
     out.push(report.receipts.map(entryText).join("\n\n"));
+    out.push("");
+    out.push(NPMRC_NOTE);
   }
   for (const s of report.skipped) out.push(`Not looked up: ${clean(s.spec, 120)} (${s.reason}).`);
   return out.join("\n");

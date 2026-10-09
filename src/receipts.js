@@ -267,10 +267,13 @@ const BATCH = 99;
  * Reads the receipt for each { subject_id, version }, from the cluster the
  * deployment names. One getMultipleAccounts call per 99 subjects, with the
  * schema account first. Returns a Map keyed `${subject_id}@${version}` to
- *   { ok: true, receipt }            a receipt (or null: no attestation at that address)
- *   { ok: true, receipt: null, note } expired
- *   { ok: false, error }             the chain could not be read, or the account is not a Sato Hub receipt
- * A subject with no attestation is `receipt: null`; an RPC failure is NEVER that.
+ *   { ok: true, receipt }                          a receipt (or null: no account at that address)
+ *   { ok: true, receipt: null, expired: true, note } a Sato Hub receipt existed but has expired
+ *   { ok: false, untrusted: true, error }          an account exists at the receipt address but
+ *                                                  is not a Sato Hub receipt (error = why; "schema paused" too)
+ *   { ok: false, error }                           the chain could not be read
+ * A subject with no attestation is `receipt: null`; an RPC failure is NEVER that,
+ * and neither is an account that fails a check.
  */
 export async function readReceiptsFromChain(rpc, d, keys, now = Date.now) {
   const out = new Map();
@@ -319,16 +322,22 @@ export async function readReceiptsFromChain(rpc, d, keys, now = Date.now) {
         if (a.credential !== d.credential || a.schema !== d.schema) throw new Error("the attestation names a different credential or schema");
         if (d.authority && a.signer !== d.authority) throw new Error("the attestation was not signed by Sato Hub's authority key");
         if (a.nonce !== receiptNonce(k.subject_id, k.version)) throw new Error("the attestation nonce does not match the subject and version");
-        if (a.expiry !== 0n && a.expiry < BigInt(Math.floor(now() / 1000))) return void out.set(id(k), { ok: true, receipt: null, note: "the attestation has expired" });
+        // A paused schema: Sato Hub stopped standing behind readings under it.
+        if (schema.isPaused) throw new Error("schema paused");
         const fields = receiptFromData(decodeAttestationData(schema, new Uint8Array(a.data)));
         if (fields.subject_id !== k.subject_id || fields.version !== k.version) throw new Error("the attestation data names a different subject or version");
+        if (a.expiry !== 0n && a.expiry < BigInt(Math.floor(now() / 1000))) {
+          const when = a.expiry > 0n ? new Date(Number(a.expiry) * 1000).toISOString().slice(0, 10) : null;
+          return void out.set(id(k), { ok: true, receipt: null, expired: true, note: when ? `expired ${when}` : "expired" });
+        }
         const address = addresses[i + j];
         out.set(id(k), {
           ok: true,
           receipt: { ...fields, attestation_address: address, cluster: d.cluster, explorer_url: explorerUrl(address, d.cluster) },
         });
       } catch (e) {
-        out.set(id(k), { ok: false, error: e instanceof Error ? e.message : String(e) });
+        // The account is there and was read: it failed a check. Not "the chain could not be read".
+        out.set(id(k), { ok: false, untrusted: true, error: e instanceof Error ? e.message : String(e) });
       }
     });
   }

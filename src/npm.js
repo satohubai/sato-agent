@@ -63,6 +63,16 @@ const VALUE_FLAGS = new Set([
 ]);
 const PKG_FLAGS = new Set(["-p", "--package"]);
 
+// An install that names another registry (or another npm config file, which can
+// name one) would fetch something other than what registry.npmjs.org serves, so
+// comparing that tarball with a receipt would describe the wrong bytes. Those
+// packages are skipped, not looked up. (A project or user .npmrc can redirect an
+// install too; that is not visible in the command, and the output says so.)
+export const OTHER_REGISTRY = "installs from another registry";
+const REGISTRY_FLAG_RE = /^--(?:reg(?:i(?:s(?:t(?:r(?:y)?)?)?)?)?|userconfig|@[^\s=:]+:registry)(?:=|$)/;
+const REGISTRY_ENV_RE = /^npm_config_(?:registry|userconfig|@[^\s=:]+:registry)=/i;
+const redirectsRegistry = (w) => REGISTRY_FLAG_RE.test(w) || REGISTRY_ENV_RE.test(w);
+
 const NAME_RE = /^(?:@[A-Za-z0-9~_-][A-Za-z0-9._~-]*\/)?[A-Za-z0-9~_-][A-Za-z0-9._~-]*$/;
 const EXACT_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const TAG_RE = /^[A-Za-z][A-Za-z0-9._-]*$/;
@@ -96,7 +106,9 @@ export function parseInstallCommand(command) {
   const packages = [];
   const skipped = [];
   const seen = new Set();
-  const add = (raw) => {
+  let exported = false; // an earlier `export NPM_CONFIG_REGISTRY=...` (or a bare assignment) applies to what follows
+  const add = (raw, redirected) => {
+    if (redirected) return void skipped.push({ spec: raw, reason: OTHER_REGISTRY });
     const p = parsePackageSpec(raw);
     if (p.skip) return void skipped.push(p.skip);
     const key = `${p.name}@${p.requested ?? ""}`;
@@ -107,6 +119,9 @@ export function parseInstallCommand(command) {
   };
 
   for (const words of tokenize(String(command ?? ""))) {
+    const redirected = exported || words.some(redirectsRegistry);
+    const onlyAssignments = words.every((w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+    if ((["export", "set", "setenv"].includes(words[0]) || onlyAssignments) && words.some((w) => REGISTRY_ENV_RE.test(w))) exported = true;
     let i = 0;
     while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]) || ["sudo", "env", "command", "time"].includes(words[i]))) i++;
     const tool = words[i++];
@@ -149,11 +164,11 @@ export function parseInstallCommand(command) {
         first = w;
         break; // everything after it is the program's own arguments
       }
-      add(w);
+      add(w, redirected);
     }
     if (isExec) {
-      for (const p of pkgFlagValues) if (p) add(p);
-      if (pkgFlagValues.length === 0 && first) add(first);
+      for (const p of pkgFlagValues) if (p) add(p, redirected);
+      if (pkgFlagValues.length === 0 && first) add(first, redirected);
     }
   }
   return { packages, skipped };

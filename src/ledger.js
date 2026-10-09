@@ -43,10 +43,11 @@ export function entries() {
 /** USD reserved in the 24 hours before `now`, minus spends that provably never went out. */
 export function spentLast24h(now = Date.now(), ledger = read()) {
   const failed = new Set(ledger.rows.filter((e) => e.status === "failed").map((e) => e.id));
-  const usd = ledger.rows
-    .filter((e) => e.status === "submitted" && now - Date.parse(e.ts) < DAY_MS && !failed.has(e.id))
-    .reduce((sum, e) => sum + (Number(e.usd) || 0), 0);
-  return { usd, unreadable: ledger.bad };
+  const live = ledger.rows.filter((e) => e.status === "submitted" && now - Date.parse(e.ts) < DAY_MS && !failed.has(e.id));
+  const usd = live.reduce((sum, e) => sum + (Number(e.usd) || 0), 0);
+  // Swaps reserved in the window (same rule: a swap that provably never went out drops out).
+  const swaps = live.filter((e) => e.kind === "swap").length;
+  return { usd, swaps, unreadable: ledger.bad };
 }
 
 /**

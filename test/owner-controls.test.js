@@ -100,6 +100,21 @@ test("any loosening is a raise: allowlist widened, chains widened, gate loosened
   assert.deepEqual(raisesBetween(base, { ...base, on_check_unavailable: "allow" }), ["on_check_unavailable: refuse -> allow"]);
 });
 
+test("swaps: off until the owner sets both caps; each cap refuses with its rule; loosening is a raise", () => {
+  const p = { max_usd_per_tx: 100, max_usd_per_day: 500, allow_recipients: [DEAD], chains: ["base"] };
+  const swap = (extra = {}, swaps = 0) => evaluate({ ...p, ...extra }, { usd: 10, to: "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5", chain: "base", kind: "swap", slippage_bps: 50 }, { usd: 0, swaps, unreadable: [] }).map((r) => r.rule);
+  assert.deepEqual(swap(), ["swaps_not_enabled"]);
+  assert.deepEqual(swap({ max_slippage_bps: 100, max_trades_per_day: 3 }), [], "a swap is not held to the payee allowlist");
+  assert.deepEqual(swap({ max_slippage_bps: 30, max_trades_per_day: 3 }), ["max_slippage_bps"]);
+  assert.deepEqual(swap({ max_slippage_bps: 100, max_trades_per_day: 3 }, 3), ["max_trades_per_day"]);
+  assert.deepEqual(swap({ max_slippage_bps: 100, max_trades_per_day: null }, 99), [], "none = no trade cap, the owner's choice");
+  const on = { ...p, max_slippage_bps: 50, max_trades_per_day: 3 };
+  assert.deepEqual(raisesBetween(p, on), ["swaps turned on"]);
+  assert.deepEqual(raisesBetween(on, { ...on, max_slippage_bps: 80 }), ["max_slippage_bps"]);
+  assert.deepEqual(raisesBetween(on, { ...on, max_trades_per_day: null }), ["max_trades_per_day"]);
+  assert.deepEqual(raisesBetween(on, { ...on, max_slippage_bps: 20, max_trades_per_day: 1 }), [], "tightening is not a raise");
+});
+
 test("chains: a spend on a chain the agent is not set for is refused; a v0.1.0 policy must choose first", () => {
   const p = { max_usd_per_tx: null, max_usd_per_day: null, allow_recipients: null, chains: ["base"] };
   assert.deepEqual(evaluate(p, { usd: 1, to: "x", chain: "solana" }, 0).map((r) => r.rule), ["chain_not_allowed"]);

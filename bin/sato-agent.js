@@ -80,6 +80,10 @@ try {
       resume: { type: "string" },
       "skip-check": { type: "boolean" },
       "dry-run": { type: "boolean" },
+      "swap-slippage-bps": { type: "string" },
+      "max-trades-per-day": { type: "string" },
+      from: { type: "string" },
+      "slippage-bps": { type: "string" },
       since: { type: "string" },
     },
   }));
@@ -106,6 +110,7 @@ function policyText(p) {
     `recipients:      ${p.allow_recipients ? p.allow_recipients.join(", ") : "any"}`,
     `Sato Hub checks: ${p.check_gate && p.check_gate !== "off" ? `stop a spend on "${p.check_gate === "caution" ? "caution or no" : "no"}"` : "inform only"}${p.on_check_unavailable ? ` · if a check can't run: ${p.on_check_unavailable}` : ""}`,
     `approval:        ${p.approval === "ask" ? "ask the owner before every spend" : "act within the limits"}`,
+    `swaps:           ${Number.isInteger(p.max_slippage_bps) ? `on · slippage up to ${p.max_slippage_bps} bps · ${p.max_trades_per_day === null ? "no trade cap" : `${p.max_trades_per_day} per 24 hours`}` : "off"}`,
   ].join("\n");
 }
 
@@ -228,6 +233,8 @@ async function main() {
               checkGate: flags["check-gate"],
               approval: flags.approval,
               onCheckUnavailable: flags["on-check-unavailable"],
+              swapSlippageBps: flags["swap-slippage-bps"],
+              maxTradesPerDay: flags["max-trades-per-day"],
             }),
           { name: "policy" },
         );

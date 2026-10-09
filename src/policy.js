@@ -84,7 +84,30 @@ export function raisesBetween(prev, next) {
   if (prev.approval === "ask" && next.approval !== "ask") r.push("approval: ask -> auto");
   // Unset counts as "refuse" (gateRefusals fails closed), so unset -> allow is a raise too.
   if ((prev.on_check_unavailable ?? "refuse") === "refuse" && next.on_check_unavailable === "allow") r.push("on_check_unavailable: refuse -> allow");
+  // Swaps: turning them on, allowing more slippage, or more trades a day all let the agent do more.
+  if (swapsEnabled(next) && !swapsEnabled(prev)) r.push("swaps turned on");
+  if (swapsEnabled(prev) && swapsEnabled(next)) {
+    if (next.max_slippage_bps > prev.max_slippage_bps) r.push("max_slippage_bps");
+    if (higher(next.max_trades_per_day, prev.max_trades_per_day)) r.push("max_trades_per_day");
+  }
   return r;
+}
+
+/** Swaps are off until the owner sets both a slippage cap and a trades-per-24h cap (no defaults). */
+export const swapsEnabled = (p) => Boolean(p) && Number.isInteger(p.max_slippage_bps) && p.max_trades_per_day !== undefined;
+
+function parseBps(raw) {
+  if (raw === undefined) return undefined;
+  if (raw === "off") return "off";
+  if (typeof raw !== "string" || !/^\d+$/.test(raw) || Number(raw) < 1 || Number(raw) > 1000) throw new Error("--swap-slippage-bps must be a whole number from 1 to 1000 (basis points; 50 = 0.5%), or \"off\" to turn swaps off");
+  return Number(raw);
+}
+
+function parseTrades(raw) {
+  if (raw === undefined) return undefined;
+  if (typeof raw === "string" && raw.toLowerCase() === "none") return null;
+  if (typeof raw !== "string" || !/^\d+$/.test(raw) || Number(raw) < 1) throw new Error("--max-trades-per-day must be a whole number of swaps per 24 hours (1 or more), or \"none\"");
+  return Number(raw);
 }
 
 /**
@@ -92,7 +115,7 @@ export function raisesBetween(prev, next) {
  * are required (no defaults). Later calls may change any one. Returns the new
  * policy and what (if anything) it loosened, which the CLI flags loudly.
  */
-export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, approval, onCheckUnavailable }) {
+export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, approval, onCheckUnavailable, swapSlippageBps, maxTradesPerDay }) {
   const prev = loadPolicy();
   // If policy.json is gone (deleted, or never written after a crash) but the
   // ledger recorded one, compare against that: deleting the file and starting
@@ -118,6 +141,22 @@ export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, a
     approval: pick(parseChoice(approval, APPROVAL_MODES, "--approval"), "approval"),
     on_check_unavailable: pick(parseChoice(onCheckUnavailable, UNAVAILABLE_MODES, "--on-check-unavailable"), "on_check_unavailable"),
   };
+  // Swaps: off until both caps are set; "--swap-slippage-bps off" turns them off again.
+  const bps = parseBps(swapSlippageBps);
+  const trades = parseTrades(maxTradesPerDay);
+  if (bps === "off") {
+    delete next.max_slippage_bps;
+    delete next.max_trades_per_day;
+  } else {
+    const nextBps = bps ?? prev?.max_slippage_bps;
+    const nextTrades = trades !== undefined ? trades : prev?.max_trades_per_day;
+    if (nextBps !== undefined && nextTrades === undefined) throw new Error("to turn swaps on, set both --swap-slippage-bps and --max-trades-per-day (no defaults)");
+    if (nextTrades !== undefined && nextBps === undefined) throw new Error("to turn swaps on, set both --swap-slippage-bps and --max-trades-per-day (no defaults)");
+    if (nextBps !== undefined) {
+      next.max_slippage_bps = nextBps;
+      next.max_trades_per_day = nextTrades;
+    }
+  }
   if (["no", "caution"].includes(next.check_gate) && !next.on_check_unavailable) {
     throw new Error("with --check-gate on, also choose --on-check-unavailable allow|refuse: what to do when the check can't run (no default)");
   }
@@ -135,7 +174,7 @@ export const allowedChains = (policy) => (policy && Array.isArray(policy.chains)
  * Check one spend against the limits. Returns the refusals (empty = allowed).
  * Each refusal names the rule, the limit and what was observed.
  */
-export function evaluate(policy, { usd, to, chain }, spent) {
+export function evaluate(policy, { usd, to, chain, kind, slippage_bps }, spent) {
   if (!policy) {
     return [{ rule: "limits_not_set", limit: null, observed: null, message: "no spending limits are set yet: the owner runs `sato-agent policy set --chains <base|solana> --per-tx <usd|none> --per-day <usd|none>`" }];
   }
@@ -163,8 +202,22 @@ export function evaluate(policy, { usd, to, chain }, spent) {
       message: `would bring the last 24 hours to $${round(s.usd + usd)}, over the limit of $${policy.max_usd_per_day} ($${round(s.usd)} already spent)`,
     });
   }
-  if (Array.isArray(policy.allow_recipients) && to && !policy.allow_recipients.map(norm).includes(norm(to))) {
+  // A swap pays a pinned router and the output comes back to the agent itself,
+  // so the payee allowlist does not apply; its own caps below do.
+  if (kind !== "swap" && Array.isArray(policy.allow_recipients) && to && !policy.allow_recipients.map(norm).includes(norm(to))) {
     out.push({ rule: "allow_recipients", limit: policy.allow_recipients, observed: to, message: "recipient is not on the allowlist" });
+  }
+  if (kind === "swap") {
+    if (!swapsEnabled(policy)) {
+      out.push({ rule: "swaps_not_enabled", limit: null, observed: null, message: "swaps are off: the owner turns them on with `sato-agent policy set --swap-slippage-bps <1-1000> --max-trades-per-day <n|none>`" });
+    } else {
+      if (slippage_bps !== undefined && slippage_bps > policy.max_slippage_bps) {
+        out.push({ rule: "max_slippage_bps", limit: policy.max_slippage_bps, observed: slippage_bps, message: `slippage of ${slippage_bps} bps is over the owner's cap of ${policy.max_slippage_bps} bps` });
+      }
+      if (policy.max_trades_per_day !== null && (s.swaps ?? 0) + 1 > policy.max_trades_per_day) {
+        out.push({ rule: "max_trades_per_day", limit: policy.max_trades_per_day, observed: (s.swaps ?? 0) + 1, message: `would be swap number ${(s.swaps ?? 0) + 1} in the last 24 hours; the owner's cap is ${policy.max_trades_per_day}` });
+      }
+    }
   }
   return out;
 }

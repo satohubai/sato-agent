@@ -1,0 +1,50 @@
+{
+  "name": "sato-agent",
+  "version": "0.1.0",
+  "description": "Turn a Grok Bot (or any always-on machine) into an onchain agent: its own wallet on Base and Solana, x402 payments, ERC-8004 identity, and spending limits the owner sets. By Sato Hub.",
+  "type": "module",
+  "bin": {
+    "sato-agent": "bin/sato-agent.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "BOT.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.18"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:fork": "SATO_AGENT_FORK=1 node --test test/fork.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/satohubai/sato-agent.git"
+  },
+  "homepage": "https://satohub.ai/mcp",
+  "license": "MIT",
+  "author": "Sato Hub (https://satohub.ai)",
+  "keywords": [
+    "onchain-agent",
+    "grok-bot",
+    "x402",
+    "erc-8004",
+    "base",
+    "solana",
+    "agent-wallet",
+    "sato-hub"
+  ],
+  "dependencies": {
+    "@solana-program/token": "0.17.0",
+    "@solana/kit": "8.4.0",
+    "@x402/evm": "2.28.0",
+    "@x402/fetch": "2.28.0",
+    "viem": "2.57.4"
+  },
+  "devDependencies": {
+    "@x402/core": "2.28.0"
+  }
+}

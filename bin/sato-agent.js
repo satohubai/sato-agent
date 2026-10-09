@@ -322,6 +322,7 @@ async function main() {
       const d = prepared.display;
       const lines = [
         `${d.chain === "base" ? "Base" : "Solana"} swap via ${d.venue}: sell ${d.sell.amount} ${d.sell.asset} for about ${d.buy.quoted} ${d.buy.asset} (at least ${d.buy.minimum}, slippage ${d.buy.slippage_bps} bps)`,
+        ...(d.buy.minimum_in_transaction ? [`The transaction itself refuses to pay less than ${d.buy.minimum_in_transaction} ${d.buy.asset} (written into it and checked by the kit).`] : []),
         `Independent price: ${d.oracle.source} says $${d.oracle.usd} (${d.oracle.age_s}s old); the quote is ${d.oracle.deviation_pct}% from it.`,
         `Held to your limits as $${d.usd_held_to_limits}.`,
         `Sato Hub fee: ${d.sato_fee.bps} bps. ${d.sato_fee.disclosure ?? ""}`.trim(),

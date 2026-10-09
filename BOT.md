@@ -21,7 +21,7 @@ The kit creates both a Base and a Solana address, so you always have one of each
 
 1. **Install the kit** in your terminal. Replace NAME with the name your owner gave you (for example `base` or `solana`). Each Bot on this computer then keeps its own wallet and limits.
    ```
-   npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.2.0
+   npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.2.1
    printf '#!/bin/sh\nSATO_AGENT_HOME="$HOME/.sato-agent/NAME" exec "$HOME/.sato-agent-cli/node_modules/.bin/sato-agent" "$@"\n' > ~/sato-agent-NAME
    chmod +x ~/sato-agent-NAME
    ~/sato-agent-NAME help

@@ -124,6 +124,10 @@ export const KYBER_FLAGS = Object.freeze({
 /** Every bit a build may carry: IN_BPS, plus 0x200 which Kyber sets on every live build and the router does not read. */
 const KYBER_ALLOWED_FLAGS = 0x80n | 0x200n;
 
+/** Gas limits for the kit's own simulation: generous for an exact approval and a KyberSwap route. */
+const SIM_GAS_APPROVE = 100_000n;
+const SIM_GAS_SWAP = 2_000_000n;
+
 /** How long Sato's signature, and a verified plan, stay usable. Prices move; the plan is rebuilt after this. */
 export const MAX_AGE_MS = 120_000;
 const MAX_FUTURE_SKEW_MS = 60_000;
@@ -439,7 +443,7 @@ export function buildSimulationRequest({ taker, calls, baseFeePerGas, maxPriorit
       blockStateCalls: [
         {
           ...(realistic ? { blockOverrides: { baseFeePerGas: toHex(baseFeePerGas) } } : {}),
-          calls: calls.map((c) => ({ from: taker, to: c.to, data: c.data, ...(c.value ? { value: toHex(c.value) } : {}), ...fees })),
+          calls: calls.map((c) => ({ from: taker, to: c.to, data: c.data, ...(c.value ? { value: toHex(c.value) } : {}), ...(c.gas ? { gas: toHex(c.gas) } : {}), ...fees })),
         },
       ],
       traceTransfers: true,
@@ -525,17 +529,24 @@ export function assetDeltas(calls, taker) {
 const assetKey = (token) => lc(token.address);
 
 async function simulateAndCheck({ intent, facts, tx, approvalNeeded, deps, getClient }) {
+  // Each simulated call gets a gas limit. With real fees in the simulation the node checks the
+  // wallet can pay gas x fee, and with no limit it assumes a whole block's gas (about 0.003 ETH
+  // on 2026-10-09), which a wallet funded with a little ETH for gas does not hold.
   const calls = [];
   if (approvalNeeded) {
-    calls.push({ to: intent.tokenIn.address, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [KYBER_ROUTER_BASE, intent.amountIn] }), value: 0n });
+    calls.push({ to: intent.tokenIn.address, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [KYBER_ROUTER_BASE, intent.amountIn] }), value: 0n, gas: SIM_GAS_APPROVE });
   }
-  calls.push({ to: getAddress(tx.to), data: tx.data, value: facts.value });
+  calls.push({ to: getAddress(tx.to), data: tx.data, value: facts.value, gas: SIM_GAS_SWAP });
 
   let raw;
   try {
     raw = await (deps.simulate ?? defaultSimulate)({ taker: intent.taker, calls, c: deps.simulate ? deps.c : getClient() });
   } catch (err) {
-    throw new Refused([refusal("simulation_unavailable", `this kit's own simulation could not run (${String(err.shortMessage || err.message).slice(0, 200)}); it never signs without one`)]);
+    const why = String(err.details || err.shortMessage || err.message);
+    if (/insufficient funds/i.test(why)) {
+      throw new Refused([refusal("not_enough_eth", `the wallet does not hold enough ETH on Base for this swap's gas${intent.tokenIn.native ? " and the ETH being sold" : ""}; add a little ETH on Base and try again (nothing was signed)`, null, why.slice(0, 160))]);
+    }
+    throw new Refused([refusal("simulation_unavailable", `this kit's own simulation could not run (${why.slice(0, 200)}); it never signs without one`)]);
   }
   const block = Array.isArray(raw) ? raw[0] : raw;
   const got = block?.calls;

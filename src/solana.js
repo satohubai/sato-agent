@@ -32,6 +32,7 @@ import {
 import { loadPolicy } from "./policy.js";
 import { record, release, reserve } from "./ledger.js";
 import { Pending, Rejected } from "./errors.js";
+import { usdcUnits } from "./amount.js";
 import { loadWallet, solanaSecret } from "./wallet.js";
 import { USER_AGENT } from "./version.js";
 
@@ -90,13 +91,8 @@ export async function buildUsdcTransfer({ secret, to, units, blockhash }) {
   return { wire: getBase64EncodedWireTransaction(tx), signature: getSignatureFromTransaction(tx), from: signer.address };
 }
 
-export function toUnits(amount) {
-  const [whole, frac = ""] = String(amount).split(".");
-  if (!/^\d+$/.test(whole) || !/^\d*$/.test(frac) || frac.length > 6) throw new Error(`not a USDC amount: ${amount}`);
-  const units = BigInt(whole) * 1_000_000n + BigInt(frac.padEnd(6, "0"));
-  if (units <= 0n) throw new Error(`not a positive USDC amount: ${amount}`);
-  return units;
-}
+/** Same parser as Base (src/amount.js), kept under its old name for callers. */
+export const toUnits = usdcUnits;
 
 /** Send USDC on Solana. Throws Refused when the limits say no; nothing is signed then. */
 export async function sendUsdc({ to, amount }, r = rpc()) {

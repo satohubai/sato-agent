@@ -42,9 +42,10 @@ test("flags are parsed strictly: typos, missing values and junk amounts are usag
 });
 
 test("raising a limit prints a warning and is logged", () => {
-  assert.equal(run("policy", "set", "--per-tx", "1", "--per-day", "5").status, 0);
+  assert.equal(run("policy", "set", "--per-tx", "1", "--per-day", "5").status, 1, "the first set needs --chains: no defaults");
+  assert.equal(run("policy", "set", "--chains", "base", "--per-tx", "1", "--per-day", "5").status, 0);
   const up = run("policy", "set", "--per-day", "500");
-  assert.match(up.stdout, /LIMITS RAISED/);
+  assert.match(up.stdout, /RAISED \(max_usd_per_day\)/);
   const down = run("policy", "set", "--per-day", "50");
   assert.doesNotMatch(down.stdout, /RAISED/);
   assert.match(run("status").stdout, /raised/);

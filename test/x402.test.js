@@ -70,7 +70,7 @@ test("no limits set: nothing is signed", async () => {
 });
 
 test("under the limits: pays with a valid EIP-3009 signature from the agent's own key", async () => {
-  setPolicy({ perTx: "1", perDay: "2" });
+  setPolicy({ chains: "base", perTx: "1", perDay: "2" });
   const r = await pay(`${origin}/cheap`);
   assert.equal(r.status, 200);
   assert.equal(r.settled, true);

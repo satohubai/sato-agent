@@ -21,3 +21,12 @@ export class Pending extends Error {
 
 /** A broadcast the node definitely refused: it never entered the mempool. */
 export class Rejected extends Error {}
+
+/** Approval mode: nothing was spent; the owner must approve this exact intent. CLI exit code 5. */
+export class NeedsApproval extends Error {
+  constructor(intent, approval) {
+    super(`Needs the owner's approval. Nothing was spent.\nIntent: ${JSON.stringify(intent)}\nIf the owner approves, re-run the same command with --approve ${approval.code} (valid until ${approval.expires_at}, once).`);
+    this.intent = intent;
+    this.approval = approval;
+  }
+}

@@ -1,22 +1,32 @@
-// The spending limits. There are NO defaults: how much the agent may spend is
-// the owner's call, from a few cents to thousands. Until both limits are set,
-// every spend is refused with the command that sets them.
+// The owner's choices: spending limits, which chain(s) this agent works on,
+// whether a Sato Hub check can stop a spend, and whether the agent asks first.
+// There are NO defaults for limits or chains: how much the agent may spend, and
+// where, is the owner's call. Until they are set, every spend is refused with
+// the command that sets them.
 //
 // A limit of `null` means "no limit", chosen explicitly.
 //
-// What these limits are, honestly: they are enforced by this program, on the
+// What these choices are, honestly: they are enforced by this program, on the
 // same computer that holds the key. The agent itself can run `policy set`, edit
 // these files, or write its own code that uses the key. They stop mistakes,
 // loops and an agent that follows its rules; they do not stop a compromised
-// agent. Every change is written to the ledger so the owner can see it. The hard
-// bound is what the owner funds the wallet with.
+// agent. Every change is written to the ledger, and any change that lets the
+// agent do MORE is flagged as a raise. The hard bound is what the owner funds
+// the wallet with.
 
+import { isAddress as isEvmAddress } from "viem";
+import { isAddress as isSolanaAddress } from "@solana/kit";
 import { paths, readJson, writePrivate } from "./store.js";
 import { recordPolicyChange } from "./ledger.js";
 
 export { Refused } from "./errors.js";
 
-export const POLICY_SCHEMA = "sato-agent.policy/v1";
+export const POLICY_SCHEMA = "sato-agent.policy/v2";
+export const CHAINS = ["base", "solana"];
+// How strictly a Sato Hub check gates a spend (owner's choice; unset = it only informs).
+export const CHECK_GATES = ["off", "no", "caution"]; // "no": refuse on a `no` verdict; "caution": refuse on `caution` or `no`
+export const APPROVAL_MODES = ["auto", "ask"]; // "ask": every spend needs the owner's approval of that exact intent
+export const UNAVAILABLE_MODES = ["allow", "refuse"]; // when the check cannot be run
 
 /** Parse a limit: a plain positive decimal number of USD, or "none". */
 export function parseLimit(raw, flag) {
@@ -27,22 +37,68 @@ export function parseLimit(raw, flag) {
   return Number(raw);
 }
 
+function parseChoice(raw, allowed, flag) {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string" || !allowed.includes(raw.toLowerCase())) throw new Error(`${flag} must be one of: ${allowed.join(", ")}`);
+  return raw.toLowerCase();
+}
+
+export function parseChains(raw) {
+  if (raw === undefined) return undefined;
+  const list = [...new Set(String(raw).split(",").map((s) => s.trim().toLowerCase()).filter(Boolean))];
+  if (!list.length || list.some((c) => !CHAINS.includes(c))) throw new Error(`--chains must be one or more of: ${CHAINS.join(", ")} (comma-separated)`);
+  return list.sort();
+}
+
+/** Validate an allowlist: every entry must be a Base (0x…) or Solana address. */
+export function parseAllowlist(list) {
+  if (list === undefined || list === null) return list;
+  for (const a of list) {
+    // strict:false accepts any well-formed 0x address, whatever its letter case (comparison is case-insensitive anyway).
+    if (!(isEvmAddress(a, { strict: false }) || isSolanaAddress(a))) throw new Error(`--allow: "${a}" is not a Base or Solana address`);
+  }
+  return [...new Set(list)];
+}
+
 export function loadPolicy() {
   return readJson(paths.policy());
 }
 
+const norm = (a) => (a.startsWith("0x") ? a.toLowerCase() : a);
 const higher = (next, prev) => (prev === null ? false : next === null ? true : next > prev);
+const looser = (order, next, prev) => order.indexOf(next ?? order[0]) < order.indexOf(prev ?? order[0]);
+
+/** Every way a change can let the agent do MORE than before. Empty = not a raise. */
+export function raisesBetween(prev, next) {
+  if (!prev) return [];
+  const r = [];
+  if (higher(next.max_usd_per_tx, prev.max_usd_per_tx)) r.push("max_usd_per_tx");
+  if (higher(next.max_usd_per_day, prev.max_usd_per_day)) r.push("max_usd_per_day");
+  if (Array.isArray(prev.allow_recipients)) {
+    if (next.allow_recipients === null) r.push("allow_recipients removed");
+    else if (next.allow_recipients.some((a) => !prev.allow_recipients.map(norm).includes(norm(a)))) r.push("allow_recipients widened");
+  }
+  if (Array.isArray(prev.chains) && (next.chains ?? CHAINS).some((c) => !prev.chains.includes(c))) r.push("chains widened");
+  // Gates order strictest-last; a move toward "off" (or unset) loosens.
+  if (looser(["off", "no", "caution"], next.check_gate, prev.check_gate)) r.push("check_gate loosened");
+  if (prev.approval === "ask" && next.approval !== "ask") r.push("approval: ask -> auto");
+  if (prev.on_check_unavailable === "refuse" && next.on_check_unavailable !== "refuse") r.push("on_check_unavailable: refuse -> allow");
+  return r;
+}
 
 /**
- * Set or change the limits. Both are required the first time; later calls may
- * change one. Returns the new policy and whether any limit went UP (or a
- * recipient allowlist was removed), which the CLI flags loudly.
+ * Set or change the owner's choices. The first time, both limits and the chains
+ * are required (no defaults). Later calls may change any one. Returns the new
+ * policy and what (if anything) it loosened, which the CLI flags loudly.
  */
-export function setPolicy({ perTx, perDay, allowRecipients }) {
+export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, approval, onCheckUnavailable }) {
   const prev = loadPolicy();
   if (!prev && (perTx === undefined || perDay === undefined)) {
     throw new Error("first time: set both --per-tx and --per-day (a USD amount, or \"none\")");
   }
+  const nextChains = parseChains(chains);
+  if (!prev && nextChains === undefined) throw new Error(`first time: set --chains (${CHAINS.join(", ")}): which chain(s) this agent may spend on`);
+  const pick = (v, key, fallback = null) => (v === undefined ? (prev?.[key] ?? fallback) : v);
   const next = {
     schema: POLICY_SCHEMA,
     set_at: new Date().toISOString(),
@@ -50,34 +106,38 @@ export function setPolicy({ perTx, perDay, allowRecipients }) {
     // Rolling 24 hours, not a calendar day.
     max_usd_per_day: perDay === undefined ? prev.max_usd_per_day : parseLimit(perDay, "--per-day"),
     // null = any recipient; a list = only these (lower-cased EVM, exact Solana).
-    allow_recipients: allowRecipients === undefined ? (prev?.allow_recipients ?? null) : allowRecipients,
+    allow_recipients: allowRecipients === undefined ? (prev?.allow_recipients ?? null) : parseAllowlist(allowRecipients),
+    // A v1 policy (no chains) keeps working on both chains; `status` says so.
+    chains: pick(nextChains, "chains"),
+    check_gate: pick(parseChoice(checkGate, CHECK_GATES, "--check-gate"), "check_gate"),
+    approval: pick(parseChoice(approval, APPROVAL_MODES, "--approval"), "approval"),
+    on_check_unavailable: pick(parseChoice(onCheckUnavailable, UNAVAILABLE_MODES, "--on-check-unavailable"), "on_check_unavailable"),
   };
-  const raised = Boolean(
-    prev &&
-      (higher(next.max_usd_per_tx, prev.max_usd_per_tx) ||
-        higher(next.max_usd_per_day, prev.max_usd_per_day) ||
-        (Array.isArray(prev.allow_recipients) && next.allow_recipients === null)),
-  );
-  writePrivate(paths.policy(), JSON.stringify(next, null, 2) + "\n");
-  recordPolicyChange({ from: prev, to: next, raised });
-  return { policy: next, raised, first: !prev };
+  const raises = raisesBetween(prev, next);
+  writePrivate(paths.policy(), JSON.stringify(next, null, 2) + "\n", { atomic: true });
+  recordPolicyChange({ from: prev, to: next, raised: raises.length > 0, raises });
+  return { policy: next, raised: raises.length > 0, raises, first: !prev };
 }
 
-const norm = (a) => (a.startsWith("0x") ? a.toLowerCase() : a);
+/** The chains this policy allows (a v1 policy with no `chains` allows both). */
+export const allowedChains = (policy) => (policy && Array.isArray(policy.chains) ? policy.chains : CHAINS);
 
 /**
  * Check one spend against the limits. Returns the refusals (empty = allowed).
  * Each refusal names the rule, the limit and what was observed.
  */
-export function evaluate(policy, { usd, to }, spent) {
+export function evaluate(policy, { usd, to, chain }, spent) {
   if (!policy) {
-    return [{ rule: "limits_not_set", limit: null, observed: null, message: "no spending limits are set yet: the owner runs `sato-agent policy set --per-tx <usd|none> --per-day <usd|none>`" }];
+    return [{ rule: "limits_not_set", limit: null, observed: null, message: "no spending limits are set yet: the owner runs `sato-agent policy set --chains <base|solana> --per-tx <usd|none> --per-day <usd|none>`" }];
   }
   const s = typeof spent === "number" ? { usd: spent, unreadable: [] } : spent;
   if (s.unreadable.length) {
     return [{ rule: "ledger_unreadable", limit: null, observed: s.unreadable, message: `the spend ledger has unreadable line(s) ${s.unreadable.join(", ")}; spending is stopped until the owner looks at ${paths.ledger()}` }];
   }
   const out = [];
+  if (chain && !allowedChains(policy).includes(chain)) {
+    out.push({ rule: "chain_not_allowed", limit: allowedChains(policy), observed: chain, message: `this agent is set to work on ${allowedChains(policy).join(" and ")} only` });
+  }
   if (!(usd > 0)) out.push({ rule: "amount", limit: ">0", observed: usd, message: "amount must be positive" });
   if (policy.max_usd_per_tx !== null && usd > policy.max_usd_per_tx) {
     out.push({ rule: "max_usd_per_tx", limit: policy.max_usd_per_tx, observed: usd, message: `over the per-transaction limit of $${policy.max_usd_per_tx}` });

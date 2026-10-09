@@ -31,9 +31,20 @@ export function ensureHome() {
   fs.chmodSync(home(), 0o700);
 }
 
-/** Write a file only its owner can read. `exclusive` refuses to replace an existing file. */
-export function writePrivate(path, text, { exclusive = false } = {}) {
+/**
+ * Write a file only its owner can read. `exclusive` refuses to replace an
+ * existing file. `atomic` writes a temp file and renames it over the target, so
+ * a crash mid-write never leaves half a policy behind.
+ */
+export function writePrivate(path, text, { exclusive = false, atomic = false } = {}) {
   ensureHome();
+  if (atomic && !exclusive) {
+    const tmp = `${path}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, text, { mode: 0o600 });
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, path);
+    return;
+  }
   fs.writeFileSync(path, text, { mode: 0o600, flag: exclusive ? "wx" : "w" });
   fs.chmodSync(path, 0o600);
 }

@@ -26,16 +26,19 @@ test("limits accept any plain amount or 'none', and nothing else", () => {
 });
 
 test("'no limit' is the owner's choice", () => {
-  const { policy } = setPolicy({ perTx: "none", perDay: "none" });
+  assert.throws(() => setPolicy({ perTx: "none", perDay: "none" }), /--chains/, "chains are the owner's choice too: no default");
+  const { policy } = setPolicy({ chains: "base,solana", perTx: "none", perDay: "none" });
   assert.deepEqual(evaluate(policy, { usd: 50_000, to: "0xabc" }, 1_000_000), []);
 });
 
 test("per-transaction, per-24h and recipient limits each refuse with their rule", () => {
-  const { policy: p } = setPolicy({ perTx: "10", perDay: "25", allowRecipients: ["0xAbC"] });
-  assert.deepEqual(evaluate(p, { usd: 10, to: "0xabc" }, 15), []);
-  assert.deepEqual(evaluate(p, { usd: 10.01, to: "0xabc" }, 0).map((r) => r.rule), ["max_usd_per_tx"]);
-  assert.deepEqual(evaluate(p, { usd: 10, to: "0xabc" }, 15.5).map((r) => r.rule), ["max_usd_per_day"]);
-  assert.deepEqual(evaluate(p, { usd: 1, to: "0xdef" }, 0).map((r) => r.rule), ["allow_recipients"]);
+  const A = "0x000000000000000000000000000000000000aBc1";
+  const { policy: p } = setPolicy({ perTx: "10", perDay: "25", allowRecipients: [A] });
+  assert.deepEqual(evaluate(p, { usd: 10, to: A.toLowerCase() }, 15), []);
+  assert.deepEqual(evaluate(p, { usd: 10.01, to: A }, 0).map((r) => r.rule), ["max_usd_per_tx"]);
+  assert.deepEqual(evaluate(p, { usd: 10, to: A }, 15.5).map((r) => r.rule), ["max_usd_per_day"]);
+  assert.deepEqual(evaluate(p, { usd: 1, to: "0x000000000000000000000000000000000000dEaD" }, 0).map((r) => r.rule), ["allow_recipients"]);
+  assert.throws(() => setPolicy({ allowRecipients: ["0xAbC"] }), /not a Base or Solana address/);
   const q = setPolicy({ perDay: "100" });
   assert.equal(q.policy.max_usd_per_tx, 10, "changing one limit keeps the other");
 });

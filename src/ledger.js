@@ -23,8 +23,13 @@ export function record(entry) {
   return line;
 }
 
-export function recordPolicyChange({ from, to, raised }) {
-  return record({ kind: "policy", status: raised ? "raised" : "changed", from, to });
+export function recordPolicyChange({ from, to, raised, raises = [] }) {
+  return record({ kind: "policy", status: raised ? "raised" : "changed", raises, from, to });
+}
+
+/** A Sato Hub check that was skipped or could not run before a spend: the owner sees it in `status`. */
+export function recordCheckEvent(entry) {
+  return record({ kind: "check", ...entry });
 }
 
 export function read() {

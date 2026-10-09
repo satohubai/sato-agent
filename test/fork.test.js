@@ -57,7 +57,7 @@ after(() => anvil?.kill());
 test("sends USDC on a Base fork, inside the owner's limits", { skip: !enabled }, async () => {
   const to = "0x000000000000000000000000000000000000dEaD";
   await assert.rejects(sendUsdc({ to, amount: "1" }), (e) => e instanceof Refused);
-  setPolicy({ perTx: "20", perDay: "30" });
+  setPolicy({ chains: "base", perTx: "20", perDay: "30" });
   const before = await pub.readContract({ address: USDC_BASE, abi: erc20Abi, functionName: "balanceOf", args: [to] });
   const r = await sendUsdc({ to, amount: "12.5" });
   const after = await pub.readContract({ address: USDC_BASE, abi: erc20Abi, functionName: "balanceOf", args: [to] });

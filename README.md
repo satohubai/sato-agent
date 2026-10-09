@@ -24,11 +24,12 @@ Each Bot keeps its own wallet, limits and ledger, even on the same Grok Bot comp
 ## Quickstart (any machine)
 
 ```sh
-npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.1.0
+npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.1.1
 alias sato-agent=~/.sato-agent-cli/node_modules/.bin/sato-agent
 
 sato-agent init                                     # this agent's own wallet
-sato-agent policy set --per-tx 25 --per-day 100     # your limits; "none" = no limit
+sato-agent policy set --chains base,solana --per-tx 25 --per-day 100   # your choices; "none" = no limit
+sato-agent policy set --approval ask --check-gate no                   # optional: ask first; let a `no` check stop a spend
 sato-agent balance
 sato-agent pay https://some-x402-api.example/data   # x402, USDC on Base
 sato-agent send --chain solana --to <address> --amount 5
@@ -39,12 +40,13 @@ sato-agent register --name "My agent" --description "What it does"
 
 | Command | What it does |
 |---|---|
-| `init` | Creates the agent's Base + Solana wallet in `~/.sato-agent/`. Never replaces an existing one. |
-| `address` / `balance` | Addresses; ETH + USDC on Base, SOL + USDC on Solana |
-| `policy set --per-tx <usd\|none> --per-day <usd\|none> [--allow <addrs>\|any]` | The spending limits (per day = rolling 24 hours). **There are no defaults:** nothing is spent until both are set. Raises are logged and flagged. |
-| `pay <url>` | Pays an x402 resource in USDC on Base, after Sato Hub reads its payment terms |
+| `init` | Creates the agent's Base + Solana keys in its folder (`~/.sato-agent/`, or `SATO_AGENT_HOME`). Never replaces an existing one. |
+| `address` / `balance` | Address and USDC + gas balance for this agent's chain(s) |
+| `policy set --chains <base\|solana\|base,solana> --per-tx <usd\|none> --per-day <usd\|none>` | The owner's choices (per day = rolling 24 hours). **There are no defaults:** nothing is spent until chains and both limits are set. |
+| `policy set [--allow <addrs>\|any] [--approval ask\|auto] [--check-gate off\|no\|caution] [--on-check-unavailable allow\|refuse]` | Optional choices: a recipient allowlist; ask the owner before every spend; let a Sato Hub `no` (or `caution`) stop a spend; what to do when the check can't run. **Anything that loosens a choice is logged as a raise.** |
+| `pay <url> [--method --data --header]` | Pays an x402 resource in USDC on Base, after Sato Hub reads its payment terms. A JSON `--data` gets a JSON content-type |
 | `send --chain base\|solana --to <addr> --amount <usdc>` | Sends USDC, after Sato Hub checks the recipient |
-| `register --name --description [--image]` | Registers in the ERC-8004 IdentityRegistry on Base (`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`), with the registration file stored onchain |
+| `register --name --description [--image] [--service name=endpoint] [--x402-support]` | Registers in the ERC-8004 IdentityRegistry on Base (`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`), with the registration file stored onchain |
 | `check "<install command>"` | Sato Check: does an install take a key, does the key leave, can it move funds on its own |
 | `recommend "<goal>"` | A stack for a build goal from Sato Hub's index |
 | `status` | Limits, spend in the last 24 hours, limit changes, recent spends |
@@ -57,6 +59,7 @@ Exit codes:
 - `2`: usage error.
 - `3`: refused by the limits. Nothing was signed; the message names the rule, the limit and what was observed.
 - `4`: signed but not confirmed. It stays counted. **Do not retry**; check the explorer link.
+- `5`: needs the owner's approval (approval mode). Nothing was spent. Re-run the same command with `--approve <code>` after the owner says yes. The code works once, for that exact intent, for 15 minutes.
 
 Dependencies are locked by `npm-shrinkwrap.json` (every transitive version), and none has an install script.
 
@@ -76,7 +79,7 @@ Every limit change is written to the ledger and shown in `status`. `pay` frames 
 - Solana sends to token accounts or other non-wallet addresses are refused.
 
 **What they don't do**
-- The limits are enforced by this program, on the same computer that holds the key. **The agent itself can raise its limits** with `policy set`. A raise is logged and flagged in `status`, but it isn't blocked.
+- The limits are enforced by this program, on the same computer that holds the key. **The agent itself can loosen any choice** with `policy set`: raise a limit, add a recipient or chain, loosen the check gate, or switch "ask" to "auto". In approval mode it could also type the approval code itself. Every loosening is logged and flagged in `status`, but it isn't blocked.
 - The agent can also edit these files, or write its own code that uses the key.
 - So the limits stop mistakes, runaway loops, and an agent that follows its rules. They don't stop a compromised agent, or a prompt injection it obeys.
 - **The hard bound is what you fund the wallet with.** Use a wallet dedicated to the agent, never your main wallet, and fund it with what you're willing to let it spend.
@@ -84,8 +87,9 @@ Every limit change is written to the ledger and shown in `status`. `pay` frames 
 
 ## Files, network and privacy
 
-- `~/.sato-agent/wallet.json` (mode 600): the keys. Never printed, never sent anywhere.
-- `~/.sato-agent/policy.json`: the limits. `~/.sato-agent/ledger.jsonl`: every spend and every limit change.
+- `wallet.json` (mode 600): the keys. Never printed, never sent anywhere.
+- `policy.json`: the owner's choices. `ledger.jsonl`: every spend, limit change, skipped check and approval. `approvals.json`: pending approval codes.
+- They live in `~/.sato-agent/` by default. With the Grok Bot launchers from BOT.md, each Bot's files live in `~/.sato-agent/<NAME>/`.
 - `SATO_AGENT_HOME` gives each agent its own folder. Two Bots on one computer should each use their own, so they get separate wallets and limits.
 - Network calls:
   - Base and Solana RPCs (`SATO_AGENT_BASE_RPC`, `SATO_AGENT_SOLANA_RPC` to override; public endpoints by default);
@@ -95,7 +99,7 @@ Every limit change is written to the ledger and shown in `status`. `pay` frames 
 
 ## What Sato Hub's checks are
 
-They are dated evidence lines (when a project last shipped, whether an endpoint answered, what an install does with keys), not verdicts. `unknown` means Sato Hub holds no record, not that anything is wrong. Docs: https://satohub.ai/mcp
+They are dated evidence lines (when a project last shipped, whether an endpoint answered, what an install does with keys), not verdicts. A check stops a spend only if the owner chose that (`--check-gate`). A `go` never means a recipient or resource is safe; it means nothing on record stood in the way. `unknown` means Sato Hub holds no record, not that anything is wrong. Docs: https://satohub.ai/mcp
 
 ## Tests
 

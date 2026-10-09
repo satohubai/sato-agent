@@ -17,10 +17,10 @@ import {
   isAddress,
   keccak256,
   parseEventLogs,
-  parseUnits,
 } from "viem";
+import { usdcUnits, unitsToUsd } from "./amount.js";
 import { base } from "viem/chains";
-import { loadPolicy } from "./policy.js";
+import { allowedChains, loadPolicy } from "./policy.js";
 import { entries, record, release, reserve } from "./ledger.js";
 import { Pending, Rejected } from "./errors.js";
 import { withLock } from "./store.js";
@@ -109,8 +109,8 @@ async function signAndSend(c, { to, data }, onSigned, { counted = true } = {}) {
 /** Send USDC on Base. Throws Refused when the limits say no; nothing is signed then. */
 export async function sendUsdc({ to, amount }, c = clients()) {
   if (!isAddress(to)) throw new Error(`not a Base address: ${to}`);
-  const units = parseUnits(String(amount), 6);
-  const usd = Number(formatUnits(units, 6));
+  const units = usdcUnits(amount); // never rounded: more than 6 decimals is refused
+  const usd = unitsToUsd(units);
   const entry = await reserve(loadPolicy(), { kind: "send", chain: "base", asset: "USDC", usd, to });
 
   const data = encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [to, units] });
@@ -138,14 +138,16 @@ export async function sendUsdc({ to, amount }, c = clients()) {
 }
 
 /** The ERC-8004 registration file, as a data: URI stored fully onchain. */
-export function registrationUri({ agentId, name, description, image = "", services = [] }) {
+export function registrationUri({ agentId, name, description, image = "", services = [], x402Support = false }) {
   const card = {
     type: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
     name,
     description,
     image,
     services,
-    x402Support: true,
+    // In ERC-8004 this advertises that the agent ACCEPTS x402 for its services.
+    // An agent that only pays must not claim it.
+    x402Support: Boolean(x402Support),
     active: true,
     registrations: agentId === undefined ? [] : [{ agentId: Number(agentId), agentRegistry: `eip155:8453:${IDENTITY_REGISTRY}` }],
   };
@@ -167,8 +169,10 @@ export function registeredIds() {
  * registration file naming that id. Gas only, not counted against the USD limits.
  * `resume` finishes step two for an id whose first step already landed.
  */
-export async function registerAgent({ name, description, image, services, again = false, resume }, c = clients()) {
+export async function registerAgent({ name, description, image, services = [], x402Support = false, again = false, resume }, c = clients()) {
   if (!name || !description) throw new Error("--name and --description are required");
+  const policy = loadPolicy();
+  if (policy && !allowedChains(policy).includes("base")) throw new Error(`this agent is set to work on ${allowedChains(policy).join(" and ")} only; ERC-8004 registration is on Base`);
   let agentId;
   if (resume !== undefined) {
     if (!/^\d+$/.test(String(resume))) throw new Error("--resume takes the agent id");
@@ -177,7 +181,7 @@ export async function registerAgent({ name, description, image, services, again 
     const prior = registeredIds();
     if (prior.done.length && !again) throw new Error(`this wallet already registered agent id ${prior.done.join(", ")}; add --again to register another`);
     if (prior.pending.length && !again) throw new Error(`a registration was sent but never confirmed (${prior.pending.map(explorer).join(", ")}); check it, then use --resume <agent id> or --again`);
-    const first = registrationUri({ name, description, image, services });
+    const first = registrationUri({ name, description, image, services, x402Support });
     await c.pub.simulateContract({ account: c.account, address: IDENTITY_REGISTRY, abi: identityRegistryAbi, functionName: "register", args: [first] });
     const r1 = await signAndSend(
       c,
@@ -194,7 +198,7 @@ export async function registerAgent({ name, description, image, services, again 
     record({ kind: "register", status: "registered", chain: "base", usd: 0, agent_id: agentId.toString(), tx: r1.transactionHash });
   }
 
-  const full = registrationUri({ agentId, name, description, image, services });
+  const full = registrationUri({ agentId, name, description, image, services, x402Support });
   const data = encodeFunctionData({ abi: identityRegistryAbi, functionName: "setAgentURI", args: [agentId, full] });
   try {
     await c.pub.call({ account: c.account, to: IDENTITY_REGISTRY, data });

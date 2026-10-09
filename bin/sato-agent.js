@@ -19,6 +19,8 @@ import * as solana from "../src/solana.js";
 import { pay } from "../src/x402.js";
 import { MCP_URL, checkInstall, customEndpoint, gateRefusals, recommend, runCheck } from "../src/satohub.js";
 import { usdcUnits, unitsToUsd } from "../src/amount.js";
+import { checkBuilds, renderReceipts } from "../src/build-check.js";
+import { normalizeCluster } from "../src/receipts.js";
 
 const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, with the owner's limits
 
@@ -37,7 +39,10 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
   register --name <name> --description <text> [--image <url>] [--service name=endpoint ...]
            [--x402-support] [--again | --resume <agent id>]
                                          register in the ERC-8004 registry on Base (gas only)
-  check "<install command>"              what an install does with keys and money (Sato Check)
+  check "<install command>" [--cluster mainnet-beta|devnet] [--skip-check]
+                                         Solana build receipts for the npm packages in an install command (read
+                                         from the chain, no call to Sato Hub), then what the install does with
+                                         keys and money (Sato Check). It describes; it never blocks.
   recommend "<goal>" [--chain <chain>]   a stack for a build goal, from Sato Hub
   status                                 choices, spend in the last 24 h, changes, recent spends
 
@@ -55,6 +60,7 @@ try {
       json: { type: "boolean" },
       chain: { type: "string" },
       chains: { type: "string" },
+      cluster: { type: "string" },
       to: { type: "string" },
       amount: { type: "string" },
       "per-tx": { type: "string" },
@@ -298,9 +304,29 @@ async function main() {
     }
     case "check": {
       const command = rest.join(" ");
-      if (!command) throw new UsageError('check "<install command>"');
-      const r = await checkInstall(command);
-      return out(r.text, r.structured ?? { text: r.text });
+      if (!command) throw new UsageError('check "<install command>" [--cluster mainnet-beta|devnet] [--skip-check]');
+      const cluster = normalizeCluster(flags.cluster);
+      if (!cluster) throw new UsageError("--cluster must be mainnet-beta or devnet");
+      // 1. Build receipts, read from Solana: no key, no call to Sato Hub. They describe; they never change the exit code.
+      const report = await checkBuilds(command, { cluster });
+      // 2. Then Sato Check's own text, as before (unless --skip-check).
+      let hub = null;
+      let hubError = null;
+      if (!flags["skip-check"]) {
+        try {
+          hub = await checkInstall(command);
+        } catch (err) {
+          hubError = err;
+        }
+      }
+      if (flags.json) {
+        console.log(json({ ...report, sato_hub_check: hub ? (hub.structured ?? { text: hub.text }) : null, ...(hubError ? { sato_hub_check_error: hubError.message } : {}) }));
+      } else {
+        console.log(renderReceipts(report));
+        if (hub) console.log(`\nSato Check (what this install does with keys and money; dated evidence):\n${hub.text}`);
+      }
+      if (hubError) throw hubError; // as before: Sato Hub unreachable is an error (exit 1)
+      return;
     }
     case "recommend": {
       const goal = rest.join(" ");

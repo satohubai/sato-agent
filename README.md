@@ -47,7 +47,7 @@ sato-agent register --name "My agent" --description "What it does"
 | `pay <url> [--method --data --header]` | Pays an x402 resource in USDC on Base, after Sato Hub reads its payment terms. A JSON `--data` gets a JSON content-type |
 | `send --chain base\|solana --to <addr> --amount <usdc>` | Sends USDC, after Sato Hub checks the recipient |
 | `register --name --description [--image] [--service name=endpoint] [--x402-support]` | Registers in the ERC-8004 IdentityRegistry on Base (`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`), with the registration file stored onchain |
-| `check "<install command>"` | Sato Check: does an install take a key, does the key leave, can it move funds on its own |
+| `check "<install command>" [--cluster mainnet-beta\|devnet] [--skip-check]` | First, Solana build receipts for the npm packages in the command (see below). Then Sato Check: does an install take a key, does the key leave, can it move funds on its own |
 | `recommend "<goal>"` | A stack for a build goal from Sato Hub's index |
 | `status` | Limits, spend in the last 24 hours, limit changes, recent spends |
 
@@ -56,6 +56,63 @@ Add `--json` to any command for machine-readable output.
 **Upgrading from v0.1.0:** a v0.1.0 policy never chose its chains, so spending is refused (`chains_not_set`) until you run `policy set --chains <base|solana|base,solana>`.
 
 **Secrets:** put API keys in `--header`, never in the URL or the `--data` body. Header values are hashed; the URL and body are shown to the owner and kept in the ledger, so they can be approved.
+
+### Build receipts in `check`
+
+`check` reads the npm packages out of an install command (`npm i`, `pnpm add`, `yarn add`, `bun add`, `npx [-y] pkg[@version]`; flags are ignored and nothing is ever run). For each `package@version` it reads Sato Check's **build receipt** straight from Solana and tells you if the tarball npm serves for that version is the build the receipt describes. If you give no version, `latest` is looked up on the npm registry and the output says so. Version ranges, paths, git and URL installs are listed as not looked up.
+
+A receipt is a dated Sato Check reading of one exact build, written onchain by Sato Hub. It describes; it does not decide. Reading it needs no key and makes no call to Sato Hub: just a Solana RPC (`SATO_AGENT_SOLANA_RPC`, or `SATO_AGENT_RECEIPTS_RPC` to use a different one just for this) and the npm registry.
+
+Each package gets one of these:
+
+| Status (`--json`) | Printed | Meaning |
+|---|---|---|
+| `same_build` | same build as recorded | The sha256 of the npm tarball equals the digest in the receipt. |
+| `different_build` | different build | The tarball's sha256 differs from the digest in the receipt, so the reading is about another build. |
+| `no_reading` | no reading for this build | No receipt exists for that exact version. It means no reading was written, nothing else. |
+| `chain_unreadable` | the chain could not be read | The RPC failed or the account was not a Sato Hub receipt. Never the same as `no_reading`. |
+| `build_unchecked` | this build could not be fetched to compare | The registry failed, the tarball is over 64 MB, or its bytes did not match npm's own integrity hash. The receipt, if any, is still shown. |
+
+A found receipt is printed with its fields and dates: `key_access`, `key_egress`, `fund_action_count` (stored as -1 when unknown; printed and returned as `unknown`/`null`, never as -1 or 0), `method_version`, `as_of`, the full reading URL, the attestation address and a Solana Explorer link. Before any of it is used, the account's owner must be the Solana Attestation Service program, and its credential, schema and signer must be Sato Hub's. The tarball is downloaded only from `https://registry.npmjs.org/`, only where a receipt exists to compare it to, and its bytes are checked against the registry's own sha512 integrity first.
+
+Then Sato Check's own text is shown, as before. `--skip-check` leaves that out and makes no request to Sato Hub at all. `--cluster devnet` reads the test deployment instead of mainnet. A receipt never changes the exit code: a different build or no reading still exits `0`.
+
+`check --json` prints:
+
+```json
+{
+  "command": "npm i solana-agent-kit@2.0.10",
+  "receipts": [
+    {
+      "subject_id": "npm:solana-agent-kit",
+      "package": "solana-agent-kit",
+      "version": "2.0.10",
+      "version_requested": "2.0.10",
+      "version_resolved_from_latest": false,
+      "version_resolved_from": null,
+      "status": "same_build",
+      "installed_sha256": "<sha256 of the tarball npm serves for this version>",
+      "integrity_check": "match",
+      "receipt": {
+        "subject_kind": "package", "subject_id": "npm:solana-agent-kit", "version": "2.0.10",
+        "digest_hex": "<sha256 recorded in the receipt>",
+        "key_access": "declared", "key_egress": "not_observed",
+        "fund_action_count": null,
+        "method_version": "custody-2", "as_of": "2026-10-05",
+        "reading_url": "https://satohub.ai/check/package/...",
+        "attestation_address": "<base58>", "cluster": "mainnet-beta",
+        "explorer_url": "https://explorer.solana.com/address/<base58>"
+      }
+    }
+  ],
+  "skipped": [{ "spec": "./local", "reason": "..." }],
+  "deployment": { "cluster": "mainnet-beta", "credential": "...", "schema": "...", "authority": "...", "program": "22zoJMtd..." },
+  "rpc_host": "api.mainnet-beta.solana.com",
+  "sato_hub_check": { }
+}
+```
+
+`receipt` is `null` when no receipt was found; an `error` string is added when the status is `chain_unreadable` or `build_unchecked`. `integrity_check` is `match` or `not_published`. `version_resolved_from` is `"latest"` (also `version_resolved_from_latest: true`) or a dist-tag when no exact version was given. `sato_hub_check` is `null` with `--skip-check`. If Sato Hub cannot be reached, the receipts are still printed, `sato_hub_check_error` is added, and the exit code is `1` as before.
 
 Exit codes:
 - `0`: done.
@@ -97,6 +154,7 @@ Every limit change is written to the ledger and shown in `status`. `pay` frames 
 - `SATO_AGENT_HOME` gives each agent its own folder. Two Bots on one computer should each use their own, so they get separate wallets and limits.
 - Network calls:
   - Base and Solana RPCs (`SATO_AGENT_BASE_RPC`, `SATO_AGENT_SOLANA_RPC` to override; public endpoints by default);
+  - `https://registry.npmjs.org/` for `check` (package versions and tarballs; only the package names you ask about);
   - the x402 resources you pay;
   - `https://satohub.ai/api/mcp` for checks (it receives the URL, recipient or install command being checked, never a key).
 - Every request sends the user-agent `sato-agent/<version>`.

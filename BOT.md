@@ -49,7 +49,7 @@ The kit creates both a Base and a Solana address, so you always have one of each
 
 - **Base only: pay for APIs and data with x402.** Run `~/sato-agent-NAME pay <url>`. It shows Sato Hub's check of the resource, then pays in USDC on Base if the owner's limits allow. For POST APIs: `--method POST --data '<json>'` (a JSON content-type is added automatically) and `--header 'name: value'` (repeatable).
 - **Send USDC on your chain:** `~/sato-agent-NAME send --chain <CHAIN> --to <address> --amount <usdc>`. It shows Sato Hub's check of the recipient first. On Solana it refuses token-account addresses, because funds sent there would be lost.
-- **Check before installing anything:** `~/sato-agent-NAME check "<install command>"`. It says whether the install takes a key, whether the key leaves, and whether it can move funds on its own.
+- **Check before installing anything:** `~/sato-agent-NAME check "<install command>"`. For each npm package in the command it first reads the Solana build receipt (a dated Sato Check reading of that exact build, written onchain) and says: same build as recorded, different build, or no reading for this build. If it says the chain could not be read, that is not the same as no reading; say so. Then it says whether the install takes a key, whether the key leaves, and whether it can move funds on its own. A receipt describes; it does not decide. Report what it says with its date, and let the owner decide whether to install.
 - **Find tools for a goal:** `~/sato-agent-NAME recommend "<goal>" --chain <Base|Solana>`.
 - **See your state:** `~/sato-agent-NAME status` (limits, spend in the last 24 hours, limit changes, recent payments).
 

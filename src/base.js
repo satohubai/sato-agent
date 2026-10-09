@@ -74,10 +74,10 @@ const DEFINITE_REJECTION = /insufficient funds|nonce too low|nonce has already b
  * refused it, Pending when the outcome is unknown (kept counted), and Rejected
  * when another transaction took the nonce (ours can then never land).
  */
-async function signAndSend(c, { to, data }, onSigned, { counted = true } = {}) {
+export async function signAndSend(c, { to, data, value = 0n, gas }, onSigned, { counted = true } = {}) {
   const { signed, hash } = await withLock(
     async () => {
-      const prepared = await c.wallet.prepareTransactionRequest({ account: c.account, to, data, chain: base });
+      const prepared = await c.wallet.prepareTransactionRequest({ account: c.account, to, data, value: BigInt(value), ...(gas ? { gas: BigInt(gas) } : {}), chain: base });
       const signedTx = await c.wallet.signTransaction(prepared);
       const h = keccak256(signedTx);
       onSigned?.(h);

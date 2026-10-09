@@ -70,6 +70,21 @@ export const TOKENS = Object.freeze({
 // SwapDescriptionV2 { srcToken, dstToken, srcReceivers[], srcAmounts[], feeReceivers[], feeAmounts[], dstReceiver,
 // amount, minReturnAmount, flags, permit }. A selector this kit does not decode is refused.
 export const KYBER_SWAP_SELECTOR = "0xe21fd0e9";
+/** The router's own event for a completed swap (MetaAggregationRouterV2; read on a live Base swap, 2026-10-09). */
+const KYBER_SWAPPED_EVENT = [
+  {
+    type: "event",
+    name: "Swapped",
+    inputs: [
+      { name: "sender", type: "address", indexed: false },
+      { name: "srcToken", type: "address", indexed: false },
+      { name: "dstToken", type: "address", indexed: false },
+      { name: "dstReceiver", type: "address", indexed: false },
+      { name: "spentAmount", type: "uint256", indexed: false },
+      { name: "returnAmount", type: "uint256", indexed: false },
+    ],
+  },
+];
 /** KyberSwap's executor on Base: the only `callTarget` accepted (seen on every live build). */
 export const KYBER_EXECUTOR_BASE = "0x8F10B468b06c6FD214B65F87778827F7D113f996";
 export const KYBER_ROUTER_ABI = Object.freeze([
@@ -744,19 +759,39 @@ const errText = (err) => String(err?.shortMessage || err?.message || err);
  * logs in it. ETH: the balance change across the block, with gas and the L1 data
  * fee added back (native transfers leave no log). Returns null if it can't be read.
  */
+/**
+ * What the agent received, and how that was read: { units, basis } or null.
+ * - a token: its Transfer logs in the receipt ("receipt_logs");
+ * - native ETH (no Transfer log): the pinned router's own Swapped event in the receipt
+ *   ("router_event"), when it names the agent as receiver; otherwise the balance change
+ *   at the receipt's block ("balance_change"). The balance read needs a node that has
+ *   that block, which a load-balanced public RPC may not right away (live, 2026-10-09).
+ */
 async function measureOutput({ plan, receipt, c }) {
   const me = lc(plan.taker);
-  try {
-    if (!plan.token_out.native) {
+  if (!plan.token_out.native) {
+    try {
       const logs = parseEventLogs({ abi: erc20Abi, logs: receipt.logs, eventName: "Transfer" }).filter((l) => same(l.address, plan.token_out.address));
-      return logs.reduce((sum, l) => sum + (lc(l.args.to) === me ? l.args.value : 0n) - (lc(l.args.from) === me ? l.args.value : 0n), 0n);
+      return { units: logs.reduce((sum, l) => sum + (lc(l.args.to) === me ? l.args.value : 0n) - (lc(l.args.from) === me ? l.args.value : 0n), 0n), basis: "receipt_logs" };
+    } catch {
+      return null;
     }
+  }
+  try {
+    const swapped = parseEventLogs({ abi: KYBER_SWAPPED_EVENT, logs: receipt.logs, eventName: "Swapped" }).filter(
+      (l) => same(l.address, KYBER_ROUTER_BASE) && same(l.args.dstReceiver, plan.taker) && same(l.args.dstToken, plan.token_out.address),
+    );
+    if (swapped.length === 1) return { units: swapped[0].args.returnAmount, basis: "router_event" };
+  } catch {
+    /* fall through to the balance change */
+  }
+  try {
     const [after, beforeBlock] = await Promise.all([
       c.pub.getBalance({ address: plan.taker, blockNumber: receipt.blockNumber }),
       c.pub.getBalance({ address: plan.taker, blockNumber: receipt.blockNumber - 1n }),
     ]);
     const gas = receipt.gasUsed * receipt.effectiveGasPrice + (receipt.l1Fee ?? 0n);
-    return after - beforeBlock + gas;
+    return { units: after - beforeBlock + gas, basis: "balance_change" };
   } catch {
     return null;
   }
@@ -923,10 +958,11 @@ async function executeLocked(plan, deps) {
 
   // --- the receipt: what actually arrived
   const warnings = [];
-  const outUnits = await measureOutput({ plan, receipt, c });
+  const measured = await measureOutput({ plan, receipt, c });
+  const outUnits = measured?.units ?? null;
   // ERC-20: exact, from the receipt's Transfer logs. ETH leaves no log, so it is the balance change with the
   // receipt's gas and L1 fee added back: close, but a fee component the receipt does not show makes it read slightly low.
-  const outBasis = plan.token_out.native ? "balance_change" : "receipt_logs";
+  const outBasis = measured?.basis ?? null;
   if (outUnits === null) warnings.push("could not read the amount received from the receipt");
   else if (outUnits < plan.min_out) warnings.push(`received ${display(outUnits, plan.token_out)} ${plan.to}, below the minimum of ${display(plan.min_out, plan.token_out)}`);
   record({

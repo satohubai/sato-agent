@@ -120,7 +120,7 @@ function policyText(p) {
     `per transaction: ${limitText(p.max_usd_per_tx)}`,
     `per 24 hours:    ${limitText(p.max_usd_per_day)}`,
     `recipients:      ${p.allow_recipients ? p.allow_recipients.join(", ") : "any"}`,
-    `Sato Hub checks: ${p.check_gate && p.check_gate !== "off" ? `stop a spend on "${p.check_gate === "caution" ? "caution or no" : "no"}"` : "inform only"}${p.on_check_unavailable ? ` · if a check can't run: ${p.on_check_unavailable}` : ""}`,
+    `Sato Hub checks: ${p.check_gate && p.check_gate !== "off" ? `stop a spend on "${p.check_gate === "caution" ? "caution or no" : "no"}"${p.on_check_unavailable ? ` · if a check can't run: ${p.on_check_unavailable}` : ""}` : "inform only"}`,
     `approval:        ${p.approval === "ask" ? "ask the owner before every spend" : "act within the limits"}`,
     `swaps:           ${Number.isInteger(p.max_slippage_bps) ? `on · slippage up to ${p.max_slippage_bps} bps · ${p.max_trades_per_day === null ? "no trade cap" : `${p.max_trades_per_day} per 24 hours`}` : "off"}`,
   ].join("\n");
@@ -156,13 +156,15 @@ function parseHeaders() {
  * chose, the Sato Hub check under the owner's gate, and the owner's approval
  * when they chose "ask". Throws Refused (3) or NeedsApproval (5).
  */
-async function beforeSpend({ chain, intent, checkArgs, expectKind, usd, to }) {
+async function beforeSpend({ chain, intent, checkArgs, expectKind, usd, to, precheck }) {
   const policy = loadPolicy();
   // The limits first (when the amount is known here), so the owner is never
   // asked to approve something the limits would refuse anyway. The spend is
   // checked again, and reserved, under the lock when it actually happens.
   const early = evaluate(policy, { usd: usd ?? 0.000001, to, chain }, spentLast24h());
   if (early.length) throw new Refused(early);
+  // The kit's own refusals (e.g. a Solana token account as recipient) also come before any approval.
+  if (precheck) await precheck();
   intent = { ...intent, skip_check: Boolean(flags["skip-check"]) };
   let check = null;
   // A swap has no Sato Hub check to skip (its checks are the kit's own), so --skip-check only matters where a check runs.
@@ -270,7 +272,15 @@ async function main() {
       // never pass a token here: this must be the recipient check (Sato Scan).
       const checkArgs = { address: flags.to, chain: chain === "base" ? "Base" : "Solana", from: chain === "base" ? a.base : a.solana };
       const usd = unitsToUsd(usdcUnits(flags.amount)); // refuses malformed amounts before anything else
-      const check = await beforeSpend({ chain, intent: { cmd: "send", chain, to: flags.to, amount: flags.amount }, checkArgs, expectKind: "address", usd, to: flags.to });
+      const check = await beforeSpend({
+        chain,
+        intent: { cmd: "send", chain, to: flags.to, amount: flags.amount },
+        checkArgs,
+        expectKind: "address",
+        usd,
+        to: flags.to,
+        precheck: chain === "solana" ? () => solana.assertWalletRecipient(flags.to) : undefined,
+      });
       if (flags["dry-run"]) {
         const d = chain === "base" ? await baseChain.dryRunSendUsdc({ to: flags.to, amount: flags.amount }) : await solana.dryRunSendUsdc({ to: flags.to, amount: flags.amount });
         return out(`DRY RUN: the checks and the simulation passed for ${d.usd} USDC on ${chain} to ${d.to}. Nothing was signed or sent, and nothing counts against the limits.`, { ...d, sato_hub_check: check });

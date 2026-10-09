@@ -31,7 +31,7 @@ import {
 } from "@solana-program/token";
 import { loadPolicy } from "./policy.js";
 import { record, release, reserve } from "./ledger.js";
-import { Pending, Rejected } from "./errors.js";
+import { Pending, Refused, Rejected } from "./errors.js";
 import { usdcUnits } from "./amount.js";
 import { loadWallet, solanaSecret } from "./wallet.js";
 import { USER_AGENT } from "./version.js";
@@ -61,15 +61,19 @@ export async function balances(owner = loadWallet().solana.address, r = rpc()) {
   return { address: owner, sol: (Number(lamports.value) / LAMPORTS).toString(), usdc: usdc.toString() };
 }
 
-/** Refuse recipients that are not wallets. Returns nothing when `to` is a plausible wallet. */
+/**
+ * Refuse recipients that are not wallets (a policy refusal: exit 3, nothing signed).
+ * Returns nothing when `to` is a plausible wallet.
+ */
 export async function assertWalletRecipient(to, r = rpc()) {
+  const notWallet = (message) => new Refused([{ rule: "recipient_not_wallet", limit: "a wallet address", observed: to, message }]);
   if (!isAddress(to)) throw new Error(`not a Solana address: ${to}`);
   if (isOffCurveAddress(address(to))) {
-    throw new Error(`${to} is not a wallet address (it has no private key, e.g. a token account or a program account). USDC sent to it would be lost.`);
+    throw notWallet(`${to} is not a wallet address (it has no private key, e.g. a token account or a program account). USDC sent to it would be lost.`);
   }
   const { value } = await withTimeout(r.getAccountInfo(address(to), { encoding: "base64" }).send());
   if (value && (value.owner === TOKEN_PROGRAM_ADDRESS || value.owner === TOKEN_2022_PROGRAM)) {
-    throw new Error(`${to} is a token account, not a wallet. Ask for the recipient's wallet address; USDC sent to a token account's address would be lost.`);
+    throw notWallet(`${to} is a token account, not a wallet. Ask for the recipient's wallet address; USDC sent to a token account's address would be lost.`);
   }
 }
 

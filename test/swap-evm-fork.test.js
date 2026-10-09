@@ -142,8 +142,8 @@ test("fork: USDC -> ETH, real route, real simulation, exact approval, balances m
   const eth1 = await pub.getBalance({ address: me });
   const gas = (await gasPaid(out.tx)) + (await gasPaid(out.approve_tx));
   const gained = eth1 - eth0 + gas;
-  // ETH leaves no log, so the kit reads it from the balance change; it matches to within fee components the receipt does not show
-  assert.equal(out.received.basis, "balance_change");
+  // ETH leaves no Transfer log, so the kit reads the router's own Swapped event (no extra RPC read); it matches the balances to within fee components the receipt does not show
+  assert.equal(out.received.basis, "router_event");
   const reported = BigInt(Math.round(Number(out.received.amount) * 1e18));
   assert.ok(reported >= gained - 10n ** 12n && reported <= gained + 10n ** 12n, `kit read ${reported}, balances say ${gained}`);
   assert.ok(gained >= plan.min_out, `received ${gained} >= min_out ${plan.min_out}`);

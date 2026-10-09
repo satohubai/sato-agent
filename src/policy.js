@@ -159,6 +159,10 @@ export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, a
       next.max_trades_per_day = nextTrades;
     }
   }
+  // "If a check can't run" only means something while a check can stop a spend. With the gate
+  // off it is cleared, so status never shows a choice that does nothing (live test, 2026-10-09),
+  // and turning the gate back on asks for it again (no default).
+  if (!["no", "caution"].includes(next.check_gate)) next.on_check_unavailable = null;
   if (["no", "caution"].includes(next.check_gate) && !next.on_check_unavailable) {
     throw new Error("with --check-gate on, also choose --on-check-unavailable allow|refuse: what to do when the check can't run (no default)");
   }

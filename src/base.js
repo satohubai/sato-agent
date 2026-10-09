@@ -172,6 +172,7 @@ export function registeredIds() {
 export async function registerAgent({ name, description, image, services = [], x402Support = false, again = false, resume }, c = clients()) {
   if (!name || !description) throw new Error("--name and --description are required");
   const policy = loadPolicy();
+  if (policy && !Array.isArray(policy.chains)) throw new Error("choose which chain(s) this agent works on first: `sato-agent policy set --chains <base|solana|base,solana>`");
   if (policy && !allowedChains(policy).includes("base")) throw new Error(`this agent is set to work on ${allowedChains(policy).join(" and ")} only; ERC-8004 registration is on Base`);
   let agentId;
   if (resume !== undefined) {

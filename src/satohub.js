@@ -54,7 +54,7 @@ export async function runCheck(args, expectKind) {
     // The answer must be about the thing we asked about: if Preflight checked a
     // different target, or says it did not check ours, it is not our check.
     else if (Array.isArray(s.not_checked) && s.not_checked.length) reason = `did not check: ${s.not_checked.join(", ")}`;
-    else if (expectKind && s.target?.kind && s.target.kind !== expectKind) reason = `checked a ${s.target.kind}, not the ${expectKind}`;
+    else if (expectKind && s.target?.kind !== expectKind) reason = s.target?.kind ? `checked a ${s.target.kind}, not the ${expectKind}` : "the answer names no target";
     if (reason) return { unavailable: true, verdict: null, text: r.text || "Sato Hub returned no verdict", reason };
     return { unavailable: false, verdict, rule: s.rule ?? null, kind: s.target?.kind ?? null, text: r.text, checked_at: s.checked_at ?? null };
   } catch (err) {

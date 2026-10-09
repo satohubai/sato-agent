@@ -82,7 +82,8 @@ export function raisesBetween(prev, next) {
   // Gates order strictest-last; a move toward "off" (or unset) loosens.
   if (looser(["off", "no", "caution"], next.check_gate, prev.check_gate)) r.push("check_gate loosened");
   if (prev.approval === "ask" && next.approval !== "ask") r.push("approval: ask -> auto");
-  if (prev.on_check_unavailable === "refuse" && next.on_check_unavailable !== "refuse") r.push("on_check_unavailable: refuse -> allow");
+  // Unset counts as "refuse" (gateRefusals fails closed), so unset -> allow is a raise too.
+  if ((prev.on_check_unavailable ?? "refuse") === "refuse" && next.on_check_unavailable === "allow") r.push("on_check_unavailable: refuse -> allow");
   return r;
 }
 

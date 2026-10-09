@@ -53,6 +53,10 @@ sato-agent register --name "My agent" --description "What it does"
 
 Add `--json` to any command for machine-readable output.
 
+**Upgrading from v0.1.0:** a v0.1.0 policy never chose its chains, so spending is refused (`chains_not_set`) until you run `policy set --chains <base|solana|base,solana>`.
+
+**Secrets:** put API keys in `--header`, never in the URL or the `--data` body. Header values are hashed; the URL and body are shown to the owner and kept in the ledger, so they can be approved.
+
 Exit codes:
 - `0`: done.
 - `1`: error.

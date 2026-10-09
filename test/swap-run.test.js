@@ -189,3 +189,24 @@ test("Solana: a rebuilt plan that is off-market, or has no fresh price, is never
   assert.deepEqual(await rules(pc.execute()), ["price_unavailable"]);
   assert.equal(c.counts().signed, 0);
 });
+
+test("Solana: the transaction is held to the owner's slippage and Sato's disclosed fee, not the plan's own", async () => {
+  const seen = [];
+  const plan = { agent: "A", from: "USDC", to: "SOL", amount_in: "11000000", quote: { out_amount: "99500000", min_out: "98505000" }, disclosure: [] };
+  const p = await prepareSwap(
+    { chain: "solana", from: "USDC", to: "SOL", amount: "11", slippageBps: 80 },
+    {
+      oraclePrice: solPrice(110),
+      callTool: async () => ({ structured: satoSol({ sato_fee_bps: 15 }) }),
+      verifySignature: async () => ({ ok: true }),
+      planSolanaSwap: async () => plan,
+      verifySolanaSwapPlan: async (_p, intent) => (seen.push(["verify", intent]), { simulated: { ok: true }, jupiter: { enforced_min_out: "98505000" } }),
+      executeSolanaSwap: async (_p, d) => (seen.push(["execute", d.intent, d.usdNotional]), { tx: "sig" }),
+      solDeps: {},
+    },
+  );
+  assert.equal(p.display.buy.minimum_in_transaction, "0.098505");
+  await p.execute();
+  for (const [step, intent] of seen) assert.deepEqual([step, intent.slippage_bps, intent.fee_bps], [step, 80, 15]);
+  assert.equal(seen.find(([s]) => s === "execute")[2], 11, "the oracle-sized USD reaches the signer");
+});

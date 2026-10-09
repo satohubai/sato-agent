@@ -165,8 +165,10 @@ export async function prepareSwap(req, deps = {}) {
 
   const fee = await satoSolanaDisclosure(sized, deps);
   const planOnce = () => (deps.planSolanaSwap ?? sol.planSolanaSwap)({ from: sized.from, to: sized.to, amount: sized.amount, slippageBps: sized.slippageBps }, { satoFeeBps: fee.feeBps, ...(deps.solDeps ?? {}) });
+  // The bound the transaction is held to: the owner's slippage and the fee Sato Hub disclosed, never the plan's own values.
+  const intentFor = (p) => ({ agent: p.agent, from: p.from, to: p.to, amount_in: p.amount_in, slippage_bps: sized.slippageBps, fee_bps: fee.feeBps });
   let plan = await planOnce();
-  const verification = await (deps.verifySolanaSwapPlan ?? sol.verifySolanaSwapPlan)(plan, { agent: plan.agent, from: plan.from, to: plan.to, amount_in: plan.amount_in }, deps.solDeps ?? {});
+  const verification = await (deps.verifySolanaSwapPlan ?? sol.verifySolanaSwapPlan)(plan, intentFor(plan), deps.solDeps ?? {});
   const outUnits = Number(plan.quote.out_amount);
   const outNum = outUnits / 10 ** ASSETS.solana[sized.to].decimals;
   const deviation = checkAgainstOracle(sized, impliedPrice(sized, sized.amountNum, outNum));
@@ -174,7 +176,13 @@ export async function prepareSwap(req, deps = {}) {
     chain: "solana",
     venue: "jupiter",
     sell: { asset: sized.from, amount: sized.amount },
-    buy: { asset: sized.to, quoted: String(outNum), minimum: String(Number(plan.quote.min_out) / 10 ** ASSETS.solana[sized.to].decimals), slippage_bps: sized.slippageBps },
+    buy: {
+      asset: sized.to,
+      quoted: String(outNum),
+      minimum: String(Number(plan.quote.min_out) / 10 ** ASSETS.solana[sized.to].decimals),
+      minimum_in_transaction: verification.jupiter?.enforced_min_out ? String(Number(verification.jupiter.enforced_min_out) / 10 ** ASSETS.solana[sized.to].decimals) : null,
+      slippage_bps: sized.slippageBps,
+    },
     usd_held_to_limits: sized.usd,
     sato_fee: { bps: fee.feeBps, disclosure: fee.disclosure, route_id: fee.route_id, receipt_url: fee.receipt_url },
     disclosure: plan.disclosure,
@@ -187,16 +195,16 @@ export async function prepareSwap(req, deps = {}) {
     execute: async () => {
       // A Solana transaction lives ~60 s; if approval or display took too long, rebuild and re-verify before signing.
       try {
-        return await (deps.executeSolanaSwap ?? sol.executeSolanaSwap)(plan, { usdNotional: sized.usd, ...(deps.solDeps ?? {}) });
+        return await (deps.executeSolanaSwap ?? sol.executeSolanaSwap)(plan, { ...(deps.solDeps ?? {}), usdNotional: sized.usd, intent: intentFor(plan) });
       } catch (err) {
         if (!(err instanceof sol.PlanStale)) throw err;
         // Rebuilt from scratch and held to every check again, with a fresh independent price.
         plan = await planOnce();
-        await (deps.verifySolanaSwapPlan ?? sol.verifySolanaSwapPlan)(plan, { agent: plan.agent, from: plan.from, to: plan.to, amount_in: plan.amount_in }, deps.solDeps ?? {});
+        await (deps.verifySolanaSwapPlan ?? sol.verifySolanaSwapPlan)(plan, intentFor(plan), deps.solDeps ?? {});
         const fresh = await freshOracle(sized, deps);
         const decimals = ASSETS.solana[sized.to].decimals;
         checkAgainstOracle(fresh, impliedPrice(fresh, sized.amountNum, Number(plan.quote.out_amount) / 10 ** decimals));
-        const result = await (deps.executeSolanaSwap ?? sol.executeSolanaSwap)(plan, { usdNotional: sized.usd, ...(deps.solDeps ?? {}) });
+        const result = await (deps.executeSolanaSwap ?? sol.executeSolanaSwap)(plan, { ...(deps.solDeps ?? {}), usdNotional: sized.usd, intent: intentFor(plan) });
         // The owner saw the first quote; say plainly that this one replaced it.
         return { ...result, rebuilt: { quoted: String(Number(plan.quote.out_amount) / 10 ** decimals), minimum: String(Number(plan.quote.min_out) / 10 ** decimals), note: "the first quote expired before signing; the kit rebuilt it and checked it again" } };
       }

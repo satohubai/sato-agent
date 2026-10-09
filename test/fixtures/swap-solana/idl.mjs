@@ -1,0 +1,104 @@
+// Re-derives the Jupiter v6 route-plan layout that src/swap/solana.js embeds, from
+// the program's REAL on-chain Anchor IDL. Read-only: one getAccountInfo.
+//
+//   node test/fixtures/swap-solana/idl.mjs            print the table to paste into solana.js
+//   node test/fixtures/swap-solana/idl.mjs --write    also refresh jupiter-idl.json (the copy the tests use)
+//
+// The IDL account is the Anchor convention: seeds [] under the program give a base
+// key; the IDL lives at createWithSeed(base, "anchor:idl", program). Its data is
+// 8 bytes discriminator, 32 bytes authority, u32 length, then zlib-compressed JSON.
+// An unknown Swap variant (Jupiter appends new venues often) makes the kit refuse
+// the route, so re-run this when the live-read test says the IDL moved.
+
+import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { inflateSync } from "node:zlib";
+import { address, createSolanaRpc, getAddressDecoder, getAddressEncoder, getProgramDerivedAddress } from "@solana/kit";
+
+const PROGRAM = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
+
+export async function fetchJupiterIdl(rpc) {
+  const enc = getAddressEncoder();
+  const [base] = await getProgramDerivedAddress({ programAddress: address(PROGRAM), seeds: [] });
+  const key = createHash("sha256").update(Buffer.concat([Buffer.from(enc.encode(base)), Buffer.from("anchor:idl"), Buffer.from(enc.encode(address(PROGRAM)))])).digest();
+  const idlAddress = getAddressDecoder().decode(key);
+  const acc = await rpc.getAccountInfo(idlAddress, { encoding: "base64" }).send();
+  if (!acc.value) throw new Error(`no IDL account at ${idlAddress}`);
+  const buf = Buffer.from(acc.value.data[0], "base64");
+  const len = buf.readUInt32LE(8 + 32);
+  const idl = JSON.parse(inflateSync(buf.subarray(8 + 32 + 4, 8 + 32 + 4 + len)).toString());
+  return { idlAddress, idl };
+}
+
+/** The slice of the IDL the kit needs: every instruction's discriminator, the `route` instruction, and the types. */
+export function trim(idl, idlAddress) {
+  return {
+    source: `Anchor IDL account ${idlAddress} for ${PROGRAM} (also jup-ag/jupiter-cpi idl.json, an older copy without the v2 instructions)`,
+    program: PROGRAM,
+    instructions: Object.fromEntries(idl.instructions.map((i) => [i.name, Buffer.from(i.discriminator).toString("hex")])),
+    route: idl.instructions.find((i) => i.name === "route"),
+    types: idl.types,
+  };
+}
+
+const PRIMS = { bool: 1, u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, u64: 8, i64: 8, u128: 16, i128: 16, pubkey: 32, publicKey: 32 };
+
+/** Compile an IDL type into the kit's grammar: a number (fixed bytes) | ["o", T] | ["v", T] | ["t", ...T] | ["e", "Name"]. */
+export function compile(idlTypes) {
+  const byName = Object.fromEntries(idlTypes.map((t) => [t.name, t]));
+  const enums = {};
+  const seq = (parts) => {
+    const flat = parts.flatMap((p) => (Array.isArray(p) && p[0] === "t" ? p.slice(1) : [p]));
+    const out = [];
+    for (const p of flat) {
+      if (typeof p === "number" && typeof out.at(-1) === "number") out[out.length - 1] += p;
+      else out.push(p);
+    }
+    return out.length === 1 ? out[0] : ["t", ...out];
+  };
+  const ty = (t) => {
+    if (typeof t === "string") {
+      if (t === "bytes" || t === "string") return ["v", 1];
+      if (!(t in PRIMS)) throw new Error(`unknown primitive ${t}`);
+      return PRIMS[t];
+    }
+    if (t.option) return ["o", ty(t.option)];
+    if (t.vec) return ["v", ty(t.vec)];
+    if (t.array) {
+      const [inner, n] = t.array;
+      const e = ty(inner);
+      if (typeof e !== "number") throw new Error("array of a variable type");
+      return e * n;
+    }
+    if (t.defined) {
+      const name = t.defined.name ?? t.defined;
+      const d = byName[name];
+      if (!d) throw new Error(`missing type ${name}`);
+      if (d.type.kind === "struct") return seq((d.type.fields ?? []).map((f) => ty(f.type ?? f)));
+      if (d.type.kind === "enum") {
+        const payloads = d.type.variants.map((v) => (v.fields?.length ? seq(v.fields.map((f) => ty(f.type ?? f))) : 0));
+        if (payloads.every((p) => p === 0)) return 1; // a plain enum is one tag byte
+        enums[name] = { variants: payloads.length, payloads: Object.fromEntries(payloads.map((p, i) => [i, p]).filter(([, p]) => p !== 0)) };
+        return ["e", name];
+      }
+    }
+    throw new Error(`cannot compile ${JSON.stringify(t)}`);
+  };
+  const step = ty({ defined: { name: "RoutePlanStep" } });
+  return { step, enums };
+}
+
+const isMain = import.meta.url === new URL(process.argv[1], "file:").href;
+if (isMain) {
+  const rpc = createSolanaRpc(process.env.SATO_AGENT_SOLANA_RPC || "https://api.mainnet-beta.solana.com", { headers: { "user-agent": "SatoHub-swap-dev/1.0" } });
+  const { idlAddress, idl } = await fetchJupiterIdl(rpc);
+  const trimmed = trim(idl, idlAddress);
+  const { step, enums } = compile(idl.types);
+  console.log(`// Generated by test/fixtures/swap-solana/idl.mjs from the on-chain IDL ${idlAddress}`);
+  console.log(`const ROUTE_STEP = ${JSON.stringify(step)};`);
+  console.log(`const ROUTE_ENUMS = ${JSON.stringify(enums)};`);
+  if (process.argv.includes("--write")) {
+    writeFileSync(new URL("jupiter-idl.json", import.meta.url), JSON.stringify(trimmed) + "\n");
+    console.error("wrote jupiter-idl.json");
+  }
+}

@@ -7,8 +7,11 @@
 //
 //   plan     quote + build (Jupiter), with the Sato fee disclosed in the plan
 //   verify   decode the transaction, resolve its address lookup tables from the
-//            chain, check every instruction, then simulate it and compare the
-//            agent's balances before and after. Nothing passes on Jupiter's say-so.
+//            chain, check every instruction (Jupiter's own route instruction
+//            included: the minimum output, slippage, fee and accounts are read out
+//            of its data), then simulate it, compare the agent's balances before and
+//            after, and read the agent's token accounts back. Nothing passes on
+//            Jupiter's say-so.
 //   execute  the same order of operations as `sendUsdc` in ../solana.js: reserve
 //            against the limits, sign, record the signature, broadcast, poll.
 //            A transaction that may have gone out is never re-signed or retried.
@@ -22,6 +25,7 @@ import {
   createKeyPairSignerFromBytes,
   decompileTransactionMessage,
   fetchAddressesForLookupTables,
+  getAddressDecoder,
   getBase64Encoder,
   getBase64EncodedWireTransaction,
   getCompiledTransactionMessageDecoder,
@@ -119,10 +123,13 @@ const TOKEN_ACCOUNT_RENT = 2_039_280n;
  */
 export const SOL_OVERHEAD_CAP_LAMPORTS = BASE_FEE_LAMPORTS + BigInt(PRIORITY_MAX_LAMPORTS) + 2n * TOKEN_ACCOUNT_RENT;
 
-/** A built transaction older than this is rebuilt, never signed: its blockhash is on a clock. */
+/**
+ * A built transaction older than this is rebuilt, never signed: its blockhash is on a
+ * clock (about 60-90 s). Right before signing the RPC is also asked whether the
+ * transaction's own blockhash is still valid (`isBlockhashValid`); Jupiter's
+ * `lastValidBlockHeight` field is never relied on.
+ */
 export const PLAN_MAX_AGE_MS = 25_000;
-/** ...and one whose blockhash has fewer than this many blocks left (~0.4 s each) is rebuilt too. */
-export const MIN_BLOCKS_LEFT = 60;
 export const SLIPPAGE_BPS_DEFAULT = 50;
 export const SLIPPAGE_BPS_MAX = 500;
 const HTTP_TIMEOUT_MS = 20_000;
@@ -180,6 +187,138 @@ function parseIntent({ from, to, amount, slippageBps }) {
   return { a, b, units, slip };
 }
 
+// ---------------------------------------------------------------- Jupiter's route instruction
+//
+// Jupiter's own instruction carries the numbers that decide what the swap may pay
+// out: the quoted output, the slippage allowed on it, and the platform fee rate.
+// They sit in the instruction data, so the kit reads them out of it.
+//
+// Source: Jupiter v6's Anchor IDL, read from the program's on-chain IDL account
+// C88XWfp26heEmDkmfSzeXP7Fd7GQJ2j9dDTUsyiZbUTa on 2026-10-09 (a copy is kept in
+// test/fixtures/swap-solana/jupiter-idl.json; `node test/fixtures/swap-solana/idl.mjs`
+// re-derives the tables below from the chain; the older github.com/jup-ag/jupiter-cpi
+// idl.json has the same `route` but no *_v2 instructions).
+//
+//   route   discriminator e517cb977ae3ad2a = sha256("global:route")[0..8]
+//   args    route_plan: Vec<RoutePlanStep>, in_amount u64, quoted_out_amount u64,
+//           slippage_bps u16, platform_fee_bps u8      (all little-endian, Borsh)
+//   accts   0 token_program, 1 user_transfer_authority (signer), 2 user_source_token_account,
+//           3 user_destination_token_account, 4 destination_token_account (optional),
+//           5 destination_mint, 6 platform_fee_account (optional), 7 event_authority, 8 program,
+//           then the venues' own accounts. An optional account that is absent is
+//           Jupiter's program id in its place (Anchor's convention).
+//
+// api.jup.ag returned `route` for every USDC<->SOL build tried on 2026-10-09 ($1 to
+// $500 and 0.01 to 3 SOL, fee on and off, 15 builds). That is the only variant decoded.
+// Anything else, the *_with_token_ledger, shared_accounts_* and exact_out_* forms and
+// the newer *_v2 ones included, is refused by name rather than guessed at.
+//
+// Why the whole route plan is walked and not just the last 19 bytes: Anchor ignores
+// bytes left over after the arguments, so data can end with a harmless-looking copy of
+// the tail while the program reads different numbers a little earlier. That was
+// simulated on mainnet on 2026-10-09 (a copy of an honest tail appended after
+// quoted_out=1 and slippage 10000 runs fine). The fixed-size arguments are therefore
+// read at the position where the route plan ENDS, and the data must end there.
+export const JUPITER_ROUTE_DISCRIMINATOR = "e517cb977ae3ad2a";
+export const JUPITER_INSTRUCTION_NAMES = {
+  e517cb977ae3ad2a: "route",
+  "96564774a75d0e68": "route_with_token_ledger",
+  c1209b3341d69c81: "shared_accounts_route",
+  e6798f50779f6aaa: "shared_accounts_route_with_token_ledger",
+  d033ef977b2bed5c: "exact_out_route",
+  b0d169a89a7d453e: "shared_accounts_exact_out_route",
+  bb64facc31c4af14: "route_v2",
+  d19853937cfed8e9: "shared_accounts_route_v2",
+  "9d8ab85215f4f324": "exact_out_route_v2",
+  "3560e5cad8bbfa18": "shared_accounts_exact_out_route_v2",
+};
+const JUPITER_ROUTE_ARGS_TAIL = 8 + 8 + 2 + 1;
+
+// The size of one RoutePlanStep, from the IDL's types. Grammar: a number is that many
+// fixed bytes; ["o", T] Option<T>; ["v", T] Vec<T>; ["t", ...T] fields in order;
+// ["e", "Name"] an enum, whose payload (if any) is looked up by variant index below.
+// Generated by test/fixtures/swap-solana/idl.mjs from the on-chain IDL above, and
+// checked against that IDL variant by variant in test/swap-solana.test.js.
+const ROUTE_STEP = ["t", ["e", "Swap"], 3];
+const ROUTE_ENUMS = {"CandidateSwap":{"variants":19,"payloads":{"0":9,"1":1,"2":9,"5":1,"7":1,"8":1,"9":1,"10":["t",1,["o",["v",2]]],"12":1,"14":1,"15":57,"16":65,"17":81}},"Swap":{"variants":197,"payloads":{"8":1,"12":1,"15":1,"16":1,"17":1,"18":1,"21":1,"23":1,"24":1,"27":1,"28":1,"29":16,"33":4,"39":1,"41":4,"42":3,"43":10,"44":5,"45":5,"47":["t",1,["o",["v",2]]],"58":1,"60":1,"61":1,"64":1,"71":2,"75":["v",2],"81":8,"82":8,"85":1,"86":2,"87":9,"89":1,"94":1,"95":1,"103":["t",1,["o",["v",2]]],"104":1,"106":1,"107":1,"110":1,"111":["t",["v",["e","CandidateSwap"]],["o",1]],"116":1,"117":1,"118":9,"119":1,"120":["t",1,["v",1]],"121":1,"122":16,"123":48,"125":1,"126":17,"127":1,"129":1,"132":1,"135":10,"136":1,"141":1,"145":1,"146":["t",["v",["t",["e","CandidateSwap"],4]],2],"151":1,"152":1,"153":1,"155":2,"157":9,"159":8,"160":1,"161":5,"162":1,"164":1,"165":1,"166":1,"167":2,"168":1,"170":1,"171":1,"172":1,"174":1,"177":1,"178":1,"181":1,"182":1,"183":["t",1,["o",1]],"184":1,"185":57,"186":65,"187":2,"189":1,"190":81,"191":2,"192":1,"193":1,"194":1,"196":1}}};
+
+export const ROUTE_LAYOUT = Object.freeze({ step: ROUTE_STEP, enums: ROUTE_ENUMS });
+
+/** The route data is not something this kit can read to its end. */
+class RouteLayoutError extends Error {}
+
+/** Position just after one value of type `t` starting at `pos`. */
+function skipValue(t, buf, pos, depth = 0) {
+  if (depth > 12) throw new RouteLayoutError("the route plan is nested too deeply");
+  if (typeof t === "number") {
+    if (pos + t > buf.length) throw new RouteLayoutError("the route plan runs past the end of the instruction");
+    return pos + t;
+  }
+  if (pos >= buf.length) throw new RouteLayoutError("the route plan runs past the end of the instruction");
+  switch (t[0]) {
+    case "t":
+      for (const part of t.slice(1)) pos = skipValue(part, buf, pos, depth + 1);
+      return pos;
+    case "o":
+      if (buf[pos] === 0) return pos + 1;
+      if (buf[pos] === 1) return skipValue(t[1], buf, pos + 1, depth + 1);
+      throw new RouteLayoutError("the route plan has a malformed optional value");
+    case "v": {
+      if (pos + 4 > buf.length) throw new RouteLayoutError("the route plan runs past the end of the instruction");
+      const n = new DataView(buf.buffer, buf.byteOffset + pos, 4).getUint32(0, true);
+      pos += 4;
+      if (n > buf.length - pos) throw new RouteLayoutError("the route plan claims more entries than the instruction can hold");
+      if (typeof t[1] === "number") return skipValue(n * t[1], buf, pos, depth + 1);
+      for (let i = 0; i < n; i++) pos = skipValue(t[1], buf, pos, depth + 1);
+      return pos;
+    }
+    case "e": {
+      const e = ROUTE_ENUMS[t[1]];
+      const tag = buf[pos];
+      if (tag >= e.variants) {
+        throw new RouteLayoutError(`the route goes through a ${t[1]} variant (${tag}) that is newer than this kit's copy of Jupiter's program interface (it knows ${e.variants}); update the kit`);
+      }
+      const payload = e.payloads[tag];
+      return payload === undefined ? pos + 1 : skipValue(payload, buf, pos + 1, depth + 1);
+    }
+    default:
+      throw new RouteLayoutError("internal: unknown layout");
+  }
+}
+
+/**
+ * Read a `route` instruction's data: { steps, inAmount, quotedOut, slippageBps,
+ * platformFeeBps }. Throws RouteLayoutError unless the data is exactly
+ * discriminator + route plan + the 19 fixed bytes, with nothing after.
+ */
+export function decodeJupiterRoute(data) {
+  const buf = data instanceof Uint8Array ? data : Uint8Array.from(data);
+  if (buf.length < 8 + 4 + JUPITER_ROUTE_ARGS_TAIL) throw new RouteLayoutError("the instruction is too short to be a route");
+  const hex = Buffer.from(buf.subarray(0, 8)).toString("hex");
+  if (hex !== JUPITER_ROUTE_DISCRIMINATOR) throw new RouteLayoutError(`not a route instruction (${hex})`);
+  const steps = new DataView(buf.buffer, buf.byteOffset + 8, 4).getUint32(0, true);
+  if (steps < 1) throw new RouteLayoutError("the route has no steps");
+  let pos = 12;
+  for (let i = 0; i < steps; i++) pos = skipValue(ROUTE_STEP, buf, pos);
+  if (buf.length - pos !== JUPITER_ROUTE_ARGS_TAIL) {
+    throw new RouteLayoutError(`the route plan ends at byte ${pos} of ${buf.length}, which does not leave exactly the ${JUPITER_ROUTE_ARGS_TAIL} bytes of arguments (extra or missing bytes)`);
+  }
+  const view = new DataView(buf.buffer, buf.byteOffset + pos, JUPITER_ROUTE_ARGS_TAIL);
+  return {
+    steps,
+    inAmount: view.getBigUint64(0, true),
+    quotedOut: view.getBigUint64(8, true),
+    slippageBps: view.getUint16(16, true),
+    platformFeeBps: view.getUint8(18),
+  };
+}
+
+/** The least a swap with this much quoted output and slippage will accept as output (rounded down). */
+export function minOutFor(quotedOut, slippageBps) {
+  const keep = BigInt(Math.max(0, 10_000 - Number(slippageBps)));
+  return (big(quotedOut) * keep) / 10_000n;
+}
+
 const b64 = getBase64Encoder();
 function decodeTxBase64(text) {
   if (typeof text !== "string" || !/^[A-Za-z0-9+/]+={0,2}$/.test(text)) throw new Error("the transaction is not base64");
@@ -234,9 +373,17 @@ function withDefaults(deps = {}) {
 // ---------------------------------------------------------------- plan
 
 /**
- * Quote and build a swap. Writes nothing, signs nothing, and records nothing at
- * Sato Hub (its recommend / build-tx calls write public receipts, so they are not
- * used here). Needs `deps.satoFeeBps` from Sato Hub's quote (0 = no fee).
+ * Quote and build a swap. Writes nothing, signs nothing, and makes no call to Sato
+ * Hub itself: this function only talks to Jupiter (Sato Hub's recommend / build-tx
+ * calls write public receipts, so they are not used here). It is not the whole story
+ * though: the caller (src/swap/run.js) asks Sato Hub for a signed fee disclosure
+ * before a Solana swap, and Sato Hub keeps a public record of that quote (the asset
+ * pair and the amount, not the wallet). Needs `deps.satoFeeBps` from that disclosure
+ * (0 = no fee).
+ *
+ * The minimum output is set here, not copied: Jupiter's `outAmount` less the owner's
+ * slippage, rounded down, which is what Jupiter's program works out from the numbers
+ * in the transaction (verifySolanaSwapPlan checks that the transaction carries them).
  *
  *   plan = {
  *     chain, venue, agent, from, to, mint_in, mint_out,
@@ -292,7 +439,10 @@ export async function planSolanaSwap({ from, to, amount, slippageBps }, deps = {
     : { bps: 0, account: null, text: "No Sato Hub fee on this swap." };
 
   const outAmount = big(quote.outAmount);
-  const minOut = big(quote.otherAmountThreshold);
+  // Jupiter's own threshold is the same number rounded up by one at most (checkQuote); the
+  // kit uses the rounded-down one so that what it promises is never above what the
+  // transaction enforces.
+  const minOut = minOutFor(outAmount, slip);
   // USDC is on one side of every swap here, so the USD size is read off that side.
   const usd = a.symbol === "USDC" ? Number(units) / 1e6 : Number(outAmount) / 1e6;
   const route = (quote.routePlan ?? []).map((r) => r?.swapInfo?.label).filter(Boolean);
@@ -322,7 +472,7 @@ export async function planSolanaSwap({ from, to, amount, slippageBps }, deps = {
   };
   plan.disclosure = [
     `Swap ${formatUnits(units, a.decimals)} ${a.symbol} for ${b.symbol} on Solana through Jupiter${route.length ? ` (${route.join(" > ")})` : ""}.`,
-    `You receive at least ${formatUnits(minOut, b.decimals)} ${b.symbol} (Jupiter's estimate is ${formatUnits(outAmount, b.decimals)}; slippage limit ${slip / 100}%). The transaction fails instead of paying less.`,
+    `You receive at least ${formatUnits(minOut, b.decimals)} ${b.symbol} (Jupiter's estimate is ${formatUnits(outAmount, b.decimals)}; slippage limit ${slip / 100}%). That minimum is written into the transaction, and this kit reads it back out of the transaction and checks it before signing. If the swap cannot deliver it, the transaction fails and nothing is swapped.`,
     fee.text,
     `Network fee: ${Number(BASE_FEE_LAMPORTS) / 1e9} SOL plus a priority fee of at most ${PRIORITY_MAX_LAMPORTS / 1e9} SOL. If you have no ${b.symbol === "USDC" ? "USDC" : "wrapped SOL"} account yet, creating one costs about ${Number(TOKEN_ACCOUNT_RENT) / 1e9} SOL rent${b.symbol === "SOL" ? " (refunded when it is closed)" : ""}.`,
   ];
@@ -342,8 +492,12 @@ function checkQuote(quote, { a, b, units, slip, feeBps }) {
   const out = big(quote.outAmount);
   const min = big(quote.otherAmountThreshold);
   if (out <= 0n || min <= 0n || min > out) bad("output amounts are inconsistent");
-  // The floor Jupiter reports must be the slippage the owner asked for (to the unit).
-  if (min * 10_000n < out * BigInt(10_000 - slip) - 10_000n) bad("the minimum output is looser than the slippage limit");
+  // The floor Jupiter reports must be the slippage the owner asked for (to the unit):
+  // neither looser nor tighter than the rounded-down value, give or take the one unit
+  // Jupiter rounds up by.
+  const floor = minOutFor(out, slip);
+  if (min < floor) bad("the minimum output is looser than the slippage limit");
+  if (min > floor + 1n) bad("the minimum output does not match the slippage limit");
   if (feeBps > 0 && Number(quote.platformFee?.feeBps) !== feeBps) bad("the platform fee was not applied");
   if (feeBps === 0 && big(quote.platformFee?.amount) > 0n) bad("an unrequested platform fee");
 }
@@ -359,13 +513,100 @@ async function derivedAta(owner, mint, tokenProgram = TOKEN_PROGRAM_ADDRESS) {
 }
 
 /**
+ * Check Jupiter's route instruction(s) against what was asked for and disclosed.
+ * `jup` is every top-level instruction to Jupiter's program, `{ n, data, accts }`.
+ * Pushes refusals; returns the decoded route, or null when there is no single
+ * readable `route` instruction.
+ */
+function checkJupiterRoute(jup, o, ata, refusals) {
+  if (jup.length !== 1) refusals.push(refuse("solana_swap.jupiter_route_count", `the transaction has ${jup.length} Jupiter instructions; a swap here has exactly one route instruction`));
+  let single = null;
+  for (const { n, data } of jup) {
+    const hex = Buffer.from(data.subarray(0, 8)).toString("hex");
+    if (hex === JUPITER_ROUTE_DISCRIMINATOR) {
+      if (jup.length === 1) single = jup[0];
+      continue;
+    }
+    const name = JUPITER_INSTRUCTION_NAMES[hex];
+    refusals.push(refuse("solana_swap.jupiter_instruction_unrecognized", name
+      ? `instruction ${n} is Jupiter's ${name}, which this kit does not read or allow (it decodes the plain "route" instruction, exact input, only)`
+      : `instruction ${n} is a Jupiter instruction this kit does not recognise (${hex || "no data"})`));
+  }
+  if (!single) return null;
+
+  const { n, data, accts } = single;
+  let route;
+  try {
+    route = decodeJupiterRoute(data);
+  } catch (err) {
+    if (!(err instanceof RouteLayoutError)) throw err;
+    refusals.push(refuse("solana_swap.jupiter_instruction_unrecognized", `instruction ${n}: ${err.message}`));
+    return null;
+  }
+  if (accts.length < 9) {
+    refusals.push(refuse("solana_swap.jupiter_instruction_unrecognized", `instruction ${n} has ${accts.length} accounts; a route instruction has at least 9`));
+    return route;
+  }
+  const at = (i) => accts[i].address;
+
+  // What the transaction itself says it will do.
+  if (route.inAmount !== big(o.amountIn)) {
+    refusals.push(refuse("solana_swap.jupiter_amount_mismatch", `the Jupiter instruction swaps ${route.inAmount} base units, not the ${o.amountIn} asked for`));
+  }
+  if (!(route.slippageBps >= 1 && route.slippageBps <= o.slippageBps)) {
+    refusals.push(refuse("solana_swap.min_out_not_enforced", `the Jupiter instruction allows ${route.slippageBps} bps of slippage; the limit for this swap is ${o.slippageBps} bps`));
+  }
+  const floor = minOutFor(route.quotedOut, route.slippageBps);
+  if (floor < big(o.minOut)) {
+    refusals.push(refuse("solana_swap.min_out_not_enforced", `the transaction only requires ${floor} base units out (quoted ${route.quotedOut} less ${route.slippageBps} bps of slippage), below the ${o.minOut} shown to the owner`));
+  }
+  if (route.platformFeeBps !== o.feeBps) {
+    refusals.push(refuse("solana_swap.fee_not_as_disclosed", `the Jupiter instruction takes a platform fee of ${route.platformFeeBps} bps; ${o.feeBps} bps was disclosed`));
+  }
+  const wantFeeAccount = o.feeAccount ?? JUPITER_PROGRAM; // Anchor: an absent optional account is the program id
+  if (at(6) !== wantFeeAccount) {
+    refusals.push(refuse("solana_swap.fee_not_as_disclosed", o.feeAccount
+      ? `the Jupiter instruction pays its platform fee to ${at(6)}, not the disclosed account ${o.feeAccount}`
+      : `the Jupiter instruction names a fee account (${at(6)}) but no fee was disclosed`));
+  }
+
+  // Whose money moves and where it lands.
+  if (at(1) !== o.agent || !isSignerRole(accts[1].role)) {
+    refusals.push(refuse("solana_swap.jupiter_authority_not_agent", `the Jupiter instruction is authorised by ${at(1)}, not the agent`));
+  }
+  if (at(2) !== ata[o.mintIn]) {
+    refusals.push(refuse("solana_swap.jupiter_source_not_agent", `the Jupiter instruction takes the input from ${at(2)}, which is not the agent's own ${MINT_SYMBOL[o.mintIn]} account`));
+  }
+  if (at(3) !== ata[o.mintOut]) {
+    refusals.push(refuse("solana_swap.recipient_not_agent", `the Jupiter instruction pays the output to ${at(3)}, which is not the agent's own ${MINT_SYMBOL[o.mintOut]} account`));
+  }
+  if (at(4) !== JUPITER_PROGRAM && at(4) !== ata[o.mintOut]) {
+    refusals.push(refuse("solana_swap.recipient_not_agent", `the Jupiter instruction names a second destination account (${at(4)}) that is not the agent's own ${MINT_SYMBOL[o.mintOut]} account`));
+  }
+  if (at(5) !== o.mintOut) {
+    refusals.push(refuse("solana_swap.jupiter_account_mismatch", `the Jupiter instruction's destination mint is ${at(5)}, not ${o.mintOut}`));
+  }
+  if (at(0) !== TOKEN_PROGRAM_ADDRESS) {
+    refusals.push(refuse("solana_swap.jupiter_account_mismatch", `the Jupiter instruction uses ${at(0)} as the token program`));
+  }
+  return route;
+}
+
+/**
  * Decode a swap transaction and run every check that needs no simulation.
  * `alts` maps each lookup table address to its list of addresses. Returns
  * { refusals, facts }; it never throws for a bad transaction, only for bad input.
+ *
+ * opts: agent, mintIn, mintOut, amountIn (base units), feeAccount (the disclosed fee
+ * account or null), feeBps (disclosed), slippageBps (the most the owner allows),
+ * minOut (the minimum output shown to the owner, base units).
  */
-export async function inspectSolanaSwapTransaction(swapTransaction, { agent, mintIn, amountIn, feeAccount }, alts) {
+export async function inspectSolanaSwapTransaction(swapTransaction, opts, alts) {
+  const { agent, mintIn, amountIn, feeAccount } = opts;
+  for (const k of ["mintOut", "feeBps", "slippageBps", "minOut"]) if (opts[k] === undefined) throw new Error(`inspectSolanaSwapTransaction needs ${k}`);
   const refusals = [];
-  const facts = { programs: [], priority_lamports: 0n, keys: [], lookup_loaded: { writable: [], readonly: [] }, created_atas: [] };
+  const facts = { programs: [], priority_lamports: 0n, keys: [], lookup_loaded: { writable: [], readonly: [] }, created_atas: [], route: null };
+  const jupiterIxs = [];
   let tx;
   let compiled;
   let message;
@@ -466,8 +707,11 @@ export async function inspectSolanaSwapTransaction(swapTransaction, { agent, min
         // SyncNative: credits the wrapped lamports; moves nothing.
       } else refusals.push(refuse("solana_swap.token_instruction", `instruction ${n} is a token instruction (type ${kind}) this kit does not allow at the top level`));
     }
-    // Jupiter: its accounts and data are Jupiter's; its effect is checked by the simulation.
+    else if (prog === JUPITER_PROGRAM) jupiterIxs.push({ n, data, accts });
   }
+  // Jupiter: its data and accounts are read below; what it does to the agent's balances
+  // and token accounts is then checked by the simulation.
+  facts.route = checkJupiterRoute(jupiterIxs, { ...opts, agent }, agentSplAta, refusals);
 
   // (e) the priority fee: price x limit, in lamports, rounded up.
   const effLimit = BigInt(limit ?? Math.min(200_000 * nonBudget, 1_400_000));
@@ -514,12 +758,15 @@ export function balanceDeltas(view, agent) {
   const postTok = mine(view.postTokenBalances);
   const amount = (t) => big(t.uiTokenAmount?.amount ?? t.amount);
   const sumMint = (list, mint) => list.filter((t) => t.mint === mint).reduce((s, t) => s + amount(t), 0n);
-  const indices = (mint) => new Set([...preTok, ...postTok].filter((t) => t.mint === mint).map((t) => t.accountIndex));
+  const indices = (list, mint) => new Set(list.filter((t) => t.mint === mint).map((t) => t.accountIndex));
   const lamportsOf = (set, arr) => [...set].reduce((s, i) => s + arr[i], 0n);
 
-  const wsolIdx = indices(WSOL_MINT);
-  const solPre = (agentIndex >= 0 ? pre[agentIndex] : 0n) + lamportsOf(wsolIdx, pre);
-  const solPost = (agentIndex >= 0 ? post[agentIndex] : 0n) + lamportsOf(wsolIdx, post);
+  // A wrapped-SOL account counts toward the agent's SOL only while the agent owns it.
+  // `mine` already keeps only token balances whose owner is the agent in THAT state, so
+  // each side uses its own list: an account whose owner changed during the transaction
+  // is in the "before" set but not the "after" set, and its lamports leave the total.
+  const solPre = (agentIndex >= 0 ? pre[agentIndex] : 0n) + lamportsOf(indices(preTok, WSOL_MINT), pre);
+  const solPost = (agentIndex >= 0 ? post[agentIndex] : 0n) + lamportsOf(indices(postTok, WSOL_MINT), post);
   const preUsdcIdx = new Set(preTok.filter((t) => t.mint === USDC_MINT).map((t) => t.accountIndex));
   let createdRent = 0n;
   for (const t of postTok) if (t.mint === USDC_MINT && !preUsdcIdx.has(t.accountIndex)) createdRent += post[t.accountIndex];
@@ -559,7 +806,57 @@ function intentOf(plan, intent) {
   const to = side(i.to ?? plan.to);
   let units = i.amount_in ?? plan.amount_in;
   if (i.amount !== undefined) units = from.symbol === "USDC" ? usdcUnits(i.amount) : solLamports(i.amount);
-  return { agent: i.agent ?? plan.agent, from, to, amountIn: big(units) };
+  return { agent: i.agent ?? plan.agent, from, to, amountIn: big(units), slippageBps: i.slippage_bps, feeBps: i.fee_bps };
+}
+
+/** Wrapped-SOL and USDC token accounts are classic SPL Token accounts: 165 bytes, laid out as below. */
+const TOKEN_ACCOUNT_SIZE = 165;
+
+/**
+ * Read an RPC `accounts` entry (base64) as an SPL Token account. Layout (spl-token
+ * `Account`): mint 0..32, owner 32..64, amount 64..72, delegate COption<Pubkey> at 72
+ * (u32 tag + 32), state at 108, is_native COption<u64> at 109, delegated_amount at 121,
+ * close_authority COption<Pubkey> at 129 (u32 tag + 32).
+ */
+function readTokenAccount(entry) {
+  const raw = Buffer.from(String(entry?.data?.[0] ?? ""), "base64");
+  if (entry?.owner !== TOKEN_PROGRAM_ADDRESS || raw.length !== TOKEN_ACCOUNT_SIZE) return null;
+  const key = (at) => getAddressDecoder().decode(raw.subarray(at, at + 32));
+  return {
+    mint: key(0),
+    owner: key(32),
+    amount: raw.readBigUInt64LE(64),
+    delegate: raw.readUInt32LE(72) === 0 ? null : key(76),
+    state: raw[108],
+    delegatedAmount: raw.readBigUInt64LE(121),
+    closeAuthority: raw.readUInt32LE(129) === 0 ? null : key(133),
+  };
+}
+
+/**
+ * The state the simulation left the agent's own accounts in. Refusals for anything
+ * that gives someone else a say over them: the wallet no longer owned by the System
+ * program, or a USDC / wrapped-SOL account that is not a plain Token account owned by
+ * the agent with no delegate and no close authority. An account that no longer exists
+ * (the wrapped-SOL account, closed after the swap) is fine.
+ */
+function checkAgentAccountsAfter(after, agent) {
+  const out = [];
+  const bad = (m) => out.push(refuse("solana_swap.account_authority_changed", m));
+  const w = after.wallet;
+  if (!w || w.owner !== SYSTEM_PROGRAM || Number(w.space ?? 0) !== 0 || w.executable) {
+    bad("after the swap the agent's wallet account would no longer be an ordinary wallet owned by the System program");
+  }
+  for (const { mint, label, addr, entry } of after.tokens) {
+    if (!entry || (big(entry.lamports) === 0n && Number(entry.space ?? 0) === 0)) continue; // does not exist (closed, or never made)
+    const t = readTokenAccount(entry);
+    if (!t) bad(`after the swap the agent's ${label} account ${addr} would not be a plain Token account`);
+    else if (t.mint !== mint) bad(`after the swap the agent's ${label} account ${addr} would hold a different token (${t.mint})`);
+    else if (t.owner !== agent) bad(`after the swap the agent's ${label} account ${addr} would be owned by ${t.owner}, not the agent`);
+    else if (t.delegate) bad(`after the swap the agent's ${label} account ${addr} would have a delegate (${t.delegate}) that can spend from it`);
+    else if (t.closeAuthority) bad(`after the swap the agent's ${label} account ${addr} would have a close authority (${t.closeAuthority})`);
+  }
+  return out;
 }
 
 /**
@@ -592,12 +889,30 @@ export async function verifySolanaSwapPlan(plan, intent, deps = {}) {
   })();
   if (minOut <= 0n) fail("solana_swap.intent", "the plan carries no minimum output");
 
+  // The slippage the owner allows, and the minimum that follows from it. The limit is the
+  // plan's own slippage, and the owner's (`intent.slippage_bps`, when the caller gives it)
+  // if that is lower; neither may exceed the kit's cap. The minimum shown to the owner must
+  // not be looser than the quote less that slippage: the transaction is then held to it.
+  const planSlip = plan.quote?.slippage_bps;
+  const okSlip = (x) => Number.isInteger(x) && x >= 1 && x <= SLIPPAGE_BPS_MAX;
+  if (!okSlip(planSlip)) fail("solana_swap.intent", `the plan's slippage limit ${planSlip} is not a whole number of basis points from 1 to ${SLIPPAGE_BPS_MAX}`);
+  if (want.slippageBps !== undefined && !okSlip(want.slippageBps)) fail("solana_swap.intent", `the slippage limit asked for, ${want.slippageBps}, is not a whole number of basis points from 1 to ${SLIPPAGE_BPS_MAX}`);
+  if (okSlip(planSlip) && okSlip(want.slippageBps ?? planSlip) && planSlip > (want.slippageBps ?? planSlip)) fail("solana_swap.min_out_not_enforced", `the plan allows ${planSlip} bps of slippage; the limit asked for is ${want.slippageBps} bps`);
+  const slipCap = okSlip(planSlip) ? Math.min(planSlip, okSlip(want.slippageBps) ? want.slippageBps : planSlip) : 0;
+  try {
+    const quotedFloor = minOutFor(plan.quote.out_amount, slipCap);
+    if (minOut < quotedFloor) fail("solana_swap.min_out_not_enforced", `the minimum output in the plan (${minOut}) is below the quote (${plan.quote.out_amount}) less the ${slipCap} bps slippage limit (${quotedFloor})`);
+  } catch {
+    fail("solana_swap.intent", "the plan carries no quoted output");
+  }
+
   // The disclosed fee: pinned account, sane rate, never above what the plan shows the owner.
   const feeBps = plan.fee?.bps ?? 0;
   const pinnedFee = SATO_FEE_ACCOUNTS[want.from.mint];
   if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > FEE_BPS_MAX) fail("solana_swap.fee_account", `the fee rate ${feeBps} bps is outside 0-${FEE_BPS_MAX}`);
   if (feeBps > 0 && plan.fee.account !== pinnedFee) fail("solana_swap.fee_account", `the fee account ${plan.fee?.account} is not the pinned ${want.from.symbol} referral account ${pinnedFee}`);
   if (feeBps === 0 && plan.fee?.account) fail("solana_swap.fee_account", "a fee account is set but the plan discloses no fee");
+  if (want.feeBps !== undefined && want.feeBps !== feeBps) fail("solana_swap.fee_not_as_disclosed", `the plan charges ${feeBps} bps; ${want.feeBps} bps was disclosed`);
   const feeAccount = feeBps > 0 ? pinnedFee : null;
   const maxFee = (want.amountIn * BigInt(Math.max(0, feeBps)) + 9_999n) / 10_000n + (feeBps > 0 ? 1n : 0n);
   if (refusals.length) throw new Refused(refusals);
@@ -615,13 +930,15 @@ export async function verifySolanaSwapPlan(plan, intent, deps = {}) {
   }
   const { refusals: staticRefusals, facts } = await inspectSolanaSwapTransaction(
     plan.swap_transaction,
-    { agent: want.agent, mintIn: want.from.mint, amountIn: want.amountIn, feeAccount },
+    { agent: want.agent, mintIn: want.from.mint, mintOut: want.to.mint, amountIn: want.amountIn, feeAccount, feeBps, slippageBps: slipCap, minOut },
     altTables,
   );
   if (staticRefusals.length) throw new Refused(staticRefusals);
 
   // (f) Simulation: unsigned, fresh blockhash, then compare the agent's balances before and after.
-  const watch = [...new Set([want.agent, await derivedAta(want.agent, USDC_MINT), await derivedAta(want.agent, WSOL_MINT), ...(feeAccount ? [feeAccount] : [])])];
+  const usdcAta = await derivedAta(want.agent, USDC_MINT);
+  const wsolAta = await derivedAta(want.agent, WSOL_MINT);
+  const watch = [want.agent, usdcAta, wsolAta, ...(feeAccount ? [feeAccount] : [])];
   let sim;
   try {
     const res = await withTimeout(
@@ -652,13 +969,19 @@ export async function verifySolanaSwapPlan(plan, intent, deps = {}) {
   const deltas = balanceDeltas(view, want.agent);
   // The `accounts` read-back must agree with the runtime's own balances (guards a mismatched response).
   const post0 = sim.accounts?.[0];
-  if (!post0 || big(post0.lamports) !== big(sim.postBalances[0])) {
+  if (!Array.isArray(sim.accounts) || sim.accounts.length !== watch.length || !post0 || big(post0.lamports) !== big(sim.postBalances[0])) {
     throw new Refused([refuse("solana_swap.sim_inconsistent", "the simulated account state does not match the simulated balances")]);
   }
 
   const simFee = big(sim.fee);
   const feeCeiling = BASE_FEE_LAMPORTS + facts.priority_lamports;
-  const rule = [];
+  const rule = [...checkAgentAccountsAfter({
+    wallet: sim.accounts[0],
+    tokens: [
+      { mint: USDC_MINT, label: "USDC", addr: usdcAta, entry: sim.accounts[1] },
+      { mint: WSOL_MINT, label: "wrapped SOL", addr: wsolAta, entry: sim.accounts[2] },
+    ],
+  }, want.agent)];
   if (simFee > feeCeiling) rule.push(refuse("solana_swap.priority_fee", `the simulated network fee is ${simFee} lamports, above the ${feeCeiling} the instructions imply`));
   const overhead = simFee + deltas.created_usdc_rent;
   if (overhead > SOL_OVERHEAD_CAP_LAMPORTS) rule.push(refuse("solana_swap.sim_input_outflow", `fees and new-account rent total ${overhead} lamports, over the cap of ${SOL_OVERHEAD_CAP_LAMPORTS}`));
@@ -695,6 +1018,16 @@ export async function verifySolanaSwapPlan(plan, intent, deps = {}) {
     lookup_tables: Object.keys(altTables).length,
     instruction_count: facts.instruction_count,
     priority_lamports: Number(facts.priority_lamports),
+    // Read out of Jupiter's instruction data, not out of the plan.
+    jupiter: {
+      instruction: "route",
+      route_steps: facts.route.steps,
+      in_amount: facts.route.inAmount.toString(),
+      quoted_out: facts.route.quotedOut.toString(),
+      slippage_bps: facts.route.slippageBps,
+      platform_fee_bps: facts.route.platformFeeBps,
+      enforced_min_out: minOutFor(facts.route.quotedOut, facts.route.slippageBps).toString(),
+    },
     simulated: {
       network_fee_lamports: simFee.toString(),
       input_outflow: (want.from.symbol === "USDC" ? -deltas.usdc.delta : -deltas.sol.delta).toString(),
@@ -712,8 +1045,22 @@ export async function verifySolanaSwapPlan(plan, intent, deps = {}) {
 async function assertPlanFresh(plan, r, d) {
   const age = d.now() - plan.built_at;
   if (!(age >= 0) || age > PLAN_MAX_AGE_MS) throw new PlanStale(`the swap was built ${Math.round(age / 1000)} s ago and its blockhash is about to expire; rebuild it (nothing was signed)`);
-  const height = Number(await withTimeout(r.getBlockHeight({ commitment: "confirmed" }).send()));
-  if (plan.last_valid_block_height - height < MIN_BLOCKS_LEFT) throw new PlanStale(`the swap's blockhash has only ${plan.last_valid_block_height - height} blocks left; rebuild it (nothing was signed)`);
+  // Ask the chain about the blockhash that is in the bytes about to be signed. Jupiter's
+  // `lastValidBlockHeight` is not consulted: it is a claim next to the transaction, not
+  // part of it.
+  let blockhash;
+  try {
+    blockhash = getCompiledTransactionMessageDecoder().decode(decodeTxBase64(plan.swap_transaction).messageBytes).lifetimeToken;
+  } catch (err) {
+    throw new Error(`the swap transaction could not be read to check its blockhash (${String(err.message).slice(0, 120)}); nothing was signed`);
+  }
+  let valid;
+  try {
+    valid = (await withTimeout(r.isBlockhashValid(blockhash, { commitment: "confirmed" }).send())).value;
+  } catch (err) {
+    throw new Error(`could not check that the swap's blockhash is still valid (${String(err.message).slice(0, 120)}); nothing was signed`);
+  }
+  if (valid !== true) throw new PlanStale("the swap's blockhash is no longer valid; rebuild it (nothing was signed)");
 }
 
 /** Where the agent ended up, from a confirmed transaction. Null when the chain read fails (never zero). */
@@ -741,14 +1088,18 @@ async function actualOutput(sig, plan, r) {
  *   Error       it failed onchain (released) or something failed before signing (released)
  *
  * deps: rpc, signer (default: the wallet's Solana key), policy (default: policy.json),
- * intent (default: the plan's own), usdNotional (default: plan.usd_estimate),
- * now, sleep, pollMs, maxPolls.
+ * intent (default: the plan's own; also takes slippage_bps and fee_bps to hold the
+ * transaction to what the owner asked for and Sato Hub disclosed), usdNotional
+ * (REQUIRED: the oracle-sized USD value the limits are checked against; the plan's own
+ * estimate is never used in its place), now, sleep, pollMs, maxPolls.
  */
 export async function executeSolanaSwap(plan, deps = {}) {
   const d = withDefaults(deps);
   const r = d.rpc ?? defaultRpc();
-  const usd = d.usdNotional ?? plan.usd_estimate;
-  if (!(Number.isFinite(usd) && usd > 0)) throw new Error("no USD size for this swap; the limits cannot be checked");
+  const usd = d.usdNotional;
+  if (typeof usd !== "number" || !Number.isFinite(usd) || usd <= 0) {
+    throw new Error("usdNotional is required: the USD size of this swap, measured independently of the quote, so the owner's limits can be checked; nothing was signed");
+  }
 
   await assertPlanFresh(plan, r, d);
   const verification = await verifySolanaSwapPlan(plan, d.intent, d);

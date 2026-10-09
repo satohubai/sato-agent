@@ -10,6 +10,7 @@
 // quote/build endpoints and the RPC's simulateTransaction; still nothing signed).
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
@@ -34,6 +35,7 @@ import {
 } from "@solana/kit";
 import { TOKEN_PROGRAM_ADDRESS, findAssociatedTokenPda } from "@solana-program/token";
 import { freshHome } from "./helpers.js";
+import { compile, fetchJupiterIdl } from "./fixtures/swap-solana/idl.mjs";
 
 freshHome();
 const { setPolicy } = await import("../src/policy.js");
@@ -45,6 +47,8 @@ const S = await import("../src/swap/solana.js");
 const fixture = (name) => JSON.parse(readFileSync(new URL(`./fixtures/swap-solana/${name}.json`, import.meta.url), "utf8"));
 const USDC_SOL = fixture("usdc-to-sol");
 const SOL_USDC = fixture("sol-to-usdc");
+const NOFEE = fixture("usdc-to-sol-nofee");
+const JUP_IDL = fixture("jupiter-idl");
 const WALLET = USDC_SOL.wallet;
 const WSOL = S.WSOL_MINT;
 const rules = (err) => err.refusals.map((r) => r.rule);
@@ -86,7 +90,13 @@ function fakeRpc(fx, o = {}) {
         return res;
       },
     }),
-    getBlockHeight: () => ({ send: async () => BigInt(o.blockHeight ?? 1) }),
+    isBlockhashValid: (blockhash, opts) => ({
+      send: async () => {
+        o.onBlockhashCheck?.(blockhash, opts);
+        if (o.blockhashThrows) throw new Error(o.blockhashThrows);
+        return { context: { slot: 1n }, value: typeof o.blockhashValid === "function" ? o.blockhashValid() : (o.blockhashValid ?? true) };
+      },
+    }),
     sendTransaction: (wire, opts) => ({
       send: async () => {
         sent.push({ wire, opts });
@@ -149,6 +159,53 @@ async function refusedBy(plan, fx, o) {
   }
   assert.fail("expected a refusal");
 }
+
+/** Every refusal (rule + message) for a plan that fails verification. */
+async function refusalsOf(plan, fx, o) {
+  try {
+    await S.verifySolanaSwapPlan(plan, intentOf(fx), verifyDeps(fx, o));
+  } catch (err) {
+    assert.ok(err instanceof Refused, `expected Refused, got ${err.stack}`);
+    return err.refusals;
+  }
+  assert.fail("expected a refusal");
+}
+
+// Jupiter's route instruction, taken apart and put back. The recorded builds end exactly
+// where the arguments end (route plan, then in_amount u64, quoted_out u64, slippage u16, fee u8).
+const jupiterIxs = (c) => c.instructions.filter((i) => c.staticAccounts[i.programAddressIndex] === S.JUPITER_PROGRAM);
+const ARGS = 19;
+function readArgs(ix) {
+  const d = Buffer.from(ix.data);
+  const t = d.length - ARGS;
+  return { inAmount: d.readBigUInt64LE(t), quotedOut: d.readBigUInt64LE(t + 8), slippageBps: d.readUInt16LE(t + 16), feeBps: d[t + 18] };
+}
+function writeArgs(ix, a) {
+  const d = Buffer.from(ix.data);
+  const t = d.length - ARGS;
+  if (a.inAmount !== undefined) d.writeBigUInt64LE(BigInt(a.inAmount), t);
+  if (a.quotedOut !== undefined) d.writeBigUInt64LE(BigInt(a.quotedOut), t + 8);
+  if (a.slippageBps !== undefined) d.writeUInt16LE(a.slippageBps, t + 16);
+  if (a.feeBps !== undefined) d[t + 18] = a.feeBps;
+  ix.data = new Uint8Array(d);
+}
+/** Tamper with Jupiter's arguments in a plan's transaction. */
+const withArgs = (plan, a) => withTx(plan, mutate(plan.swap_transaction, (c) => writeArgs(jupiterIxs(c)[0], a)));
+/** Point one of Jupiter's account slots at an account that is not the right one (added to the transaction as a read-only key). */
+function withAccount(plan, slot, addr) {
+  return withTx(plan, mutate(plan.swap_transaction, (c) => {
+    const old = c.staticAccounts.length;
+    c.staticAccounts.push(addr);
+    c.header.numReadonlyNonSignerAccounts += 1;
+    // Keys loaded from lookup tables come after the static ones: move them up by one.
+    for (const i of c.instructions) {
+      if (i.accountIndices) i.accountIndices = i.accountIndices.map((x) => (x >= old ? x + 1 : x));
+      if (i.programAddressIndex >= old) i.programAddressIndex += 1;
+    }
+    jupiterIxs(c)[0].accountIndices[slot] = old;
+  }));
+}
+const randomAddress = async () => (await generateKeyPairSigner()).address;
 
 /** Edit the simulated state of the agent's SOL (keeps the account read-back consistent). */
 const shiftAgentLamports = (delta) => (v) => {
@@ -216,7 +273,10 @@ test("plan: USDC -> SOL asks Jupiter for the quote, then the build, with the pin
   assert.equal(plan.usd_estimate, 25);
   assert.match(plan.disclosure.join("\n"), /Sato Hub fee: 0\.15% of the USDC you swap \(up to 0\.0375 USDC\).*FMEXEnUt2fxKkZewdWq5PKebLw4vs1ddyayJjKap4LGo.*same transaction/);
   assert.match(plan.disclosure.join("\n"), /at least [\d.]+ SOL/);
-  assert.doesNotMatch(plan.disclosure.join("\n"), /\b(safe|secure|trusted)\b/i);
+  assert.doesNotMatch(plan.disclosure.join("\n"), /\b(safe|secure|trusted|guaranteed?)\b/i);
+  // The minimum shown is the quote less the owner's slippage, rounded down: what the transaction enforces.
+  assert.equal(plan.quote.min_out, S.minOutFor(plan.quote.out_amount, 50).toString());
+  assert.match(plan.disclosure.join("\n"), /That minimum is written into the transaction, and this kit reads it back out of the transaction and checks it before signing\. If the swap cannot deliver it, the transaction fails and nothing is swapped\./);
 });
 
 test("plan: SOL -> USDC takes the fee in wrapped SOL, to the pinned wSOL referral account", async () => {
@@ -433,6 +493,443 @@ test("verify refuses: a plan for the wrong agent, assets, amount, fee account, o
   await assert.rejects(S.verifySolanaSwapPlan(plan, intentOf(USDC_SOL), noTables), (e) => e instanceof Refused && rules(e)[0] === "solana_swap.decode");
 });
 
+// ----------------------------------------------------------------- verify: Jupiter's own instruction is read, not trusted
+//
+// The reviewer's finding, proven against a mainnet simulation on 2026-10-09: a fresh build
+// rewritten to quoted_out=1 and slippage_bps=10000 simulated fine and used to verify,
+// leaving a transaction whose onchain floor is one lamport. Every case below starts from a
+// recorded REAL Jupiter build and changes one thing in Jupiter's instruction.
+
+test("verify reads Jupiter's route instruction out of the transaction, and an honest build agrees with everything the plan says", async () => {
+  for (const [fx, fee] of [[USDC_SOL, 15], [SOL_USDC, 15], [NOFEE, 0]]) {
+    const plan = await planFrom(fx);
+    const route = S.decodeJupiterRoute(jupiterIxs(compiledOf(plan.swap_transaction))[0].data);
+    assert.equal(route.inAmount.toString(), plan.amount_in);
+    assert.equal(route.platformFeeBps, fee);
+    assert.equal(route.slippageBps, 50);
+    // The plan's minimum is the quote less slippage, rounded down: what the transaction enforces.
+    assert.equal(S.minOutFor(route.quotedOut, route.slippageBps).toString(), plan.quote.min_out);
+    assert.equal(route.quotedOut.toString(), plan.quote.out_amount, "Jupiter quoted the same output in the transaction");
+    const v = await S.verifySolanaSwapPlan(plan, intentOf(fx), verifyDeps(fx));
+    assert.deepEqual({ ...v.jupiter, route_steps: undefined }, {
+      instruction: "route", route_steps: undefined, in_amount: plan.amount_in, quoted_out: plan.quote.out_amount, slippage_bps: 50, platform_fee_bps: fee, enforced_min_out: plan.quote.min_out,
+    });
+  }
+});
+
+test("verify refuses: quoted_out rewritten to 1 (the onchain floor would be 1 lamport)", async () => {
+  const plan = await planFrom(USDC_SOL);
+  const got = await refusalsOf(withArgs(plan, { quotedOut: 1n }), USDC_SOL);
+  assert.deepEqual(got.map((r) => r.rule), ["solana_swap.min_out_not_enforced"]);
+  assert.match(got[0].message, /only requires 0 base units.*below the \d+ shown to the owner/);
+});
+
+test("verify refuses: slippage_bps rewritten to 10000 (the floor is nothing at all)", async () => {
+  const plan = await planFrom(USDC_SOL);
+  const got = await refusalsOf(withArgs(plan, { slippageBps: 10_000 }), USDC_SOL);
+  assert.ok(got.every((r) => r.rule === "solana_swap.min_out_not_enforced"), got.map((r) => r.rule).join());
+  assert.ok(got.some((r) => /allows 10000 bps of slippage; the limit for this swap is 50 bps/.test(r.message)));
+  assert.ok(got.some((r) => /only requires 0 base units/.test(r.message)));
+});
+
+test("verify refuses: the reviewer's tamper (quoted_out=1 AND slippage_bps=10000) on both directions", async () => {
+  for (const fx of [USDC_SOL, SOL_USDC, NOFEE]) {
+    const plan = await planFrom(fx);
+    const rules_ = await refusedBy(withArgs(plan, { quotedOut: 1n, slippageBps: 10_000 }), fx);
+    assert.ok(rules_.includes("solana_swap.min_out_not_enforced"), rules_.join());
+  }
+});
+
+test("verify refuses: slippage_bps above the request, even when the quoted output is raised so the floor still looks right", async () => {
+  const plan = await planFrom(USDC_SOL);
+  const min = BigInt(plan.quote.min_out);
+  // 60 bps allowed, quoted output scaled up so floor(quoted x 9940 / 10000) is still >= the minimum shown.
+  const quotedOut = (min * 10_000n) / 9_940n + 2n;
+  assert.ok(S.minOutFor(quotedOut, 60) >= min);
+  const got = await refusalsOf(withArgs(plan, { slippageBps: 60, quotedOut }), USDC_SOL);
+  assert.deepEqual(got.map((r) => r.rule), ["solana_swap.min_out_not_enforced"]);
+  assert.match(got[0].message, /allows 60 bps of slippage; the limit for this swap is 50 bps/);
+  // Less slippage than asked for is fine (as long as the floor holds): the same build at 20 bps passes.
+  const tighter = withArgs(plan, { slippageBps: 20 });
+  assert.equal((await S.verifySolanaSwapPlan(tighter, intentOf(USDC_SOL), verifyDeps(USDC_SOL))).ok, true);
+});
+
+test("verify refuses: the owner's own slippage limit (intent.slippage_bps) is held to, whatever the plan says", async () => {
+  const plan = await planFrom(USDC_SOL);
+  const run = (intent) => S.verifySolanaSwapPlan(plan, { ...intentOf(USDC_SOL), ...intent }, verifyDeps(USDC_SOL)).then(() => assert.fail("passed"), (e) => rules(e));
+  assert.ok((await run({ slippage_bps: 20 })).includes("solana_swap.min_out_not_enforced"), "the plan and transaction allow 50, the owner asked for 20");
+  assert.ok((await run({ slippage_bps: 501 })).includes("solana_swap.intent"));
+  assert.equal((await S.verifySolanaSwapPlan(plan, { ...intentOf(USDC_SOL), slippage_bps: 50, fee_bps: 15 }, verifyDeps(USDC_SOL))).ok, true);
+  assert.ok((await run({ fee_bps: 3 })).includes("solana_swap.fee_not_as_disclosed"), "Sato Hub disclosed 3 bps, the plan charges 15");
+});
+
+test("verify refuses: a plan whose shown minimum is looser than its own quote less slippage, or a slippage over the kit's cap", async () => {
+  const plan = await planFrom(USDC_SOL);
+  const loose = { ...plan, quote: { ...plan.quote, min_out: "1" } };
+  assert.ok((await refusedBy(withArgs(loose, { quotedOut: 1n }), USDC_SOL)).includes("solana_swap.min_out_not_enforced"), "quoted_out=1 is not 'enforced' just because the plan was edited to match");
+  assert.ok((await refusedBy({ ...plan, quote: { ...plan.quote, slippage_bps: 501 } }, USDC_SOL)).includes("solana_swap.intent"));
+});
+
+test("verify refuses: platform_fee_bps changed in Jupiter's instruction", async () => {
+  const plan = await planFrom(USDC_SOL);
+  for (const feeBps of [0, 14, 16, 255]) {
+    const got = await refusalsOf(withArgs(plan, { feeBps }), USDC_SOL);
+    assert.deepEqual(got.map((r) => r.rule), ["solana_swap.fee_not_as_disclosed"], `fee ${feeBps}`);
+    assert.match(got[0].message, new RegExp(`takes a platform fee of ${feeBps} bps; 15 bps was disclosed`));
+  }
+});
+
+test("verify refuses: the fee paid to a stranger's account, with the pinned fee account still in the transaction", async () => {
+  const stranger = await randomAddress();
+  for (const [fx, pinned] of [[USDC_SOL, S.SATO_FEE_ACCOUNTS[USDC_MINT]], [SOL_USDC, S.SATO_FEE_ACCOUNTS[WSOL]]]) {
+    const plan = await planFrom(fx);
+    const got = await refusalsOf(withAccount(plan, 6, stranger), fx);
+    assert.deepEqual(got.map((r) => r.rule), ["solana_swap.fee_not_as_disclosed"]);
+    assert.match(got[0].message, new RegExp(`pays its platform fee to ${stranger}, not the disclosed account ${pinned}`));
+  }
+  // With no fee disclosed, naming a fee account at all is refused; absent (Jupiter's own id) passes.
+  const none = await planFrom(NOFEE);
+  assert.equal((await S.verifySolanaSwapPlan(none, intentOf(NOFEE), verifyDeps(NOFEE))).ok, true);
+  const named = await refusalsOf(withAccount(none, 6, stranger), NOFEE);
+  assert.deepEqual(named.map((r) => r.rule), ["solana_swap.fee_not_as_disclosed"]);
+  assert.match(named[0].message, /names a fee account.*but no fee was disclosed/);
+  // And a fee-free plan on a transaction that does charge one.
+  assert.ok((await refusedBy({ ...(await planFrom(USDC_SOL)), fee: { bps: 0, account: null, text: "" } }, USDC_SOL)).includes("solana_swap.fee_not_as_disclosed"));
+});
+
+test("verify refuses: the output paid to an account that is not the agent's own (either destination slot), or taken from someone else's", async () => {
+  const stranger = await randomAddress();
+  for (const fx of [USDC_SOL, SOL_USDC]) {
+    const plan = await planFrom(fx);
+    const dest = await refusalsOf(withAccount(plan, 3, stranger), fx);
+    assert.deepEqual(dest.map((r) => r.rule), ["solana_swap.recipient_not_agent"]);
+    assert.match(dest[0].message, new RegExp(`pays the output to ${stranger}, which is not the agent's own`));
+    const second = await refusalsOf(withAccount(plan, 4, stranger), fx);
+    assert.deepEqual(second.map((r) => r.rule), ["solana_swap.recipient_not_agent"]);
+    assert.ok((await refusedBy(withAccount(plan, 2, stranger), fx)).includes("solana_swap.jupiter_source_not_agent"));
+    assert.ok((await refusedBy(withAccount(plan, 1, stranger), fx)).includes("solana_swap.jupiter_authority_not_agent"));
+    assert.ok((await refusedBy(withAccount(plan, 5, stranger), fx)).includes("solana_swap.jupiter_account_mismatch"));
+  }
+  // The agent's own account for the OTHER mint is not the destination either (output into the input account).
+  const plan = await planFrom(USDC_SOL);
+  const usdcAta = (await findAssociatedTokenPda({ owner: address(WALLET), mint: address(USDC_MINT), tokenProgram: TOKEN_PROGRAM_ADDRESS }))[0];
+  assert.ok((await refusedBy(withAccount(plan, 3, usdcAta), USDC_SOL)).includes("solana_swap.recipient_not_agent"));
+  // The second destination slot may hold the agent's own output account, never a stranger's.
+  const wsolAta = (await findAssociatedTokenPda({ owner: address(WALLET), mint: address(WSOL), tokenProgram: TOKEN_PROGRAM_ADDRESS }))[0];
+  assert.equal((await S.verifySolanaSwapPlan(withAccount(plan, 4, wsolAta), intentOf(USDC_SOL), verifyDeps(USDC_SOL))).ok, true);
+});
+
+test("verify refuses: in_amount changed in Jupiter's instruction", async () => {
+  const plan = await planFrom(USDC_SOL);
+  for (const inAmount of [1n, 24_999_999n, 25_000_001n, 2n ** 64n - 1n]) {
+    const got = await refusalsOf(withArgs(plan, { inAmount }), USDC_SOL);
+    assert.deepEqual(got.map((r) => r.rule), ["solana_swap.jupiter_amount_mismatch"], `in_amount ${inAmount}`);
+    assert.match(got[0].message, new RegExp(`swaps ${inAmount} base units, not the 25000000 asked for`));
+  }
+});
+
+test("verify refuses: a Jupiter instruction this kit does not read (unknown, and the known forms it does not allow)", async () => {
+  const plan = await planFrom(USDC_SOL);
+  const disc = (hex) => mutate(plan.swap_transaction, (c) => {
+    const d = Buffer.from(jupiterIxs(c)[0].data);
+    Buffer.from(hex, "hex").copy(d, 0);
+    jupiterIxs(c)[0].data = new Uint8Array(d);
+  });
+  const unknown = await refusalsOf(withTx(plan, disc("0102030405060708")), USDC_SOL);
+  assert.deepEqual(unknown.map((r) => r.rule), ["solana_swap.jupiter_instruction_unrecognized"]);
+  assert.match(unknown[0].message, /does not recognise \(0102030405060708\)/);
+  for (const [hex, name] of Object.entries(S.JUPITER_INSTRUCTION_NAMES)) {
+    if (name === "route") continue;
+    const got = await refusalsOf(withTx(plan, disc(hex)), USDC_SOL);
+    assert.deepEqual(got.map((r) => r.rule), ["solana_swap.jupiter_instruction_unrecognized"], name);
+    assert.match(got[0].message, new RegExp(`is Jupiter's ${name}, which this kit does not read or allow`));
+  }
+});
+
+test("verify refuses: two route instructions (or none) in one transaction", async () => {
+  const plan = await planFrom(USDC_SOL);
+  const two = mutate(plan.swap_transaction, (c) => {
+    const ix = jupiterIxs(c)[0];
+    c.instructions.splice(c.instructions.indexOf(ix) + 1, 0, { ...ix, accountIndices: [...ix.accountIndices], data: new Uint8Array(ix.data) });
+  });
+  const got = await refusalsOf(withTx(plan, two), USDC_SOL);
+  assert.deepEqual(got.map((r) => r.rule), ["solana_swap.jupiter_route_count"]);
+  assert.match(got[0].message, /has 2 Jupiter instructions/);
+  // A second one that is not a route is refused as that, and still counted.
+  const mixed = mutate(plan.swap_transaction, (c) => {
+    const ix = jupiterIxs(c)[0];
+    const data = new Uint8Array(ix.data);
+    data.set(Buffer.from("c1209b3341d69c81", "hex"), 0);
+    c.instructions.push({ ...ix, accountIndices: [...ix.accountIndices], data });
+  });
+  assert.deepEqual([...new Set(await refusedBy(withTx(plan, mixed), USDC_SOL))].sort(), ["solana_swap.jupiter_instruction_unrecognized", "solana_swap.jupiter_route_count"]);
+  const none = mutate(plan.swap_transaction, (c) => {
+    c.instructions = c.instructions.filter((i) => c.staticAccounts[i.programAddressIndex] !== S.JUPITER_PROGRAM);
+  });
+  assert.deepEqual(await refusedBy(withTx(plan, none), USDC_SOL), ["solana_swap.jupiter_route_count"]);
+});
+
+test("every refusal message is plain words for the owner (no safe / secure / trusted / guaranteed)", async () => {
+  const plan = await planFrom(USDC_SOL);
+  const stranger = await randomAddress();
+  const all = [];
+  for (const bad of [withArgs(plan, { quotedOut: 1n, slippageBps: 10_000, inAmount: 1n, feeBps: 0 }), withAccount(plan, 6, stranger), withAccount(plan, 3, stranger), withAccount(plan, 2, stranger), withAccount(plan, 1, stranger)]) {
+    all.push(...(await refusalsOf(bad, USDC_SOL)).map((r) => r.message));
+  }
+  all.push(...(await refusalsOf(plan, USDC_SOL, { editSim: (v) => (v.accounts[SIM_USDC] = tokenAccountEntry({ mint: USDC_MINT, owner: stranger, delegate: stranger, closeAuthority: stranger })) })).map((r) => r.message));
+  assert.ok(all.length >= 8);
+  for (const m of all) assert.doesNotMatch(m, /\b(safe|secure|trusted|guaranteed?|guarantees)\b/i, m);
+});
+
+test("verify refuses: a copy of the honest arguments placed AFTER tampered ones (Anchor ignores bytes left over, so the tail alone would lie)", async () => {
+  // Simulated on mainnet 2026-10-09: this data runs, and Jupiter's program reads the FIRST
+  // arguments (quoted_out=1, slippage 10000). Reading only the last 19 bytes would pass it.
+  for (const fx of [USDC_SOL, SOL_USDC]) {
+    const plan = await planFrom(fx);
+    const tx = mutate(plan.swap_transaction, (c) => {
+      const ix = jupiterIxs(c)[0];
+      const honestTail = Buffer.from(ix.data).subarray(ix.data.length - ARGS);
+      writeArgs(ix, { quotedOut: 1n, slippageBps: 10_000 });
+      ix.data = new Uint8Array(Buffer.concat([Buffer.from(ix.data), honestTail]));
+    });
+    const got = await refusalsOf(withTx(plan, tx), fx);
+    assert.deepEqual(got.map((r) => r.rule), ["solana_swap.jupiter_instruction_unrecognized"]);
+    assert.match(got[0].message, /does not leave exactly the 19 bytes of arguments/);
+  }
+});
+
+// ----------------------------------------------------------------- the route-plan walker (what makes "the end of the plan" reliable)
+
+/** Independent of the kit's table: walk the IDL's own types to size or build a value. */
+function idlWalker(types) {
+  const byName = Object.fromEntries(types.map((t) => [t.name, t]));
+  const PRIM = { bool: 1, u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, u64: 8, i64: 8, u128: 16, i128: 16, pubkey: 32 };
+  const rnd = (n) => Uint8Array.from({ length: n }, (_x, i) => (i * 37 + n) & 255);
+  const u32 = (n) => [n & 255, (n >> 8) & 255, 0, 0];
+  /** Encode a value of an IDL type; `pick(enumName)` chooses variants; `n` is a counter for Vec lengths. */
+  function encode(t, pick) {
+    if (typeof t === "string") {
+      if (t === "bytes" || t === "string") return [...u32(3), 9, 9, 9];
+      return t === "bool" ? [1] : [...rnd(PRIM[t]).map((b) => b & 0x7f)];
+    }
+    if (t.option) return pick.optSome ? [1, ...encode(t.option, pick)] : [0];
+    if (t.vec) return [...u32(2), ...encode(t.vec, pick), ...encode(t.vec, pick)];
+    if (t.array) return Array.from({ length: t.array[1] }, () => encode(t.array[0], pick)).flat();
+    const name = t.defined.name ?? t.defined;
+    const d = byName[name];
+    if (d.type.kind === "struct") return (d.type.fields ?? []).flatMap((f) => encode(f.type ?? f, pick));
+    const idx = pick.variant(name, d.type.variants.length);
+    const v = d.type.variants[idx];
+    return [idx, ...(v.fields ?? []).flatMap((f) => encode(f.type ?? f, pick))];
+  }
+  return { encode, byName };
+}
+
+test("the embedded route-plan layout is exactly what the IDL's types compile to, and the stored IDL is the one the discriminators come from", () => {
+  const { step, enums } = compile(JUP_IDL.types);
+  assert.deepEqual(JSON.parse(JSON.stringify(S.ROUTE_LAYOUT)), JSON.parse(JSON.stringify({ step, enums })));
+  assert.equal(enums.Swap.variants, JUP_IDL.types.find((t) => t.name === "Swap").type.variants.length);
+  assert.equal(JUP_IDL.instructions.route, S.JUPITER_ROUTE_DISCRIMINATOR);
+  assert.deepEqual(JUP_IDL.route.args.map((a) => a.name), ["route_plan", "in_amount", "quoted_out_amount", "slippage_bps", "platform_fee_bps"]);
+  assert.deepEqual(JUP_IDL.route.args.slice(1).map((a) => a.type), ["u64", "u64", "u16", "u8"]);
+  assert.deepEqual(JUP_IDL.route.accounts.slice(0, 9).map((a) => a.name), ["token_program", "user_transfer_authority", "user_source_token_account", "user_destination_token_account", "destination_token_account", "destination_mint", "platform_fee_account", "event_authority", "program"]);
+  assert.deepEqual(JUP_IDL.route.accounts.filter((a) => a.optional).map((a) => a.name), ["destination_token_account", "platform_fee_account"]);
+  for (const [hex, name] of Object.entries(S.JUPITER_INSTRUCTION_NAMES)) assert.equal(JUP_IDL.instructions[name], hex, name);
+  // sha256("global:route")[0..8]: Anchor's rule, so the table above is not just copied from a file.
+  assert.equal(createHash("sha256").update("global:route").digest().subarray(0, 8).toString("hex"), S.JUPITER_ROUTE_DISCRIMINATOR);
+});
+
+test("the kit finds the end of a route plan for EVERY Swap variant (and every nested CandidateSwap), as built from the IDL's types", () => {
+  const { encode, byName } = idlWalker(JUP_IDL.types);
+  const swapN = byName.Swap.type.variants.length;
+  const candN = byName.CandidateSwap.type.variants.length;
+  const tail = [...u64le(1_000_000), ...u64le(900_000), ...u16le(50), 15];
+  const step = (swapBytes) => [...swapBytes, 100, 0, 1];
+  const data = (steps) => Uint8Array.from([...Buffer.from(S.JUPITER_ROUTE_DISCRIMINATOR, "hex"), ...u32le(steps.length), ...steps.flat(), ...tail]);
+  let checked = 0;
+  for (const optSome of [false, true]) {
+    for (let v = 0; v < swapN; v++) {
+      for (let cand = 0; cand < (byName.Swap.type.variants[v].fields?.some((f) => JSON.stringify(f.type).includes("CandidateSwap")) ? candN : 1); cand++) {
+        const pick = { optSome, variant: (name, n) => (name === "Swap" ? v : name === "CandidateSwap" ? cand % n : 0) };
+        const swapBytes = encode({ defined: { name: "Swap" } }, pick);
+        const d = data([step(swapBytes), step([0])]);
+        const r = S.decodeJupiterRoute(d);
+        assert.equal(r.steps, 2);
+        assert.deepEqual([r.inAmount, r.quotedOut, r.slippageBps, r.platformFeeBps], [1_000_000n, 900_000n, 50, 15], `Swap variant ${v} (${byName.Swap.type.variants[v].name}) cand ${cand} optSome ${optSome}`);
+        checked++;
+      }
+    }
+  }
+  assert.ok(checked >= swapN * 2);
+  // One more than the table knows is refused by name, not misread.
+  const unknown = Uint8Array.from([...Buffer.from(S.JUPITER_ROUTE_DISCRIMINATOR, "hex"), ...u32le(1), swapN, 100, 0, 1, ...tail]);
+  assert.throws(() => S.decodeJupiterRoute(unknown), /newer than this kit's copy of Jupiter's program interface/);
+});
+
+test("the kit reads the recorded real builds to their end, and nothing is left over", () => {
+  for (const fx of [USDC_SOL, SOL_USDC, NOFEE]) {
+    const swap = JSON.parse(fx.http.find((h) => h.url === "/swap").text).swapTransaction;
+    const ix = jupiterIxs(compiledOf(swap))[0];
+    const r = S.decodeJupiterRoute(ix.data);
+    assert.ok(r.steps >= 1);
+    assert.equal(Buffer.from(ix.data).subarray(0, 8).toString("hex"), "e517cb977ae3ad2a");
+  }
+  const honest = jupiterIxs(compiledOf(JSON.parse(USDC_SOL.http.find((h) => h.url === "/swap").text).swapTransaction))[0].data;
+  assert.throws(() => S.decodeJupiterRoute(Uint8Array.from([...honest, 0])), /extra or missing bytes/);
+  assert.throws(() => S.decodeJupiterRoute(honest.subarray(0, honest.length - 1)), /extra or missing bytes|runs past/);
+  assert.throws(() => S.decodeJupiterRoute(Uint8Array.from(honest.subarray(0, 12))), /too short/);
+  const hugeVec = Uint8Array.from(honest);
+  new DataView(hugeVec.buffer).setUint32(8, 0xffffffff, true);
+  assert.throws(() => S.decodeJupiterRoute(hugeVec), /RouteLayout|claims more entries|runs past|extra or missing|malformed|newer/);
+  assert.throws(() => S.decodeJupiterRoute(Uint8Array.from({ length: 40 }, () => 7)), /not a route instruction/);
+});
+
+test("minOutFor: rounds down, and slippage of 10000 bps or more leaves no floor", () => {
+  assert.equal(S.minOutFor(226_419_270n, 50), 225_287_173n, "Jupiter's own threshold for this quote is 225,287,174 (rounded up); the kit promises the rounded-down one");
+  assert.equal(S.minOutFor(55_043_427n, 50), 54_768_209n);
+  assert.equal(S.minOutFor(1_000n, 10_000), 0n);
+  assert.equal(S.minOutFor(1_000n, 65_535), 0n);
+  assert.equal(S.minOutFor(1_000n, 0), 1_000n);
+});
+
+// ----------------------------------------------------------------- verify: the agent's accounts after the swap
+
+/** An SPL Token account as the RPC returns it: base64 data of the 165-byte layout. */
+function tokenAccountEntry({ mint, owner, amount = 0n, delegate = null, closeAuthority = null, lamports = 2_039_280, program = TOKEN_PROGRAM_ADDRESS }) {
+  const enc = getAddressEncoder();
+  const raw = Buffer.alloc(165);
+  Buffer.from(enc.encode(address(mint))).copy(raw, 0);
+  Buffer.from(enc.encode(address(owner))).copy(raw, 32);
+  raw.writeBigUInt64LE(BigInt(amount), 64);
+  if (delegate) {
+    raw.writeUInt32LE(1, 72);
+    Buffer.from(enc.encode(address(delegate))).copy(raw, 76);
+  }
+  raw[108] = 1;
+  if (closeAuthority) {
+    raw.writeUInt32LE(1, 129);
+    Buffer.from(enc.encode(address(closeAuthority))).copy(raw, 133);
+  }
+  return { data: [raw.toString("base64"), "base64"], executable: false, lamports: String(lamports), owner: program, rentEpoch: "18446744073709551615", space: "165" };
+}
+const SIM_USDC = 1; // positions in the simulation's `accounts` read-back: agent, USDC account, wrapped-SOL account, fee account
+const SIM_WSOL = 2;
+const SIM_FEE = 3;
+
+test("verify passes the recorded builds' post-state: the agent's accounts are its own, with no delegate and no close authority", async () => {
+  for (const fx of [USDC_SOL, SOL_USDC, NOFEE]) {
+    const plan = await planFrom(fx);
+    const seen = [];
+    await S.verifySolanaSwapPlan(plan, intentOf(fx), verifyDeps(fx, { editSim: (v) => seen.push(...v.accounts) }));
+    assert.ok(seen.length >= 3);
+  }
+});
+
+test("verify refuses: a delegate set on the agent's USDC account (no balance changes at all)", async () => {
+  const plan = await planFrom(USDC_SOL);
+  const stranger = await randomAddress();
+  const got = await refusalsOf(plan, USDC_SOL, {
+    editSim: (v) => {
+      const raw = Buffer.from(v.accounts[SIM_USDC].data[0], "base64");
+      raw.writeUInt32LE(1, 72);
+      Buffer.from(getAddressEncoder().encode(address(stranger))).copy(raw, 76);
+      v.accounts[SIM_USDC].data[0] = raw.toString("base64");
+    },
+  });
+  assert.deepEqual(got.map((r) => r.rule), ["solana_swap.account_authority_changed"]);
+  assert.match(got[0].message, new RegExp(`USDC account .* would have a delegate \\(${stranger}\\) that can spend from it`));
+});
+
+test("verify refuses: the owner of the agent's USDC account changed", async () => {
+  const plan = await planFrom(USDC_SOL);
+  const stranger = await randomAddress();
+  const got = await refusalsOf(plan, USDC_SOL, {
+    editSim: (v) => {
+      const raw = Buffer.from(v.accounts[SIM_USDC].data[0], "base64");
+      Buffer.from(getAddressEncoder().encode(address(stranger))).copy(raw, 32);
+      v.accounts[SIM_USDC].data[0] = raw.toString("base64");
+    },
+  });
+  assert.ok(got.every((r) => r.rule === "solana_swap.account_authority_changed"));
+  assert.match(got[0].message, new RegExp(`would be owned by ${stranger}, not the agent`));
+});
+
+test("verify refuses: a close authority set on the agent's USDC account", async () => {
+  const plan = await planFrom(USDC_SOL);
+  const stranger = await randomAddress();
+  const got = await refusalsOf(plan, USDC_SOL, {
+    editSim: (v) => {
+      const raw = Buffer.from(v.accounts[SIM_USDC].data[0], "base64");
+      raw.writeUInt32LE(1, 129);
+      Buffer.from(getAddressEncoder().encode(address(stranger))).copy(raw, 133);
+      v.accounts[SIM_USDC].data[0] = raw.toString("base64");
+    },
+  });
+  assert.deepEqual(got.map((r) => r.rule), ["solana_swap.account_authority_changed"]);
+  assert.match(got[0].message, new RegExp(`would have a close authority \\(${stranger}\\)`));
+});
+
+test("verify refuses: the same three changes on the agent's wrapped-SOL account when it is left open, and a different kind of account in its place", async () => {
+  const stranger = await randomAddress();
+  const plan = await planFrom(USDC_SOL);
+  const run = (entry) => refusalsOf(plan, USDC_SOL, { editSim: (v) => (v.accounts[SIM_WSOL] = entry) });
+  const mk = (o) => tokenAccountEntry({ mint: WSOL, owner: WALLET, ...o });
+  // An open wrapped-SOL account that is the agent's own, plain: nothing to refuse for it.
+  const ok = await S.verifySolanaSwapPlan(plan, intentOf(USDC_SOL), verifyDeps(USDC_SOL, { editSim: (v) => (v.accounts[SIM_WSOL] = mk({})) }));
+  assert.equal(ok.ok, true);
+  const rulesOf = (r) => [...new Set(r.map((x) => x.rule))];
+  assert.deepEqual(rulesOf(await run(mk({ delegate: stranger }))), ["solana_swap.account_authority_changed"]);
+  assert.deepEqual(rulesOf(await run(mk({ owner: stranger }))), ["solana_swap.account_authority_changed"]);
+  assert.deepEqual(rulesOf(await run(mk({ closeAuthority: stranger }))), ["solana_swap.account_authority_changed"]);
+  assert.deepEqual(rulesOf(await run(mk({ mint: USDC_MINT }))), ["solana_swap.account_authority_changed"]);
+  assert.deepEqual(rulesOf(await run(mk({ program: TOKEN_2022_PROGRAM }))), ["solana_swap.account_authority_changed"], "Token-2022 is not what a wrapped-SOL account is");
+});
+
+test("verify refuses: the agent's wallet account assigned to another program", async () => {
+  const plan = await planFrom(USDC_SOL);
+  const got = await refusalsOf(plan, USDC_SOL, { editSim: (v) => (v.accounts[0].owner = TOKEN_PROGRAM_ADDRESS) });
+  assert.deepEqual(got.map((r) => r.rule), ["solana_swap.account_authority_changed"]);
+  assert.match(got[0].message, /no longer be an ordinary wallet owned by the System program/);
+});
+
+test("verify refuses: a read-back that does not line up with the accounts that were asked for", async () => {
+  const plan = await planFrom(USDC_SOL);
+  assert.deepEqual(await refusedBy(plan, USDC_SOL, { editSim: (v) => v.accounts.pop() }), ["solana_swap.sim_inconsistent"]);
+});
+
+test("balanceDeltas: a wrapped-SOL account whose owner is no longer the agent after the transaction stops counting as the agent's SOL", () => {
+  const agent = "Agent1111111111111111111111111111111111111";
+  const tok = (accountIndex, mint, amount, owner = agent) => ({ accountIndex, mint, owner, uiTokenAmount: { amount: String(amount) } });
+  // keys: 0 agent, 1 wrapped-SOL account holding 1 SOL (+ rent)
+  const base = { keys: [agent, "w"], preBalances: [1_000_000, 1_000_000_000 + 2_039_280], preTokenBalances: [tok(1, WSOL, 1_000_000_000)] };
+  // Honest: still the agent's after, nothing lost.
+  const same = S.balanceDeltas({ ...base, postBalances: [1_000_000 - 5_000, 1_000_000_000 + 2_039_280], postTokenBalances: [tok(1, WSOL, 1_000_000_000)] }, agent);
+  assert.equal(same.sol.delta, -5_000n);
+  // SetAuthority by a CPI: the same lamports and tokens, a different owner. The old code still counted the lamports.
+  const taken = S.balanceDeltas({ ...base, postBalances: [1_000_000 - 5_000, 1_000_000_000 + 2_039_280], postTokenBalances: [tok(1, WSOL, 1_000_000_000, "Stranger11111111111111111111111111111111111")] }, agent);
+  assert.equal(taken.sol.delta, -5_000n - 1_000_000_000n - 2_039_280n, "the whole account leaves the agent's SOL");
+});
+
+test("verify refuses: a SetAuthority on the wrapped-SOL account moves its balance out of the agent's SOL (the output check sees it too)", async () => {
+  const plan = await planFrom(USDC_SOL);
+  const stranger = await randomAddress();
+  // The recorded run closes the wrapped-SOL account. Leave it open instead, holding the proceeds but owned by a
+  // stranger: the agent's SOL no longer includes it, so the proceeds do not reach the agent.
+  const got = await refusedBy(plan, USDC_SOL, {
+    editSim: (v) => {
+      const keys = [...compiledOf(plan.swap_transaction).staticAccounts, ...v.loadedAddresses.writable, ...v.loadedAddresses.readonly];
+      const wsol = keys.indexOf("umiAsegEDQeKMAfqPhqNxxYDsXo8fuhQy7HHE7viKud");
+      assert.ok(wsol > 0);
+      v.preTokenBalances.push({ accountIndex: wsol, mint: WSOL, owner: WALLET, uiTokenAmount: { amount: "0" } });
+      v.postTokenBalances.push({ accountIndex: wsol, mint: WSOL, owner: stranger, uiTokenAmount: { amount: "226000000" } });
+      v.postBalances[wsol] = String(226_000_000 + 2_039_280);
+      v.postBalances[0] = (BigInt(v.postBalances[0]) - 226_000_000n - 2_039_280n).toString();
+      v.accounts[0].lamports = v.postBalances[0];
+    },
+  });
+  assert.ok(got.includes("solana_swap.sim_output_inflow") || got.includes("solana_swap.sim_input_outflow"), got.join());
+});
+
 // ----------------------------------------------------------------- verify: simulation refuses
 
 test("verify refuses on the simulation: it failed, could not run, or returned no balances", async () => {
@@ -522,6 +1019,15 @@ const W = AccountRole.WRITABLE;
 const R = AccountRole.READONLY;
 const WS = AccountRole.WRITABLE_SIGNER;
 const u64le = (n) => [...new Uint8Array(new BigUint64Array([BigInt(n)]).buffer)];
+const u32le = (n) => [n & 255, (n >> 8) & 255, (n >> 16) & 255, (n >> 24) & 255];
+const u16le = (n) => [n & 255, (n >> 8) & 255];
+
+/** A `route` instruction's data: discriminator, a route plan of `swaps` (variant indexes, no payload), then the arguments. */
+function routeData({ swaps = [0], inAmount = 100_000_000n, quotedOut = 15_000_000n, slippageBps = 50, feeBps = 0 } = {}) {
+  const steps = swaps.flatMap((v) => [v, 100, 0, 1]);
+  return [...Buffer.from(S.JUPITER_ROUTE_DISCRIMINATOR, "hex"), ...u32le(swaps.length), ...steps, ...u64le(inAmount), ...u64le(quotedOut), ...u16le(slippageBps), feeBps];
+}
+const EVENT_AUTHORITY = "D8cy77BBepLMngZx6ZukaTff5hCt1HrWyKk3Hnd9oitf";
 
 test("inspect: a typical fresh-wallet SOL -> USDC build (create accounts, wrap, swap, unwrap) is accepted; the same with tampering is not", async () => {
   const agent = (await generateKeyPairSigner()).address;
@@ -537,10 +1043,11 @@ test("inspect: a typical fresh-wallet SOL -> USDC build (create accounts, wrap, 
     create(usdcAta, USDC_MINT),
     ix(SYS, [[agent, WS], [wsolAta, W]], [2, 0, 0, 0, ...u64le(100_000_000)]),
     ix(TOKEN_PROGRAM_ADDRESS, [[wsolAta, W]], [17]),
-    ix(S.JUPITER_PROGRAM, [[agent, WS], [wsolAta, W], [usdcAta, W]], [1, 2, 3]),
+    ix(S.JUPITER_PROGRAM, [[TOKEN_PROGRAM_ADDRESS, R], [agent, WS], [wsolAta, W], [usdcAta, W], [S.JUPITER_PROGRAM, R], [USDC_MINT, R], [S.JUPITER_PROGRAM, R], [EVENT_AUTHORITY, R], [S.JUPITER_PROGRAM, R]], routeData()),
     ix(TOKEN_PROGRAM_ADDRESS, [[wsolAta, W], [agent, W], [agent, WS]], [9]),
   ];
-  const opts = { agent, mintIn: WSOL, amountIn: 100_000_000n, feeAccount: null };
+  // 15 USDC quoted for 0.1 SOL at 50 bps: the transaction requires floor(15,000,000 x 9950 / 10000).
+  const opts = { agent, mintIn: WSOL, mintOut: USDC_MINT, amountIn: 100_000_000n, feeAccount: null, feeBps: 0, slippageBps: 50, minOut: 14_925_000n };
   const accepted = await S.inspectSolanaSwapTransaction(await synthetic(agent, good), opts, {});
   assert.deepEqual(accepted.refusals, []);
   assert.equal(accepted.facts.priority_lamports, 2000n, "20,000 micro-lamports x 100,000 units");
@@ -569,6 +1076,37 @@ test("inspect: a typical fresh-wallet SOL -> USDC build (create accounts, wrap, 
   await check(good, "solana_swap.system_transfer", { ...opts, mintIn: USDC_MINT });
   // The disclosed fee account must be in the transaction.
   await check(good, "solana_swap.fee_account_missing", { ...opts, feeAccount: S.SATO_FEE_ACCOUNTS[WSOL] });
+
+  // Jupiter's instruction is read, not trusted: the numbers and accounts in it are held to what was asked and disclosed.
+  const jup = (accounts, data) => ix(S.JUPITER_PROGRAM, accounts, data);
+  const slots = (over = {}) => {
+    const base = [[TOKEN_PROGRAM_ADDRESS, R], [agent, WS], [wsolAta, W], [usdcAta, W], [S.JUPITER_PROGRAM, R], [USDC_MINT, R], [S.JUPITER_PROGRAM, R], [EVENT_AUTHORITY, R], [S.JUPITER_PROGRAM, R]];
+    for (const [i, v] of Object.entries(over)) base[i] = v;
+    return base;
+  };
+  const withJup = (accounts, data) => swap(6, jup(accounts, data));
+  await check(withJup(slots(), routeData({ quotedOut: 1n })), "solana_swap.min_out_not_enforced");
+  await check(withJup(slots(), routeData({ slippageBps: 10_000 })), "solana_swap.min_out_not_enforced");
+  await check(withJup(slots(), routeData({ slippageBps: 60, quotedOut: 15_100_000n })), "solana_swap.min_out_not_enforced"); // enough output, but more slippage than allowed
+  await check(withJup(slots(), routeData({ inAmount: 99_999_999n })), "solana_swap.jupiter_amount_mismatch");
+  await check(withJup(slots(), routeData({ feeBps: 15 })), "solana_swap.fee_not_as_disclosed");
+  await check(withJup(slots({ 6: [other, W] }), routeData()), "solana_swap.fee_not_as_disclosed"); // a fee account when none was disclosed
+  await check(withJup(slots({ 3: [other, W] }), routeData()), "solana_swap.recipient_not_agent");
+  await check(withJup(slots({ 4: [other, W] }), routeData()), "solana_swap.recipient_not_agent"); // the optional second destination
+  await check(withJup(slots({ 2: [other, W] }), routeData()), "solana_swap.jupiter_source_not_agent");
+  await check(withJup(slots({ 5: [S.WSOL_MINT, R] }), routeData()), "solana_swap.jupiter_account_mismatch");
+  await check(withJup(slots(), [...routeData(), 0]), "solana_swap.jupiter_instruction_unrecognized"); // a byte after the arguments
+  await check(withJup(slots(), routeData().slice(0, -1)), "solana_swap.jupiter_instruction_unrecognized"); // a byte short
+  await check(withJup(slots(), routeData({ swaps: [197] })), "solana_swap.jupiter_instruction_unrecognized"); // a venue this kit's copy of the interface does not know
+  await check([...good, good[6]], "solana_swap.jupiter_route_count");
+  await check(good.filter((_x, n) => n !== 6), "solana_swap.jupiter_route_count"); // no route at all
+  // With a disclosed fee: the pinned account, the disclosed rate.
+  const fee = S.SATO_FEE_ACCOUNTS[WSOL];
+  await check(withJup(slots({ 6: [fee, W] }), routeData({ feeBps: 15 })), "solana_swap.fee_not_as_disclosed", { ...opts, feeAccount: fee, feeBps: 14 });
+  await check(withJup(slots({ 6: [other, W] }), routeData({ feeBps: 15 })), "solana_swap.fee_not_as_disclosed", { ...opts, feeAccount: fee, feeBps: 15 });
+  await check(withJup(slots(), routeData({ feeBps: 15 })), "solana_swap.fee_not_as_disclosed", { ...opts, feeAccount: fee, feeBps: 15 }); // the fee account left out (None) while a fee is disclosed
+  const withFee = await S.inspectSolanaSwapTransaction(await synthetic(agent, withJup(slots({ 6: [fee, W] }), routeData({ feeBps: 15 }))), { ...opts, feeAccount: fee, feeBps: 15 }, {});
+  assert.deepEqual(withFee.refusals, []);
 });
 
 test("balanceDeltas: wrapping, unwrapping and closing net to zero; new USDC accounts' rent is counted; other tokens are watched", () => {
@@ -619,6 +1157,16 @@ async function readdressed(fx, to) {
   const swapAll = (text) => [...map].reduce((t, [a, b]) => t.split(a).join(b), text);
   const next = JSON.parse(swapAll(JSON.stringify(fx)));
   next.wallet = T;
+  // The simulated token accounts carry their owner as raw bytes (inside base64), which a text swap cannot reach.
+  const enc = getAddressEncoder();
+  for (const entry of next.rpc.find((c) => c.method === "simulateTransaction").result.value.accounts) {
+    const raw = Buffer.from(entry.data[0], "base64");
+    if (entry.owner !== TOKEN_PROGRAM_ADDRESS || raw.length !== 165) continue;
+    if (Buffer.compare(raw.subarray(32, 64), Buffer.from(enc.encode(address(fx.wallet)))) === 0) {
+      Buffer.from(enc.encode(address(T))).copy(raw, 32);
+      entry.data[0] = raw.toString("base64");
+    }
+  }
   const plan = await planFrom(fx);
   const tx = mutate(plan.swap_transaction, (c) => {
     c.staticAccounts = c.staticAccounts.map((a) => map.get(a) ?? a);
@@ -629,8 +1177,9 @@ async function readdressed(fx, to) {
 async function setup(fxName = USDC_SOL, o = {}) {
   const signer = await generateKeyPairSigner();
   const { fx, plan } = await readdressed(fxName, signer);
-  const rig = fakeRpc(fx, { blockHeight: plan.last_valid_block_height - 1000, accountKeys: compiledOf(plan.swap_transaction).staticAccounts, ...o });
-  const deps = { rpc: rig.rpc, signer, now: () => plan.built_at + 2_000, sleep: async () => {}, minGapMs: 0, pollMs: 0, ...(o.deps ?? {}) };
+  const rig = fakeRpc(fx, { accountKeys: compiledOf(plan.swap_transaction).staticAccounts, ...o });
+  // usdNotional is what the orchestrator measures independently; the plan's own estimate is never used.
+  const deps = { rpc: rig.rpc, signer, now: () => plan.built_at + 2_000, sleep: async () => {}, minGapMs: 0, pollMs: 0, usdNotional: 25, ...(o.deps ?? {}) };
   return { signer, fx, plan, rig, deps };
 }
 const policyAllow = (perTx = "50", perDay = "100") => setPolicy({ perTx, perDay, chains: "solana", swapSlippageBps: "500", maxTradesPerDay: "none" });
@@ -678,30 +1227,72 @@ test("execute: a swap over the owner's limit is refused before anything is signe
   assert.equal(entries().length, before, "nothing reserved");
 });
 
-test("execute: a plan whose blockhash is old is rebuilt, never signed (by age, and by blocks left)", async () => {
+test("execute: a plan whose blockhash is old is rebuilt, never signed (by age, and by the chain saying the blockhash is gone)", async () => {
   policyAllow();
   const before = entries().length;
-  const old = await setup(USDC_SOL, { deps: {} });
+  const old = await setup(USDC_SOL);
   await assert.rejects(S.executeSolanaSwap(old.plan, { ...old.deps, now: () => old.plan.built_at + S.PLAN_MAX_AGE_MS + 1 }), S.PlanStale);
-  const late = await setup(USDC_SOL, { blockHeight: 0 });
-  late.rig = null;
-  const near = await setup();
-  near.deps.rpc.getBlockHeight = () => ({ send: async () => BigInt(near.plan.last_valid_block_height - 10) });
-  await assert.rejects(S.executeSolanaSwap(near.plan, near.deps), /blocks left; rebuild/);
+
+  // The chain is asked about the blockhash that is inside the bytes to be signed, at confirmed.
+  let asked;
+  const gone = await setup(USDC_SOL, { blockhashValid: false, onBlockhashCheck: (hash, opts) => (asked = { hash, opts }) });
+  await assert.rejects(S.executeSolanaSwap(gone.plan, gone.deps), (e) => e instanceof S.PlanStale && /no longer valid; rebuild/.test(e.message));
+  assert.equal(asked.hash, compiledOf(gone.plan.swap_transaction).lifetimeToken);
+  assert.equal(asked.opts.commitment, "confirmed");
+  assert.equal(gone.rig.sent.length, 0);
   assert.equal(entries().length, before, "nothing reserved for a stale plan");
 });
 
-test("execute: the clock running out while reserving still stops before signing, and gives the reservation back", async () => {
+test("execute: Jupiter's lastValidBlockHeight is not consulted; a plan that claims none or a stale one still signs when the chain says the blockhash is valid", async () => {
+  policyAllow("50", "10000");
+  const a = await setup(USDC_SOL);
+  const b = await setup(USDC_SOL);
+  a.plan.last_valid_block_height = 1;
+  b.plan.last_valid_block_height = Number.MAX_SAFE_INTEGER;
+  for (const x of [a, b]) {
+    x.deps.rpc.getBlockHeight = () => assert.fail("the block height must not be read");
+    const out = await S.executeSolanaSwap(x.plan, x.deps);
+    assert.ok(out.tx);
+  }
+});
+
+test("execute: if the chain cannot say whether the blockhash is valid, nothing is signed (an error, not a rebuild)", async () => {
   policyAllow();
   const before = entries().length;
-  const { plan, rig, deps } = await setup();
-  let heights = 0;
-  deps.rpc.getBlockHeight = () => ({ send: async () => BigInt(++heights === 1 ? plan.last_valid_block_height - 1000 : plan.last_valid_block_height - 5) });
+  const { plan, rig, deps } = await setup(USDC_SOL, { blockhashThrows: "429 too many requests" });
+  await assert.rejects(S.executeSolanaSwap(plan, deps), (e) => !(e instanceof S.PlanStale) && /could not check that the swap's blockhash is still valid.*nothing was signed/.test(e.message));
+  assert.equal(rig.sent.length, 0);
+  assert.equal(entries().length, before);
+});
+
+test("execute: the blockhash running out while reserving still stops before signing, and gives the reservation back", async () => {
+  policyAllow();
+  const before = entries().length;
+  let checks = 0;
+  const { plan, rig, deps } = await setup(USDC_SOL, { blockhashValid: () => ++checks === 1 });
   await assert.rejects(S.executeSolanaSwap(plan, deps), S.PlanStale);
+  assert.equal(checks, 2, "checked once before verifying and once right before signing");
   assert.equal(rig.sent.length, 0);
   const rows = entries().slice(before);
   assert.deepEqual(rows.map((r) => r.status), ["submitted", "failed"]);
   assert.equal(spentLast24h().usd >= 0, true);
+});
+
+test("execute: usdNotional is required and the plan's own USD estimate is never used in its place", async () => {
+  policyAllow("50", "10000");
+  const before = entries().length;
+  const { plan, rig, deps } = await setup(USDC_SOL);
+  assert.equal(plan.usd_estimate, 25, "the plan carries an estimate, which must not be a fallback");
+  for (const bad of [undefined, null, 0, -5, NaN, Infinity, "25", {}]) {
+    const { usdNotional, ...rest } = deps;
+    void usdNotional;
+    await assert.rejects(S.executeSolanaSwap(plan, bad === undefined ? rest : { ...rest, usdNotional: bad }), /usdNotional is required.*nothing was signed/, `usdNotional ${String(bad)}`);
+  }
+  assert.equal(rig.sent.length, 0);
+  assert.equal(entries().length, before, "nothing reserved");
+  // A real value is what the limits are checked against, not the plan's 25.
+  policyAllow("10", "100");
+  await assert.rejects(S.executeSolanaSwap(plan, { ...deps, usdNotional: 40 }), (e) => e instanceof Refused && rules(e).includes("max_usd_per_tx"));
 });
 
 test("execute: a verification failure (the simulation delivers too little) stops before reserving", async () => {
@@ -793,7 +1384,20 @@ test("LIVE read: the recorded transactions still simulate on mainnet and the del
   for (const [fx, wantOutflowAsset] of [[USDC_SOL, "usdc"], [SOL_USDC, "sol"]]) {
     const plan = await planFrom(fx);
     // Replays the recorded transaction against current state (blockhash replaced, signatures not checked).
-    const v = await S.verifySolanaSwapPlan(plan, intentOf(fx), { rpc, minGapMs: 0 });
+    let v;
+    try {
+      v = await S.verifySolanaSwapPlan(plan, intentOf(fx), { rpc, minGapMs: 0 });
+    } catch (err) {
+      // A recorded quote is hours old: once the market has moved by more than its slippage the
+      // program itself refuses it (SlippageToleranceExceeded, 6001). That is the floor working,
+      // not a fault; every static check and the simulation setup still ran. The fresh-build
+      // tests below cover the whole path against current prices.
+      if (err instanceof Refused && rules(err).join() === "solana_swap.sim_failed" && /"Custom":"6001"/.test(err.message)) {
+        console.log(`# ${fx.request.from}->${fx.request.to}: the recorded quote is stale (Jupiter's slippage check, 6001); skipped the numbers`);
+        continue;
+      }
+      throw err;
+    }
     assert.equal(v.ok, true, `${fx.request.from}->${fx.request.to}`);
     if (wantOutflowAsset === "usdc") assert.equal(v.simulated.input_outflow, "25000000");
     assert.ok(BigInt(v.simulated.output_inflow) >= BigInt(plan.quote.min_out));
@@ -807,5 +1411,67 @@ test("LIVE read: a fresh quote + build + verification, both directions (Jupiter 
     assert.equal(out.verification.ok, true, JSON.stringify(out.verification));
     assert.ok(out.verification.priority_lamports <= S.PRIORITY_MAX_LAMPORTS);
     assert.ok(out.verification.simulated.fee_observed_units !== null);
+    assert.equal(out.verification.jupiter.instruction, "route", "api.jup.ag still builds the plain route instruction");
+    assert.equal(out.verification.jupiter.platform_fee_bps, 15);
+    assert.equal(out.verification.jupiter.slippage_bps, 50);
+    assert.equal(out.verification.jupiter.enforced_min_out, out.plan.quote.min_out);
   }
+});
+
+test("LIVE read: the reviewer's tamper (quoted_out=1, slippage_bps=10000) on a fresh live build is refused, though the simulation alone would let it through", { skip: !live, timeout: 180_000 }, async () => {
+  const deps = liveDeps();
+  for (const params of [{ from: "USDC", to: "SOL", amount: "10" }, { from: "SOL", to: "USDC", amount: "0.1" }]) {
+    const plan = await S.planSolanaSwap({ ...params, slippageBps: 50 }, deps);
+    const intent = { agent: WALLET, from: plan.from, to: plan.to, amount_in: plan.amount_in };
+    assert.equal((await S.verifySolanaSwapPlan(plan, intent, deps)).ok, true, "the honest build passes");
+
+    const tampered = withArgs(plan, { quotedOut: 1n, slippageBps: 10_000 });
+    const trailing = withTx(plan, mutate(plan.swap_transaction, (c) => {
+      const ix = jupiterIxs(c)[0];
+      const honestTail = Buffer.from(ix.data).subarray(ix.data.length - ARGS);
+      writeArgs(ix, { quotedOut: 1n, slippageBps: 10_000 });
+      ix.data = new Uint8Array(Buffer.concat([Buffer.from(ix.data), honestTail]));
+    }));
+    // The attack is real: mainnet runs both without error (the pool delivers more than the 1-lamport floor).
+    for (const tx of [tampered, trailing]) {
+      const sim = (await deps.rpc.simulateTransaction(tx.swap_transaction, { encoding: "base64", sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed" }).send()).value;
+      assert.equal(sim.err, null, `the simulation alone passes the tampered ${params.from}->${params.to} build`);
+      await new Promise((res) => setTimeout(res, 800));
+    }
+    // ...and the kit refuses it, by reading Jupiter's instruction.
+    await assert.rejects(S.verifySolanaSwapPlan(tampered, intent, deps), (e) => e instanceof Refused && rules(e).includes("solana_swap.min_out_not_enforced"), "quoted_out=1, slippage 10000");
+    await assert.rejects(S.verifySolanaSwapPlan(trailing, intent, deps), (e) => e instanceof Refused && rules(e).includes("solana_swap.jupiter_instruction_unrecognized"), "honest tail appended after tampered arguments");
+    await assert.rejects(S.verifySolanaSwapPlan(withArgs(plan, { quotedOut: 1n }), intent, deps), (e) => e instanceof Refused && rules(e).includes("solana_swap.min_out_not_enforced"));
+  }
+});
+
+test("LIVE read: Jupiter's program interface is still the one this kit embeds (a new venue means: re-run test/fixtures/swap-solana/idl.mjs)", { skip: !live }, async () => {
+  const { idl } = await fetchJupiterIdl(liveDeps().rpc);
+  const { step, enums } = compile(idl.types);
+  assert.deepEqual(JSON.parse(JSON.stringify({ step, enums })), JSON.parse(JSON.stringify(S.ROUTE_LAYOUT)), "the Swap / CandidateSwap enums changed on chain");
+  const route = idl.instructions.find((i) => i.name === "route");
+  assert.equal(Buffer.from(route.discriminator).toString("hex"), S.JUPITER_ROUTE_DISCRIMINATOR);
+  assert.deepEqual(route.args.map((a) => a.name), ["route_plan", "in_amount", "quoted_out_amount", "slippage_bps", "platform_fee_bps"]);
+  for (const [hex, name] of Object.entries(S.JUPITER_INSTRUCTION_NAMES)) {
+    assert.equal(Buffer.from(idl.instructions.find((i) => i.name === name).discriminator).toString("hex"), hex, name);
+  }
+});
+
+test("LIVE read: builds at several sizes both ways, fee on and off, are all the plain route instruction and all verify", { skip: !live, timeout: 300_000 }, async () => {
+  const deps = liveDeps();
+  const seen = new Set();
+  for (const [params, fee] of [
+    [{ from: "USDC", to: "SOL", amount: "1" }, 15],
+    [{ from: "USDC", to: "SOL", amount: "100" }, 15],
+    [{ from: "USDC", to: "SOL", amount: "500" }, 15],
+    [{ from: "USDC", to: "SOL", amount: "10" }, 0],
+    [{ from: "SOL", to: "USDC", amount: "0.01" }, 15],
+    [{ from: "SOL", to: "USDC", amount: "3" }, 15],
+  ]) {
+    const out = await S.dryRunSolanaSwap({ ...params, slippageBps: 50 }, { ...deps, satoFeeBps: fee });
+    assert.equal(out.verification.jupiter.instruction, "route", JSON.stringify(params));
+    assert.equal(out.verification.jupiter.platform_fee_bps, fee);
+    seen.add(out.verification.jupiter.instruction);
+  }
+  assert.deepEqual([...seen], ["route"]);
 });

@@ -191,12 +191,16 @@ export function registeredIds() {
  * registration file naming that id. Gas only, not counted against the USD limits.
  * `resume` finishes step two for an id whose first step already landed.
  */
+/** How many times step two of a fresh registration is tried while the RPC catches up (2 s apart; nothing signed is retried). */
+const REGISTER_STEP2_TRIES = 6;
+
 export async function registerAgent({ name, description, image, services = [], x402Support = false, again = false, resume }, c = clients()) {
   if (!name || !description) throw new Error("--name and --description are required");
   const policy = loadPolicy();
   if (policy && !Array.isArray(policy.chains)) throw new Error("choose which chain(s) this agent works on first: `sato-agent policy set --chains <base|solana|base,solana>`");
   if (policy && !allowedChains(policy).includes("base")) throw new Error(`this agent is set to work on ${allowedChains(policy).join(" and ")} only; ERC-8004 registration is on Base`);
   let agentId;
+  let r1; // step one's receipt (a fresh registration only)
   if (resume !== undefined) {
     if (!/^\d+$/.test(String(resume))) throw new Error("--resume takes the agent id");
     agentId = BigInt(resume);
@@ -206,7 +210,7 @@ export async function registerAgent({ name, description, image, services = [], x
     if (prior.pending.length && !again) throw new Error(`a registration was sent but never confirmed (${prior.pending.map(explorer).join(", ")}); check it, then use --resume <agent id> or --again`);
     const first = registrationUri({ name, description, image, services, x402Support });
     await c.pub.simulateContract({ account: c.account, address: IDENTITY_REGISTRY, abi: identityRegistryAbi, functionName: "register", args: [first] });
-    const r1 = await signAndSend(
+    r1 = await signAndSend(
       c,
       { to: IDENTITY_REGISTRY, data: encodeFunctionData({ abi: identityRegistryAbi, functionName: "register", args: [first] }) },
       (hash) => record({ kind: "register_sent", status: "signed", chain: "base", usd: 0, tx: hash }),
@@ -223,9 +227,24 @@ export async function registerAgent({ name, description, image, services = [], x
 
   const full = registrationUri({ agentId, name, description, image, services, x402Support });
   const data = encodeFunctionData({ abi: identityRegistryAbi, functionName: "setAgentURI", args: [agentId, full] });
+  // Right after step one, a load-balanced public RPC can answer from a node that has not seen the
+  // new agent yet, so the check and the gas estimate revert (seen live 2026-10-09; a --resume a
+  // minute later worked). Step two then takes the next nonce, and a revert BEFORE anything is
+  // signed is retried a few times while the node catches up. Nothing signed is ever retried.
+  const fresh = resume === undefined && Number.isInteger(r1?.sentNonce);
+  const sleep = c.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   try {
-    await c.pub.call({ account: c.account, to: IDENTITY_REGISTRY, data });
-    const r2 = await signAndSend(c, { to: IDENTITY_REGISTRY, data }, undefined, { counted: false });
+    let r2;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await c.pub.call({ account: c.account, to: IDENTITY_REGISTRY, data });
+        r2 = await signAndSend(c, { to: IDENTITY_REGISTRY, data, ...(fresh ? { nonce: r1.sentNonce + 1 } : {}) }, undefined, { counted: false });
+        break;
+      } catch (err) {
+        if (!fresh || err instanceof Pending || err instanceof Rejected || attempt >= REGISTER_STEP2_TRIES) throw err;
+        await sleep(2_000);
+      }
+    }
     if (r2.status !== "success") throw new Error(`setAgentURI reverted: ${explorer(r2.transactionHash)}`);
     record({ kind: "register_uri", status: "confirmed", chain: "base", usd: 0, agent_id: agentId.toString(), tx: r2.transactionHash });
     return { agent_id: agentId.toString(), registry: `eip155:8453:${IDENTITY_REGISTRY}`, tx: r2.transactionHash, explorer: explorer(r2.transactionHash) };

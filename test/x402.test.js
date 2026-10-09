@@ -24,6 +24,9 @@ let server;
 let origin;
 const seen = [];
 let accept = true;
+const SETTLE_TX = `0x${"ab".repeat(32)}`; // a Base transaction id in its real form
+let settleTx = SETTLE_TX; // what the server's receipt names (some tests send junk)
+let settleNetwork = "eip155:8453";
 
 function requirement({ amount, asset = USDC_BASE, network = "eip155:8453", maxTimeoutSeconds = 60 }) {
   return { scheme: "exact", network, asset, amount, payTo: PAY_TO, maxTimeoutSeconds, extra: { name: "USD Coin", version: "2" } };
@@ -36,6 +39,11 @@ const offers = {
   // A string concatenates in `now + maxTimeoutSeconds`: "300" would mean ~56,800 years.
   "/string-window": [requirement({ amount: "10000", maxTimeoutSeconds: "300" })],
   "/hangup": [requirement({ amount: "10000" })],
+  "/permit2": [{ ...requirement({ amount: "10000" }), extra: { name: "USD Coin", version: "2", assetTransferMethod: "permit2" } }],
+  "/eip3009": [{ ...requirement({ amount: "10000" }), extra: { name: "USD Coin", version: "2", assetTransferMethod: "eip3009" } }],
+  "/bad-payto": [{ ...requirement({ amount: "10000" }), payTo: "0x1111\u001b[31m" }],
+  "/zero": [requirement({ amount: "0" })],
+  "/huge": [requirement({ amount: "99999999999999999999" })],
 };
 
 // x402 v1 servers: `maxAmountRequired`, network "base", the payment in X-PAYMENT.
@@ -68,7 +76,7 @@ before(async () => {
       }
       const payload = JSON.parse(Buffer.from(xp, "base64").toString());
       seenV1.push({ path, payload });
-      res.writeHead(200, { "content-type": "application/json", "X-PAYMENT-RESPONSE": encodePaymentResponseHeader({ success: true, transaction: "0xdef", network: "base", payer: payload.payload.authorization.from }) });
+      res.writeHead(200, { "content-type": "application/json", "X-PAYMENT-RESPONSE": encodePaymentResponseHeader({ success: true, transaction: `0x${"de".repeat(32)}`, network: "base", payer: payload.payload.authorization.from }) });
       return res.end(JSON.stringify({ data: "paid content (v1)" }));
     }
     if (path === "/hangup" && sig) return void req.socket.destroy(); // took the payment, never answers
@@ -85,7 +93,7 @@ before(async () => {
     }
     res.writeHead(200, {
       "content-type": "application/json",
-      "PAYMENT-RESPONSE": encodePaymentResponseHeader({ success: true, transaction: "0xabc", network: "eip155:8453", payer: payload.payload.authorization.from }),
+      "PAYMENT-RESPONSE": encodePaymentResponseHeader({ success: true, transaction: settleTx, network: settleNetwork, payer: payload.payload.authorization.from }),
     });
     res.end(JSON.stringify({ data: "paid content" }));
   });
@@ -276,4 +284,98 @@ test("v1: the same refusals as v2 (asset, window, network, amount, limits); noth
   }
   assert.equal(seenV1.length, n, "no v1 payment was ever sent");
   assert.equal(entries().length, rows, "nothing was reserved");
+});
+
+// ---------------------------------------------------------------- what the server says is checked first
+
+test("a permit2 offer is refused before anything is reserved (only EIP-3009 is signed); an explicit eip3009 offer pays", async () => {
+  setPolicy({ perTx: "1", perDay: "100" });
+  const n = seen.length;
+  const rows = entries().length;
+  await assert.rejects(pay(`${origin}/permit2`), (e) => e instanceof Refused && e.refusals.some((r) => r.rule === "transfer_method"));
+  assert.equal(seen.length, n, "nothing sent");
+  assert.equal(entries().length, rows, "nothing reserved");
+  const ok = await pay(`${origin}/eip3009`);
+  assert.equal(ok.settled, true);
+});
+
+test("a payTo that is not a Base address, a zero amount or an amount too large to count exactly: refused, nothing reserved", async () => {
+  const n = seen.length;
+  const rows = entries().length;
+  await assert.rejects(pay(`${origin}/bad-payto`), (e) => e instanceof Refused && e.refusals.some((r) => r.rule === "pay_to" && !/\u001b/.test(String(r.observed))));
+  await assert.rejects(pay(`${origin}/zero`), (e) => e instanceof Refused && e.refusals.some((r) => r.rule === "amount"));
+  await assert.rejects(pay(`${origin}/huge`), (e) => e instanceof Refused && e.refusals.some((r) => r.rule === "amount"));
+  assert.equal(seen.length, n);
+  assert.equal(entries().length, rows);
+});
+
+test("a receipt whose transaction id is not a Base transaction id is not stored or shown, and the payment counts as unsettled", async () => {
+  for (const junk of ["0xabc", "0xZZ\u001b[2J", `0x${"ab".repeat(32)}\n`, "5".repeat(80)]) {
+    settleTx = junk;
+    settleNetwork = "eip155:8453‮\u001b[31m";
+    const r = await pay(`${origin}/cheap`);
+    assert.equal(r.status, 200);
+    assert.equal(r.settled, false, JSON.stringify(junk));
+    assert.equal(r.settlement.transaction, null);
+    assert.doesNotMatch(r.settlement.network, /[\u001b‮]/);
+    assert.equal(entries().at(-1).status, "signed_unsettled");
+    assert.equal(entries().at(-1).tx, null);
+    assert.doesNotMatch(JSON.stringify(r.settlement), /\u001b|ZZ/);
+  }
+  settleTx = SETTLE_TX;
+  settleNetwork = "eip155:8453";
+  const good = await pay(`${origin}/cheap`);
+  assert.equal(good.settled, true);
+  assert.equal(entries().at(-1).tx, SETTLE_TX);
+  assert.equal(good.explorer, `https://basescan.org/tx/${SETTLE_TX}`);
+});
+
+test("transaction ids are accepted only in their chain's form", async () => {
+  const { validTxId } = await import("../src/x402.js");
+  assert.equal(validTxId("base", SETTLE_TX), SETTLE_TX);
+  for (const bad of ["0xabc", `${SETTLE_TX}0`, `0x${"zz".repeat(32)}`, null, 5, "1".repeat(64)]) assert.equal(validTxId("base", bad), null, String(bad));
+  const sig = "5".repeat(87);
+  assert.equal(validTxId("solana", sig), sig);
+  for (const bad of ["5".repeat(63), "5".repeat(89), `${"5".repeat(86)}0`, `${"5".repeat(86)}\n`, SETTLE_TX]) assert.equal(validTxId("solana", bad), null, bad);
+});
+
+// ---------------------------------------------------------------- the Base post-sign check
+
+/** A scheme that signs whatever authorization `make` returns, to test what the agent does with a bad one. */
+const fakeEvmScheme = (make) => ({
+  scheme: "exact",
+  async createPaymentPayload(x402Version, req) {
+    return { x402Version, payload: { signature: `0x${"11".repeat(65)}`, authorization: make(req) } };
+  },
+});
+
+test("Base: a signed authorization that is not what was reserved is NOT sent, stays counted (signed_not_sent), Pending exit 4", async () => {
+  const { evmAccount } = await import("../src/wallet.js");
+  const me = evmAccount().address;
+  const good = (req) => ({ from: me, to: req.payTo, value: req.amount, validAfter: "0", validBefore: String(Math.floor(Date.now() / 1000) + 60), nonce: `0x${"00".repeat(32)}` });
+  const cases = {
+    "a different amount": (req) => ({ ...good(req), value: "10001" }),
+    "a different recipient": (req) => ({ ...good(req), to: "0x2222222222222222222222222222222222222222" }),
+    "from another wallet": (req) => ({ ...good(req), from: "0x3333333333333333333333333333333333333333" }),
+    "valid for a year": (req) => ({ ...good(req), validBefore: String(Math.floor(Date.now() / 1000) + 365 * 86400) }),
+    "no expiry": (req) => ({ ...good(req), validBefore: undefined }),
+  };
+  for (const [name, make] of Object.entries(cases)) {
+    const n = seen.length;
+    const before = spent();
+    const rows = entries().length;
+    await assert.rejects(
+      pay(`${origin}/cheap`, { scheme: fakeEvmScheme(make) }),
+      (e) => e instanceof Pending && e.details.sent === false && e.details.chain === "base" && /signed authorization did not match/.test(e.message) && !/transaction/.test(e.message.split("\n")[0]) && /Do NOT retry/.test(e.message),
+      name,
+    );
+    assert.equal(seen.length, n, `${name}: nothing was sent`);
+    assert.equal(spent(), before + 0.01, `${name}: it stays counted`);
+    assert.deepEqual(entries().slice(rows).map((r) => r.status), ["submitted", "signed_not_sent"], `${name}: never released`);
+  }
+  // The same fake scheme with a matching authorization passes the check (and is sent).
+  const n = seen.length;
+  const r = await pay(`${origin}/cheap`, { scheme: fakeEvmScheme(good) });
+  assert.equal(seen.length, n + 1);
+  assert.equal(r.signed, true);
 });

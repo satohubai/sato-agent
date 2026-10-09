@@ -64,6 +64,7 @@ let origin;
 const rpcCalls = [];
 let rpcHook = () => {}; // called with each method before it is answered
 let rpcFail = null; // method name to answer with an error
+let rpcHang = null; // method name never to answer
 let blockhashValid = true;
 const payments = []; // what the 402 server received
 let settle = true;
@@ -169,6 +170,7 @@ before(async () => {
       const { id, method, params } = JSON.parse(raw);
       rpcCalls.push(method);
       rpcHook(method);
+      if (rpcHang === method) return; // a node that never answers
       res.writeHead(200, { "content-type": "application/json" });
       if (rpcFail === method) return res.end(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32005, message: "mock node is unhealthy" } }));
       try {
@@ -217,12 +219,14 @@ before(async () => {
 });
 after(() => {
   server.close();
+  rpcServer.closeAllConnections?.();
   rpcServer.close();
 });
 
 const reset = () => {
   rpcHook = () => {};
   rpcFail = null;
+  rpcHang = null;
   blockhashValid = true;
   settle = true;
   nextOffer = null;
@@ -449,6 +453,30 @@ test("a node that cannot confirm the blockhash after signing: not sent, stays co
   await assert.rejects(pay(`${origin}/a`, { chain: "solana" }), (e) => e instanceof Pending);
   assert.equal(payments.length, n);
   assert.equal(spent(), before + 0.01);
+  reset();
+});
+
+test("a node that never answers the blockhash check after signing: ends as Pending (not sent, counted), never hangs", async () => {
+  rpcHang = "getBlockHeight";
+  const n = payments.length;
+  const before = spent();
+  const t0 = Date.now();
+  await assert.rejects(pay(`${origin}/a`, { chain: "solana", rpcTimeoutMs: 300 }), (e) => e instanceof Pending && e.details.sent === false && /timed out/.test(e.message));
+  assert.ok(Date.now() - t0 < 10_000, "bounded");
+  assert.equal(payments.length, n, "nothing sent");
+  assert.equal(spent(), before + 0.01, "signed: stays counted");
+  assert.equal(rows().at(-1).status, "signed_not_sent");
+  reset();
+});
+
+test("a node that never answers while the transaction is built: aborts before anything is signed, released, never hangs", async () => {
+  rpcHang = "getLatestBlockhash";
+  const n = payments.length;
+  const before = spent();
+  await assert.rejects(pay(`${origin}/a`, { chain: "solana", rpcTimeoutMs: 300 }), (e) => !(e instanceof Pending) && /timed out/.test(e.message));
+  assert.equal(payments.length, n);
+  assert.equal(spent(), before, "nothing signed: released");
+  assert.equal(rows().at(-1).status, "failed");
   reset();
 });
 

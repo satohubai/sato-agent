@@ -34,6 +34,7 @@ import { ExactSvmScheme, SOLANA_MAINNET_CAIP2 } from "@x402/svm";
 import { ExactSvmSchemeV1 } from "@x402/svm/v1";
 import { rpc as defaultRpc, USDC_MINT } from "./solana.js";
 import { solanaSecret } from "./wallet.js";
+import { clean } from "./text.js";
 
 export const SOLANA_NETWORK = SOLANA_MAINNET_CAIP2; // solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp
 export { USDC_MINT };
@@ -67,13 +68,39 @@ export async function solanaSigner(secret = solanaSecret()) {
   return createKeyPairSignerFromBytes(secret);
 }
 
-export function solanaScheme(signer, { rpcUrl = process.env.SATO_AGENT_SOLANA_RPC || undefined } = {}) {
-  return new ExactSvmScheme(signer, rpcUrl ? { rpcUrl } : undefined);
+/** How long one Solana RPC step may take before the payment is given up. */
+export const RPC_TIMEOUT_MS = 20_000;
+
+/** `p`, or a rejection after `ms`. The timer never keeps the process alive. */
+export function withTimeout(p, ms = RPC_TIMEOUT_MS, what = "Solana RPC") {
+  let timer;
+  const t = new Promise((_, rej) => {
+    timer = setTimeout(() => rej(new Error(`${what} timed out after ${ms} ms`)), ms);
+    timer.unref?.();
+  });
+  return Promise.race([p, t]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * The x402 scheme builds the transaction with its own RPC (mint lookup,
+ * blockhash), which this kit cannot hand a timeout to. So the whole build is
+ * bounded: a hung RPC aborts the payment before anything is signed and sent.
+ */
+export function bounded(inner, ms = RPC_TIMEOUT_MS) {
+  return {
+    scheme: inner.scheme,
+    findDefaultAsset: inner.findDefaultAsset?.bind(inner),
+    createPaymentPayload: (...args) => withTimeout(inner.createPaymentPayload(...args), ms, "building the Solana payment (RPC)"),
+  };
+}
+
+export function solanaScheme(signer, { rpcUrl = process.env.SATO_AGENT_SOLANA_RPC || undefined, timeoutMs = RPC_TIMEOUT_MS } = {}) {
+  return bounded(new ExactSvmScheme(signer, rpcUrl ? { rpcUrl } : undefined), timeoutMs);
 }
 
 /** The same, for x402 v1 servers (network "solana", amount in `maxAmountRequired`). */
-export function solanaSchemeV1(signer, { rpcUrl = process.env.SATO_AGENT_SOLANA_RPC || undefined } = {}) {
-  return new ExactSvmSchemeV1(signer, rpcUrl ? { rpcUrl } : undefined);
+export function solanaSchemeV1(signer, { rpcUrl = process.env.SATO_AGENT_SOLANA_RPC || undefined, timeoutMs = RPC_TIMEOUT_MS } = {}) {
+  return bounded(new ExactSvmSchemeV1(signer, rpcUrl ? { rpcUrl } : undefined), timeoutMs);
 }
 
 const u64le =(bytes, at) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).readBigUInt64LE(at);
@@ -166,11 +193,12 @@ export async function inspectSignedTransaction(transactionB64, { req, owner, uni
  * Ask the RPC whether the signed blockhash is still valid, and bound its life.
  * Returns problems (empty = fine) and adds the block-height ceiling to `info`.
  */
-export async function checkLifetime(info, req, r = defaultRpc()) {
+export async function checkLifetime(info, req, r = defaultRpc(), { timeoutMs = RPC_TIMEOUT_MS } = {}) {
   const problems = [];
+  // Bounded: a hung RPC throws here, which the caller turns into "signed, not sent, stays counted".
   const [valid, height] = await Promise.all([
-    r.isBlockhashValid(info.blockhash, { commitment: "confirmed" }).send(),
-    r.getBlockHeight({ commitment: "confirmed" }).send(),
+    withTimeout(r.isBlockhashValid(info.blockhash, { commitment: "confirmed" }).send(), timeoutMs, "isBlockhashValid"),
+    withTimeout(r.getBlockHeight({ commitment: "confirmed" }).send(), timeoutMs, "getBlockHeight"),
   ]);
   const now = Number(height);
   const ceiling = now + MAX_BLOCKHASH_LIFETIME_BLOCKS;
@@ -178,7 +206,7 @@ export async function checkLifetime(info, req, r = defaultRpc()) {
   const claimed = req.extra?.lastValidBlockHeight;
   if (claimed !== undefined && claimed !== null) {
     const n = Number(claimed);
-    if (!Number.isSafeInteger(n) || n > ceiling) problems.push(`the server claims the transaction stays valid until block ${claimed}; the network allows at most ${ceiling}`);
+    if (!Number.isSafeInteger(n) || n > ceiling) problems.push(`the server claims the transaction stays valid until block ${clean(claimed, 40)}; the network allows at most ${ceiling}`);
     else info.last_valid_block_height = n;
   }
   info.last_valid_block_height ??= ceiling; // the latest block the network could accept it in

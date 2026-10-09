@@ -244,6 +244,15 @@ test("status rounds money and lists one row per spend", async () => {
   assert.equal(rows.find((e) => e.id === a.id).status, "confirmed");
 });
 
+test("status prints ledger fields cleaned: no control or bidi characters from a server reach the terminal", async () => {
+  const a = record({ status: "submitted", kind: "x402", chain: "base", usd: 0.01, to: "0xEVIL\u001b[2J‮", url: "http://x" });
+  record({ id: a.id, status: "signed_unsettled\nFAKE LINE", tx: "0x\u001b]0;pwned\u0007" });
+  const s = await run(["status"]);
+  assert.equal(s.code, 0);
+  assert.doesNotMatch(s.stdout, /[\u001b\u0007‮]/);
+  assert.doesNotMatch(s.stdout, /\nFAKE LINE/);
+});
+
 test("the ERC-8004 card does not claim x402 acceptance unless asked, and declares services", () => {
   const card = (u) => JSON.parse(Buffer.from(u.split(",")[1], "base64").toString());
   assert.equal(card(registrationUri({ name: "a", description: "b" })).x402Support, false);

@@ -1,7 +1,10 @@
+import { clean } from "./text.js";
+
 /** A spend the limits did not allow. Nothing was signed. CLI exit code 3. */
 export class Refused extends Error {
   constructor(refusals) {
-    super(refusals.map((r) => `REFUSED ${r.rule}: ${r.message}`).join("\n"));
+    // One line per refusal; a message can quote what a server sent.
+    super(refusals.map((r) => `REFUSED ${clean(r.rule, 60)}: ${clean(r.message, 500)}`).join("\n"));
     this.refusals = refusals;
   }
 }

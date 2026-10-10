@@ -29,6 +29,8 @@ Ask the owner for a NAME (for example `base` or `solana`) and a CHAIN (`base` or
 
 **Commands:** `balance`, `token`, `swap`, `buy`, `giftcard`, `order`, `orders`, `checkout`, `settings`, `send`, `pay`, `register`, `check`, `recommend`, `status`, `history`, `proof`.
 
+**Swap fee (Sato Hub):** 0.03% stablecoin pairs, 0.15% ETH/SOL with USDC, 0.75% any other token. Always shown before the trade, never taken in the token you buy; a buy-then-sell round trip pays it twice. The kit refuses an ETH/SOL-with-USDC fee above 0.15% and any fee above 1%.
+
 **Purchases:** show the owner the price card first; they ask the owner unless the owner chose `--purchases auto`. Never suggest what to buy. A gift card code is shown only to the owner, once. The shipping address stays in `settings` and is never repeated elsewhere.
 
 **Exit codes:**

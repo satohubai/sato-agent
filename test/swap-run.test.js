@@ -831,7 +831,8 @@ test("what is shown to the owner names the slippage, the token read from the cha
   assert.match(text, /Value gap: the route values what you give at \$20 and what you get at \$19\.7, 1\.5% apart/);
   assert.match(text, /Price impact: Jupiter estimates 9% across 2 hops/);
   assert.match(text, /Held to your limits as \$19\.73 \(from the USDC the quote returns for the token\)/);
-  assert.match(text, /Sato Hub fee: 15 bps, taken in SOL|Sato Hub fee: 15 bps, taken in USDC/);
+  // The fee as a percent first, then in bps (and the tier where the plan knows it), and never in the token.
+  assert.match(text, /Sato Hub fee: 0\.15% \(15 bps(, a token trade)?\), taken in (SOL|USDC), never in the token/);
   assert.doesNotMatch(text, /\b(safe|secure|trusted|guaranteed?|verified|audited)\b/i);
 });
 

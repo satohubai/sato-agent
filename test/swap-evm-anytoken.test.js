@@ -433,7 +433,9 @@ test("a sale: every fee field is held to the disclosure (receivers, rates, bps f
   // IN_BPS cleared: 15 would be read as 15 base units of USDC, not 0.15%
   assert.deepEqual(await rules(verifyLT("degen-to-usdc", { ...side, edit: tamper((d) => (d.flags = d.flags & ~FLAGS.FEE_IN_BPS)) })), ["fee_not_as_disclosed"]);
   // the disclosure itself: a rate over the ceiling, a recipient that is not Sato's
-  assert.deepEqual(await rules(verifyLT("degen-to-usdc", { ...side, edit: (r) => (r.sato_fee_bps = 100) })), ["fee_over_ceiling", "fee_not_as_disclosed"]);
+  // (a token pair may cost up to 1%: 100 bps is within the ceiling, and still refused because the transaction takes 15)
+  assert.deepEqual(await rules(verifyLT("degen-to-usdc", { ...side, edit: (r) => (r.sato_fee_bps = 100) })), ["fee_not_as_disclosed"]);
+  assert.deepEqual(await rules(verifyLT("degen-to-usdc", { ...side, edit: (r) => (r.sato_fee_bps = 101) })), ["fee_over_ceiling", "fee_not_as_disclosed"]);
   assert.deepEqual(await rules(verifyLT("degen-to-usdc", { ...side, edit: (r) => (r.sato_fee_recipient = STRANGER) })), ["fee_recipient_not_pinned"]);
   // a partial fill weakens the minimum even with the right fee
   assert.deepEqual(await rules(verifyLT("degen-to-usdc", { ...side, edit: tamper((d) => (d.flags = d.flags | FLAGS.PARTIAL_FILL)) })), ["min_out_not_enforced"]);
@@ -442,6 +444,29 @@ test("a sale: every fee field is held to the disclosure (receivers, rates, bps f
   assert.deepEqual(await rules(verifyLT("degen-to-usdc", { ...side, edit: tamper((d) => (d.dstToken = TOKENS.WETH.address)) })), ["calldata_mismatch"]);
   assert.deepEqual(await rules(verifyLT("degen-to-usdc", { ...side, edit: tamper((d) => (d.amount = d.amount + 1n)) })), ["calldata_mismatch"]);
   assert.deepEqual(await rules(verifyLT("degen-to-usdc", { ...side, edit: tamper((d) => (d.srcToken = USDC)) })), ["calldata_mismatch"]);
+});
+
+test("tiered fee (rc.3): a token pair may cost 0.75% (and up to 1%); 101 bps is refused; a disclosed tier must match; the fee stays off the token", async () => {
+  // Disclose `bps` AND write the same rate into the router call, so only the tier rules decide.
+  const at = (bps, tier) => (r) => {
+    tamper((d) => (d.feeAmounts = d.feeAmounts.map(() => BigInt(bps))))(r);
+    r.sato_fee_bps = bps;
+    if (tier !== undefined) r.sato_fee_tier = tier;
+  };
+  for (const [name, feeSide] of [["degen-to-usdc", "out"], ["usdc-to-degen", "in"]]) {
+    const { plan } = await verifyLT(name, { feeSide, edit: at(75, "token") });
+    assert.equal(plan.fee.bps, 75, name);
+    assert.equal(plan.fee.tier, "token", name);
+    const s = evm.summarizeBaseSwapPlan(plan);
+    assert.equal(s.sato_fee.percent, "0.75%");
+    assert.equal(s.sato_fee.asset, "USDC", "taken in USDC, never in DEGEN");
+    await verifyLT(name, { feeSide, edit: at(75) }); // no tier disclosed: the kit's own reading (token) applies
+    await verifyLT(name, { feeSide, edit: at(100, "token") });
+    assert.deepEqual(await rules(verifyLT(name, { feeSide, edit: at(101, "token") })), ["fee_over_ceiling"], name);
+    assert.deepEqual(await rules(verifyLT(name, { feeSide, edit: at(75, "major") })), ["fee_tier_mismatch"], name);
+  }
+  // The fee side rule is unchanged at 75 bps: a disclosure that puts it on the DEGEN side is still refused.
+  assert.ok((await rules(verifyLT("degen-to-usdc", { feeSide: "out", edit: (r) => (at(75, "token")(r), (r.sato_fee_side = "in")) }))).includes("fee_side_not_major"));
 });
 
 test("a buy: every fee field is held to the disclosure too", async () => {

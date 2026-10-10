@@ -257,7 +257,9 @@ test("refuses without a pinned, readable fee disclosure", async () => {
   assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.sato_fee_recipient = null) })), ["fee_disclosure_missing"]);
   assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.sato_fee_recipient = "0x000000000000000000000000000000000000dEaD") })), ["fee_recipient_not_pinned"]);
   // (the transaction still takes 15 bps, so it also differs from the disclosed rate)
-  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.sato_fee_bps = 100) })), ["fee_over_ceiling", "fee_not_as_disclosed"]);
+  // USDC <-> ETH is a major pair: above 0.15% is refused; above 1% is refused on any pair.
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.sato_fee_bps = 100) })), ["fee_over_major_ceiling", "fee_not_as_disclosed"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.sato_fee_bps = 101) })), ["fee_over_ceiling", "fee_not_as_disclosed"]);
   assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.sato_fee_bps = 7.5) })), ["fee_disclosure_missing"]);
 });
 
@@ -886,6 +888,25 @@ test("two swaps started together do not interleave: approve, swap, then the next
   assert.notEqual(kinds[1], kinds[3], "each swap ran once");
   // every read of the first swap came before any read of the second
   assert.equal(order.filter((x, i) => x !== order[i - 1]).length, 2, `the swaps never alternate: ${order.join("")}`);
+});
+
+test("tiered fee (rc.3): USDC <-> ETH is a major pair held to 0.15%, even when the transaction matches a higher disclosure; a disclosed tier must match", async () => {
+  // Disclose `bps` AND write the same rate into the router call, so only the tier rules can refuse it.
+  const at = (bps, tier) => (r) => {
+    tamper((d) => (d.feeAmounts = d.feeAmounts.map(() => BigInt(bps))))(r);
+    r.sato_fee_bps = bps;
+    if (tier !== undefined) r.sato_fee_tier = tier;
+  };
+  const { plan } = await verifyCase("usdc-to-eth", { edit: at(15, "major") });
+  assert.equal(plan.fee.bps, 15);
+  assert.equal(plan.fee.tier, "major");
+  assert.equal(evm.summarizeBaseSwapPlan(plan).sato_fee.percent, "0.15%");
+  assert.equal(evm.tierOf(parseIntent({ from: "USDC", to: "ETH", amount: "1", slippageBps: 50 })), "major");
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: at(75) })), ["fee_over_major_ceiling"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: at(16, "major") })), ["fee_over_major_ceiling"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: at(15, "token") })), ["fee_tier_mismatch"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: at(15, "stable") })), ["fee_tier_mismatch"]);
+  assert.equal(evm.MAX_SATO_FEE_BPS, 100);
 });
 
 test("fixtures are the recorded ones", () => {

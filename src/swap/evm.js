@@ -63,6 +63,7 @@ import { withLock } from "../store.js";
 import { callTool as satoCallTool } from "../satohub.js";
 import { unitsToUsd } from "../amount.js";
 import { USER_AGENT } from "../version.js";
+import { FEE_CEILING_BPS, feePercent, feeTierRefusals, pairTier } from "./fee-tier.js";
 
 // ---------------------------------------------------------------- pinned values
 
@@ -73,8 +74,13 @@ export const NATIVE_PLACEHOLDER = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
 export const KYBER_ROUTER_BASE = "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5";
 /** Where Sato Hub's swap fee goes (inside the venue call; there is no wrapper contract). */
 export const SATO_FEE_RECIPIENT = "0xcEE53Eb001d4d1743EF9df333Dcf45bC38622bE9";
-/** Sato Hub's published schedule is 3 bps (stable pairs) and 15 bps (anything volatile). Higher is refused until a kit release says otherwise. */
-export const MAX_SATO_FEE_BPS = 15;
+/**
+ * The most Sato Hub's fee may ever be, on any pair: 1% (src/swap/fee-tier.js). A stable or major pair is held to 0.15%;
+ * only a trade with a long-tail token may cost more. Sato Hub sets its rate within that without a kit release.
+ */
+export const MAX_SATO_FEE_BPS = FEE_CEILING_BPS;
+/** The kit's own fee tier for a swap intent: "stable", "major" or "token". */
+export const tierOf = (intent) => pairTier(intent.tokenIn.major ? intent.tokenIn.symbol : null, intent.tokenOut.major ? intent.tokenOut.symbol : null);
 export const BASE_CHAIN_ID = 8453;
 export const VENUE = "kyberswap";
 
@@ -535,7 +541,9 @@ function staticChecks(response, intent) {
     out.push(refusal("fee_disclosure_missing", "the response does not state the Sato Hub fee (rate, recipient and sentence)"));
   } else {
     if (!same(response.sato_fee_recipient, SATO_FEE_RECIPIENT)) out.push(refusal("fee_recipient_not_pinned", "the fee goes to an address this kit does not know", SATO_FEE_RECIPIENT, response.sato_fee_recipient));
-    if (feeBps > MAX_SATO_FEE_BPS) out.push(refusal("fee_over_ceiling", `the fee rate is above the ${MAX_SATO_FEE_BPS} bps this kit release accepts`, MAX_SATO_FEE_BPS, feeBps));
+    // The tiered ceilings (src/swap/fee-tier.js): at most 1% on any pair, at most 0.15% unless a long-tail token is traded,
+    // and a disclosed tier must match the kit's own reading of the pair.
+    out.push(...feeTierRefusals({ bps: feeBps, tier: tierOf(intent), disclosedTier: response.sato_fee_tier }));
   }
 
   // (f2) which side the fee is taken on. Sato Hub discloses it (`sato_fee_side`); an answer that does not is read as the
@@ -1229,7 +1237,7 @@ export async function verifyBaseSwapPlan(response, intent, deps = {}) {
     router: getAddress(tx.to),
     tx: { to: getAddress(tx.to), data: tx.data, value: facts.value, gas_hint: uintOf(tx.gas) },
     approval: { needed: approvalNeeded, token: intent.tokenIn.native ? null : intent.tokenIn.address, spender: KYBER_ROUTER_BASE, amount: intent.amountIn, allowance_before: allowance },
-    fee: { bps: response.sato_fee_bps, recipient: getAddress(response.sato_fee_recipient), disclosure: response.disclosure, side: facts.feeSide, side_disclosed: facts.feeSideDisclosed, seen_in_simulation: sim.fee_seen },
+    fee: { bps: response.sato_fee_bps, tier: tierOf(intent), recipient: getAddress(response.sato_fee_recipient), disclosure: response.disclosure, side: facts.feeSide, side_disclosed: facts.feeSideDisclosed, seen_in_simulation: sim.fee_seen },
     /** Which side is the long-tail token: "in" (selling it), "out" (buying it) or null (USDC <-> ETH/WETH). */
     long_tail: intent.longTail,
     major_leg: majorLeg,
@@ -1278,7 +1286,7 @@ export function summarizeBaseSwapPlan(plan) {
     router: plan.router,
     approval: plan.approval.needed ? { token: plan.from, address: plan.approval.token, spender: plan.approval.spender, amount: d(plan.approval.amount, plan.token_in), exact: true } : null,
     // `side`: where the fee is taken, "in" (from what is sold) or "out" (from what is received). Always the USDC / ETH side.
-    sato_fee: { bps: plan.fee.bps, recipient: plan.fee.recipient, disclosure: plan.fee.disclosure, side: plan.fee.side ?? "in", asset: (plan.fee.side ?? "in") === "out" ? plan.to : plan.from },
+    sato_fee: { bps: plan.fee.bps, tier: plan.fee.tier ?? null, percent: feePercent(plan.fee.bps), recipient: plan.fee.recipient, disclosure: plan.fee.disclosure, side: plan.fee.side ?? "in", asset: (plan.fee.side ?? "in") === "out" ? plan.to : plan.from },
     long_tail: plan.long_tail ? { side: plan.long_tail, role: plan.long_tail === "out" ? "buying" : "selling", asset: plan.long_tail === "out" ? plan.to : plan.from, address: (plan.long_tail === "out" ? plan.token_out : plan.token_in).address } : null,
     market: plan.market ?? null,
     sell_back: plan.sell_back

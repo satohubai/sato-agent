@@ -47,8 +47,11 @@ import { clients as baseClients } from "../base.js";
 import * as evm from "./evm.js";
 import * as sol from "./solana.js";
 import { rpc as solanaRpc } from "../solana.js";
+import { FEE_CEILING_BPS, MAJOR_FEE_CEILING_BPS, feePercent, feeText, feeTierRefusals, pairTier } from "./fee-tier.js";
 
 const refuse = (rule, message, limit = null, observed = null) => new Refused([{ rule, limit, observed, message }]);
+/** The kit's own fee tier for a sized swap: from which side is a major (its symbol) and which a long-tail token. */
+const tierOfSized = (sized) => pairTier(sized.fromAsset.kind === "major" ? sized.from : null, sized.toAsset.kind === "major" ? sized.to : null);
 const DISCLOSURE_MAX_AGE_MS = 120_000;
 
 /** When a trade stops for the owner's approval even in auto mode. Whole basis points, except the Base value gap (percent). */
@@ -461,6 +464,10 @@ async function satoSolanaDisclosure(sized, deps) {
   if (mismatch.length) throw refuse("response_mismatch", `Sato Hub's signed quote is about a different swap (${mismatch.join(", ")} differ); nothing was signed`);
   if (body.venue !== "jupiter-aggregator" && body.venue !== "jupiter") throw refuse("venue_unexpected", `Sato Hub chose ${body.venue ?? "no venue"}; this kit swaps on Solana through Jupiter only`);
   if (!Number.isInteger(body.sato_fee_bps)) throw refuse("fee_disclosure_missing", "Sato Hub's quote does not state its fee");
+  // The tiered ceilings (src/swap/fee-tier.js), with the kit's own reading of the pair: 1% at most on any pair, 0.15% unless
+  // a long-tail token is traded, and a disclosed tier that disagrees is refused.
+  const tierRefusals = feeTierRefusals({ bps: body.sato_fee_bps, tier: tierOfSized(sized), disclosedTier: body.sato_fee_tier });
+  if (tierRefusals.length) throw new Refused(tierRefusals);
   // Where the fee is taken: the major side, never the token. A Sato Hub that says otherwise is not followed; one that is silent is
   // read as the side the kit pins (the kit's own fee accounts are USDC and wrapped SOL only, so the fee can land nowhere else).
   const wantSide = sized.fromAsset.kind === "major" ? "in" : "out";
@@ -471,7 +478,7 @@ async function satoSolanaDisclosure(sized, deps) {
   if (typeof body.sato_fee_token === "string" && body.sato_fee_token !== majorAsset.id && body.sato_fee_token.toUpperCase() !== majorAsset.symbol) {
     throw refuse("fee_side_mismatch", `Sato Hub's signed quote takes its fee in ${clean(body.sato_fee_token, 60)}; the kit only accepts it in ${majorAsset.symbol}; nothing was signed`);
   }
-  return { feeBps: body.sato_fee_bps, disclosure: body.disclosure ?? null, route_id: body.route_id ?? null, receipt_url: body.receipt_url ?? null, side: body.sato_fee_side ?? null };
+  return { feeBps: body.sato_fee_bps, tier: tierOfSized(sized), disclosure: body.disclosure ?? null, route_id: body.route_id ?? null, receipt_url: body.receipt_url ?? null, side: body.sato_fee_side ?? null };
 }
 
 // ---------------------------------------------------------------- prepare
@@ -492,6 +499,10 @@ export function swapIntent(sized, reasonCodes = [], { skipCheck = false } = {}) 
       ? "no independent price exists for the token: its USD size comes from the quote, is held to your limits before anything is signed, and the minimum out is set by the slippage"
       : "the quote must sit within the oracle tolerance; the minimum out is set by the slippage",
     skip_check: Boolean(skipCheck),
+    // The fee tier the kit reads for this pair (stable / major / token), with the most Sato Hub may charge on it. The exact
+    // rate comes with the quote, after this approval; it is held to this ceiling and to the transaction (src/swap/fee-tier.js).
+    fee_tier: tierOfSized(sized),
+    fee_max_bps: tierOfSized(sized) === "token" ? FEE_CEILING_BPS : MAJOR_FEE_CEILING_BPS,
   };
 }
 
@@ -570,7 +581,7 @@ async function prepareSolana(sized, deps) {
   const fee = await satoSolanaDisclosure(sized, deps);
   const planOnce = () => (deps.planSolanaSwap ?? sol.planSolanaSwap)({ from: sized.fromAsset.arg, to: sized.toAsset.arg, amount: sized.amount, slippageBps: sized.slippageBps }, { satoFeeBps: fee.feeBps, ...(deps.solDeps ?? {}) });
   // The bound the transaction is held to: the owner's slippage and the fee Sato Hub disclosed, never the plan's own values.
-  const intentFor = (p) => ({ agent: p.agent, from: p.from, to: p.to, amount_in: p.amount_in, slippage_bps: sized.slippageBps, fee_bps: fee.feeBps });
+  const intentFor = (p) => ({ agent: p.agent, from: p.from, to: p.to, amount_in: p.amount_in, slippage_bps: sized.slippageBps, fee_bps: fee.feeBps, fee_tier: fee.tier });
   let plan = await planOnce();
   const verification = await (deps.verifySolanaSwapPlan ?? sol.verifySolanaSwapPlan)(plan, intentFor(plan), deps.solDeps ?? {});
   const outDecimals = solDecimals(plan, "out", sized);
@@ -604,7 +615,7 @@ async function prepareSolana(sized, deps) {
     slippage: sized.slippage,
     usd_held_to_limits: held,
     usd_basis: basis,
-    sato_fee: { bps: fee.feeBps, disclosure: fee.disclosure, route_id: fee.route_id, receipt_url: fee.receipt_url, side: fee.side ?? (plan.fee?.leg === "output" ? "out" : "in"), asset: plan.fee?.symbol ?? null },
+    sato_fee: { bps: fee.feeBps, tier: fee.tier, percent: feePercent(fee.feeBps), disclosure: fee.disclosure, route_id: fee.route_id, receipt_url: fee.receipt_url, side: fee.side ?? (plan.fee?.leg === "output" ? "out" : "in"), asset: plan.fee?.symbol ?? null },
     disclosure: plan.disclosure,
     simulation: verification.simulated,
     oracle: oracleDisplay(sized, deviation),
@@ -756,7 +767,7 @@ export function swapLines(d) {
   if (d.sell_back) lines.push(`Sell-back test (simulated only, nothing sent): buying and selling straight back returns ${d.sell_back.returned} ${d.sell_back.asset} for ${d.sell_back.asset === d.sell.asset ? d.sell.amount : "the amount sold"}, a loss of ${d.sell_back.loss_bps / 100}% (the kit allows up to ${d.sell_back.allowed_loss_bps / 100}%).`);
   const basis = { usdc_amount: "the USDC amount", oracle: "the Chainlink price of what you sell", usdc_received: "the USDC the quote returns for the token", oracle_on_received: "the Chainlink price of the ETH or SOL the quote returns" }[d.usd_basis];
   lines.push(`Held to your limits as $${d.usd_held_to_limits}${basis ? ` (from ${basis})` : ""}.`);
-  lines.push(`Sato Hub fee: ${d.sato_fee.bps} bps${d.sato_fee.asset ? `, taken in ${d.sato_fee.asset}` : ""}. ${d.sato_fee.disclosure ?? ""}`.trim());
+  lines.push(`Sato Hub fee: ${feeText(d.sato_fee.bps, d.sato_fee.tier)}${d.sato_fee.asset ? `, taken in ${d.sato_fee.asset}` : ""}, never in the token. ${d.sato_fee.disclosure ?? ""}`.trim());
   if (d.approval) lines.push(`Approval first: exactly ${d.approval.amount} ${d.approval.token} to the pinned router ${d.approval.spender} (never unlimited).`);
   if (Array.isArray(d.disclosure)) lines.push(...d.disclosure);
   for (const n of d.notes ?? []) lines.push(n);

@@ -51,6 +51,7 @@ import { usdcUnits } from "../amount.js";
 import { loadWallet, solanaSecret } from "../wallet.js";
 import { USER_AGENT } from "../version.js";
 import { TOKEN_2022_PROGRAM, USDC_MINT, explorer, rpc as defaultRpc } from "../solana.js";
+import { FEE_CEILING_BPS, feeTierRefusals, pairTier } from "./fee-tier.js";
 
 /** Same 20 s guard as ../solana.js, but the timer is cleared once the call settles (a swap makes many calls). */
 const withTimeout = (p, ms = 20_000) =>
@@ -86,11 +87,10 @@ export const SATO_FEE_ACCOUNTS = Object.freeze({
   [WSOL_MINT]: "HnyyFHhp3LQ6VfRn1AhPHSwboYYQa1HT7REaMfzsA8gx",
 });
 /**
- * The kit refuses a platform fee above this, whatever a response says. Sato's
- * published same-chain rate is 3 bps stable-to-stable and 15 bps with a volatile
- * leg (USDC <-> SOL is volatile); 25 bps is cross-chain only. Same ceiling as Base.
+ * The kit refuses a platform fee above this on any pair, whatever a response says: 1% (src/swap/fee-tier.js, the same
+ * ceiling as Base). USDC <-> SOL is a major pair and is held to 0.15%; only a trade with a long-tail token may cost more.
  */
-export const FEE_BPS_MAX = 15;
+export const FEE_BPS_MAX = FEE_CEILING_BPS;
 
 export const JUPITER_PROGRAM = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
 const SYSTEM_PROGRAM = "11111111111111111111111111111111";
@@ -759,6 +759,9 @@ export async function planSolanaSwap({ from, to, amount, slippageBps }, deps = {
   if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > FEE_BPS_MAX) {
     throw new Error(`satoFeeBps is required (from Sato Hub's quote; 0 for none) and must be a whole number from 0 to ${FEE_BPS_MAX}`);
   }
+  // A USDC <-> SOL pair is held to the major ceiling before anything is built.
+  const tierRefusals = feeTierRefusals({ bps: feeBps, tier: pairTier(a.major, b.major), prefix: "solana_swap." });
+  if (tierRefusals.length) throw new Refused(tierRefusals);
   // The fee account is pinned per mint of the fee side (USDC or wSOL; never the long-tail
   // token). A different one from the caller (or a response) is a kit release, not something to follow.
   const { side: feeSide, leg: feeLeg } = feeSideOf(a, b);
@@ -1384,6 +1387,8 @@ export async function verifySolanaSwapPlan(plan, intent, deps = {}) {
   const { side: feeSide, leg: feeLeg } = feeSideOf(want.from, want.to);
   const pinnedFee = SATO_FEE_ACCOUNTS[feeSide.mint]; // undefined when neither side is major (already refused above)
   if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > FEE_BPS_MAX) fail("solana_swap.fee_account", `the fee rate ${feeBps} bps is outside 0-${FEE_BPS_MAX}`);
+  // The tier ceilings: a USDC <-> SOL pair may not cost more than 0.15%; a disclosed tier must match the kit's reading.
+  else refusals.push(...feeTierRefusals({ bps: feeBps, tier: pairTier(want.from.major, want.to.major), disclosedTier: intent?.fee_tier, prefix: "solana_swap." }));
   if (feeBps > 0 && plan.fee.account !== pinnedFee) fail("solana_swap.fee_account", `the fee account ${plan.fee?.account} is not the pinned ${feeSide.symbol} referral account ${pinnedFee}`);
   if (feeBps > 0 && plan.fee.mint !== undefined && plan.fee.mint !== feeSide.mint) fail("solana_swap.fee_account", `the plan takes its fee in ${plan.fee.mint}; the fee is only ever taken in ${feeSide.symbol}`);
   if (feeBps > 0 && plan.fee.leg !== undefined && plan.fee.leg !== feeLeg) fail("solana_swap.fee_account", `the plan takes its fee from the ${plan.fee.leg}; for this swap it comes from the ${feeLeg}`);

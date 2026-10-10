@@ -100,7 +100,15 @@ export function raisesBetween(prev, next) {
  * not at setup). `--swaps off` turns them off. The slippage and trades-per-24h caps are
  * optional, and enforced when set.
  */
-export const swapsEnabled = (p) => Boolean(p) && p.swaps_off !== true;
+export const swapsEnabled = (p) => Boolean(p) && p.swaps_off !== true && !isLegacySwapsOff(p);
+
+/**
+ * A policy written before v0.3 that had swaps OFF. v0.2's "off" deleted the caps and left no marker, and v0.2 only
+ * turned swaps on by setting a slippage cap, so a policy with neither a `swaps_off` key nor a slippage cap is one the
+ * owner never turned swaps on for. It stays off until the owner runs `policy set --swaps on` (which is then a raise).
+ * From v0.3 on, setPolicy always writes an explicit `swaps_off` boolean.
+ */
+export const isLegacySwapsOff = (p) => Boolean(p) && !Object.hasOwn(p, "swaps_off") && !Number.isInteger(p.max_slippage_bps);
 
 function parseBps(raw) {
   if (raw === undefined) return undefined;
@@ -154,8 +162,11 @@ export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, a
   const swapsChoice = parseChoice(swaps, ["on", "off"], "--swaps");
   const bps = parseBps(swapSlippageBps);
   const trades = parseTrades(maxTradesPerDay);
-  const off = swapsChoice === "off" || bps === "off" ? true : swapsChoice === "on" ? false : prev?.swaps_off === true;
-  if (off) next.swaps_off = true;
+  // Unchanged by a change to something else: a policy that had swaps off (explicitly, or a pre-v0.3 one that never had them on)
+  // keeps them off until `--swaps on`. A first policy has them on. The key is always written, so "off" is never implied by absence.
+  const before = prev ?? recorded;
+  const off = swapsChoice === "off" || bps === "off" ? true : swapsChoice === "on" ? false : before ? !swapsEnabled(before) : false;
+  next.swaps_off = off;
   const nextBps = bps === "off" ? undefined : bps !== undefined ? bps : prev?.max_slippage_bps;
   const nextTrades = trades !== undefined ? trades : prev?.max_trades_per_day;
   if (Number.isInteger(nextBps)) next.max_slippage_bps = nextBps;

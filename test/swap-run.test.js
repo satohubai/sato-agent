@@ -253,7 +253,8 @@ const baseResolver = async (input) => {
   throw new Error(`"${s}" is not USDC, ETH, WETH or a token's 0x contract address on Base`);
 };
 /** A verified Base plan for a token trade, as evm.planAndVerifyBaseSwap returns it (the fields summarize / execute read). */
-function baseTokenPlan({ side, major = "USDC", majorUnits, tokenUnits, usd, market = null, sellBack = null, slip = 150 }) {
+const calmMarket = { price_impact_pct: null, amount_in_usd: 20, amount_out_usd: 19.9, value_gap_pct: 0.5, source: "Sato Hub's answer (the KyberSwap route summary)" };
+function baseTokenPlan({ side, major = "USDC", majorUnits, tokenUnits, usd, market = calmMarket, sellBack = null, slip = 150 }) {
   const buy = side === "buy";
   const m = evm.TOKENS[major];
   const tin = buy ? m : degenToken;
@@ -262,7 +263,7 @@ function baseTokenPlan({ side, major = "USDC", majorUnits, tokenUnits, usd, mark
   const quoted = buy ? tokenUnits : majorUnits;
   return {
     verified: true, venue: "kyberswap", route_id: "rt_t", receipt_url: null,
-    from: tin.symbol, to: tout.symbol, token_in: tin, token_out: tout,
+    from: tin.major ? tin.symbol : `${tin.symbol} 0x4ed4…efed`, to: tout.major ? tout.symbol : `${tout.symbol} 0x4ed4…efed`, token_in: tin, token_out: tout,
     amount_in: amountIn, quoted_out: quoted, min_out: (quoted * BigInt(10_000 - slip)) / 10_000n, slippage_bps: slip, usd,
     router: evm.KYBER_ROUTER_BASE, approval: { needed: false },
     fee: { bps: 15, recipient: evm.SATO_FEE_RECIPIENT, disclosure: "fee sentence", side: buy ? "in" : "out" },
@@ -278,6 +279,7 @@ function baseRig(planOrFn, extra = {}) {
     executed,
     deps: {
       oraclePrice: eth(2500),
+      publicQuote: async () => null, // no venue is asked in a unit test (the pre-size has its own test)
       resolveBaseToken: baseResolver,
       planAndVerifyBaseSwap: async (args, d) => (calls.push({ args, d }), typeof planOrFn === "function" ? planOrFn() : planOrFn),
       executeBaseSwap: async (_p, d) => (executed.push(d), { tx: "0xabc", explorer: "https://basescan.org/tx/0xabc" }),
@@ -291,10 +293,14 @@ const buyPlan = (o = {}) => baseTokenPlan({ side: "buy", majorUnits: 20_000_000n
 const sellPlan = (o = {}) => baseTokenPlan({ side: "sell", majorUnits: 19_900_000n, tokenUnits: 5000n * 10n ** 18n, usd: 19.9, ...o });
 
 // ---- Solana rig
-function mintEntry({ program = TOKEN_PROGRAM_ADDRESS, decimals = 5, extensions = [] } = {}) {
+function mintEntry({ program = TOKEN_PROGRAM_ADDRESS, decimals = 5, extensions = [], freeze = false } = {}) {
   const head = Buffer.alloc(82);
   head[44] = decimals;
   head[45] = 1;
+  if (freeze) {
+    head.writeUInt32LE(1, 46); // a freeze authority is set
+    Buffer.alloc(32, 9).copy(head, 50);
+  }
   let raw = head;
   if (program === TOKEN_2022_PROGRAM && extensions.length) {
     const tlv = extensions.map(([type, data]) => {
@@ -308,6 +314,10 @@ function mintEntry({ program = TOKEN_PROGRAM_ADDRESS, decimals = 5, extensions =
   return { owner: program, data: [raw.toString("base64"), "base64"], lamports: 1, executable: false };
 }
 const EXT = {
+  ConfidentialTransferMint: [4, Buffer.alloc(65, 1)],
+  ConfidentialTransferFeeConfig: [16, Buffer.alloc(129, 1)],
+  ConfidentialMintBurn: [24, Buffer.alloc(196, 1)],
+  pausable: [26, Buffer.concat([Buffer.alloc(32, 3), Buffer.from([0])])],
   PermanentDelegate: [12, Buffer.alloc(32, 7)],
   TransferHook: [14, Buffer.alloc(64, 7)],
   NonTransferable: [9, Buffer.alloc(0)],
@@ -339,6 +349,7 @@ function solRig(planFn, { mints = { [BONK]: mintEntry() }, sato = {}, price = 11
     executed,
     deps: {
       oraclePrice: solPrice(price),
+      publicQuote: async () => null,
       solDeps: { rpc: rpcFor(mints) },
       callTool: async (_n, args) => (asked.push(args), { structured: satoFor(args.token_in, args.token_out, args.amount_in, sato) }),
       verifySignature: async () => ({ ok: true }),
@@ -546,8 +557,12 @@ test("each reason forces the owner's approval in auto mode (exit 5), says why, a
     await assert.rejects(runSwap(req, { approve: e.approval.code }, rig.deps), /approval .* (not found|already used)/, "a code works once");
     // ...and only for that exact swap
     const e2 = await needs(runSwap(req, {}, rig.deps));
-    await assert.rejects(runSwap({ ...req, slippageBps: 450 }, { approve: e2.approval.code }, rig.deps), /different intent/);
-    await assert.rejects(runSwap({ ...req, amount: "21" }, { approve: (await needs(runSwap(req, {}, rig.deps))).approval.code }, rig.deps), /different intent/);
+    // a code for another swap is not a way in: the owner is asked again, for the swap as it now is (a new code, nothing signed)
+    const other = await needs(runSwap({ ...req, slippageBps: 450 }, { approve: e2.approval.code }, rig.deps));
+    assert.ok(other && other.approval.code !== e2.approval.code && other.intent.slippage_bps === 450);
+    const other2 = await needs(runSwap({ ...req, amount: "21" }, { approve: (await needs(runSwap(req, {}, rig.deps))).approval.code }, rig.deps));
+    assert.equal(other2.intent.amount, "21");
+    assert.equal(rig.executed.length, 0);
   }
   // 2. Base value gap: only the quote shows it
   {
@@ -728,10 +743,10 @@ test("--amount all sells the whole balance of a token, read from the chain, and 
   // the approval binds the amount that was read
   assert.equal(swapIntent(s, []).amount, "2500000");
   assert.deepEqual(await rules(sizeSwap({ ...DEGEN_SELL, amount: "all" }, { ...baseRig(sellPlan()).deps, tokenBalance: bal(0n) })), ["no_balance"]);
-  await assert.rejects(sizeSwap({ ...DEGEN_SELL, amount: "all" }, { ...baseRig(sellPlan()).deps, tokenBalance: async () => { throw new Error("rpc down"); } }), /could not read the wallet's DEGEN balance \(rpc down\); give an amount instead/);
+  await assert.rejects(sizeSwap({ ...DEGEN_SELL, amount: "all" }, { ...baseRig(sellPlan()).deps, tokenBalance: async () => { throw new Error("rpc down"); } }), /could not read the wallet's DEGEN 0x4ed4…efed balance \(rpc down\); give an amount instead/);
   await assert.rejects(sizeSwap({ chain: "base", from: "USDC", to: DEGEN, amount: "all" }, baseRig(buyPlan()).deps), /--amount all sells the whole balance of a token/);
-  await assert.rejects(sizeSwap({ chain: "base", from: DEGEN, to: "USDC", amount: "1e3" }, baseRig(sellPlan()).deps), /not a DEGEN amount/);
-  await assert.rejects(sizeSwap({ chain: "base", from: DEGEN, to: "USDC", amount: "0" }, baseRig(sellPlan()).deps), /not a DEGEN amount/);
+  await assert.rejects(sizeSwap({ chain: "base", from: DEGEN, to: "USDC", amount: "1e3" }, baseRig(sellPlan()).deps), /not a DEGEN 0x4ed4…efed amount/);
+  await assert.rejects(sizeSwap({ chain: "base", from: DEGEN, to: "USDC", amount: "0" }, baseRig(sellPlan()).deps), /not a DEGEN 0x4ed4…efed amount/);
 });
 
 test("a link goes through Sato Hub's resolver and is then read again from the chain; the chain wins where they differ; no resolver, no link", async () => {
@@ -740,15 +755,32 @@ test("a link goes through Sato Hub's resolver and is then read again from the ch
   const rig = baseRig(buyPlan());
   const asked = [];
   const viaLink = await sizeSwap({ ...DEGEN_BUY, to: "https://dexscreener.com/base/0xabc" }, { ...rig.deps, resolveHub: async (i, o) => (asked.push([i, o]), hubFor()(i, o)) });
-  assert.deepEqual(asked, [["https://dexscreener.com/base/0xabc", { chain: "base" }]]);
+  // asked with the same signature window as the fee disclosure
+  assert.deepEqual(asked, [["https://dexscreener.com/base/0xabc", { chain: "base", verifySignature: undefined, maxAgeMs: 120_000 }]]);
   assert.equal(viaLink.toAsset.id, DEGEN);
-  assert.deepEqual(viaLink.notes, []);
+  const resolvedNote = `The link resolved to ${DEGEN} on Base (Sato Hub's signed answer); the chain was read for that address, not the link.`;
+  assert.deepEqual(viaLink.notes, [resolvedNote]);
+  assert.deepEqual(viaLink.resolvedFromLink, [{ symbol: "DEGEN 0x4ed4…efed", address: DEGEN, chain: "base" }]);
   // Sato Hub says 9 decimals; the chain says 18: the chain's number is used and the owner is told
   const wrong = await sizeSwap({ ...DEGEN_BUY, to: "dexscreener.com/base/0xabc" }, { ...rig.deps, resolveHub: hubFor({ decimals: 9 }) });
   assert.equal(wrong.toAsset.decimals, 18);
-  assert.deepEqual(wrong.notes, ["Sato Hub says 9 decimals; the chain says 18. The chain's value is used."]);
+  assert.deepEqual(wrong.notes, [resolvedNote, "Sato Hub says 9 decimals; the chain says 18. The chain's value is used."]);
   const shown = (await prepareSwap({ ...DEGEN_BUY, to: "https://dexscreener.com/base/0xabc" }, { ...rig.deps, resolveHub: hubFor({ decimals: 9 }) })).display;
   assert.match(swapLines(shown).join("\n"), /Sato Hub says 9 decimals; the chain says 18/);
+  assert.match(swapLines(shown).join("\n"), new RegExp(`The link resolved to ${DEGEN} on Base`), "the address the link became is shown (and so in a dry run)");
+  assert.deepEqual(shown.resolved_from_link.map((r) => r.address), [DEGEN]);
+  // an answer that cannot be shown to be signed by Sato Hub decides nothing: the owner sends the address
+  for (const signature of [{ ok: false, error: "missing_signature" }, undefined]) {
+    const unsigned = { ...rig.deps, resolveHub: async (i, o) => ({ ...(await hubFor()(i, o)), signature }) };
+    await assert.rejects(sizeSwap({ ...DEGEN_BUY, to: "https://dexscreener.com/base/0xabc" }, unsigned), (e) => e instanceof Refused && e.refusals[0].rule === "resolver_unsigned" && /send the contract address instead/.test(e.message));
+  }
+  // through the real resolver call: it verifies the answer the way the fee disclosure is verified (the injected verifier here)
+  const { resolveTokenViaHub } = await import("../src/satohub.js");
+  const call = async () => ({ structured: { chain: "base", address: DEGEN, decimals: 18, meta: { signature: null } }, isError: false });
+  assert.equal((await resolveTokenViaHub("x", { call, verifySignature: async () => ({ ok: true }), maxAgeMs: 120_000 })).signature.ok, true);
+  const seen = [];
+  const bad = await resolveTokenViaHub("x", { call, verifySignature: async (b, o) => (seen.push(o), Promise.reject(new Error("missing_signature"))), maxAgeMs: 120_000 });
+  assert.deepEqual([bad.ok, bad.signature.ok, seen[0].maxAgeMs], [true, false, 120_000]);
   // no answer: the exact sentence
   const down = { ...rig.deps, resolveHub: async () => ({ ok: false, reason: "unavailable", error: "Unknown tool" }) };
   await assert.rejects(sizeSwap({ ...DEGEN_BUY, to: "https://dexscreener.com/base/0xabc" }, down), /^Error: Sato Hub could not resolve this link right now; send the contract address instead$/);
@@ -810,4 +842,191 @@ test("evm: a token sale may be planned without a USD figure only when the caller
   let asked;
   await assert.rejects(evm.planAndVerifyBaseSwap({ from: "ETH", to: "USDC", amount: "0.01", slippageBps: 50 }, { taker: SENDER, usdFromQuote: true, callTool: async (_n, a) => ((asked = a), stop()) }), /stop here/);
   assert.equal("usd_notional" in asked, false, "no figure is sent to Sato Hub");
+});
+
+// ================================================================= review round 2
+
+test("Base market figures are read in Sato Hub's real shape (price_impact: reported_bps, usd_value_gap_bps), and drive the reasons", async () => {
+  owner();
+  // what Sato Hub's answer carries, read by the kit's own marketOf and handed to the orchestrator as a plan would have it
+  const answer = (pi) => ({ price_impact: { reported_bps: null, usd_value_gap_bps: null, amount_in_usd: null, amount_out_usd: null, source: "x", ...pi } });
+  const planWith = (response, o = {}) => buyPlan({ market: evm.marketOf(response), ...o });
+  const codes = async (plan, req = DEGEN_BUY) => (await prepareSwap(req, baseRig(plan).deps)).confirm.map((c) => c.code);
+  assert.deepEqual(await codes(planWith(answer({ usd_value_gap_bps: 650, amount_in_usd: 20, amount_out_usd: 18.7 }))), ["value_gap_over_3_pct_upto_7pct"], "Kyber: no reported impact, a 6.5% USD gap");
+  assert.deepEqual(await codes(planWith(answer({ usd_value_gap_bps: 300, amount_in_usd: 20, amount_out_usd: 19.4 }))), [], "exactly 3% is not above it");
+  assert.deepEqual(await codes(planWith(answer({ reported_bps: 450, usd_value_gap_bps: 100, amount_in_usd: 20, amount_out_usd: 19.8 }))), ["price_impact_over_300_bps_upto_5pct"], "a venue that reports an impact (Jupiter-style)");
+  assert.deepEqual(await codes(planWith(answer({ reported_bps: 300 }))), [], "300 bps is not above 300");
+  // a sale reads the same way
+  assert.deepEqual(await codes(sellPlan({ market: evm.marketOf(answer({ usd_value_gap_bps: 900, amount_in_usd: 21, amount_out_usd: 19.1 })) }), DEGEN_SELL), ["value_gap_over_3_pct_upto_9pct"]);
+});
+
+test("fail closed: a token trade whose quote carries no market figure at all asks the owner (no_market_figure), buying or selling; a major pair does not", async () => {
+  owner();
+  const none = evm.marketOf({ price_impact: { reported_bps: null, usd_value_gap_bps: null, amount_in_usd: null, amount_out_usd: null } });
+  assert.equal(none, null);
+  for (const [req, plan] of [[DEGEN_BUY, buyPlan({ market: none })], [DEGEN_SELL, sellPlan({ market: none })], [DEGEN_BUY, buyPlan({ market: { price_impact_pct: null, amount_in_usd: 20, amount_out_usd: 19.9, value_gap_pct: null } })]]) {
+    const rig = baseRig(plan);
+    const e = await needs(runSwap(req, {}, rig.deps));
+    assert.ok(e, "asked even in auto mode");
+    assert.deepEqual(e.intent.confirm_reasons, ["no_market_figure"]);
+    assert.match(e.reasons[0], /the quote gave no USD figures, so price impact can't be checked/);
+    assert.equal(rig.executed.length, 0);
+    await runSwap(req, { approve: e.approval.code }, rig.deps); // an approved re-run goes ahead
+  }
+  // USDC <-> ETH is held to the oracle and has no such reason
+  const major = await prepareSwap({ chain: "base", from: "USDC", to: "ETH", amount: "50" }, { oraclePrice: eth(2500), planAndVerifyBaseSwap: async () => basePlan({ sellAmount: 50, quoted: 0.0199, usd: 50 }) });
+  assert.deepEqual(major.confirm, []);
+});
+
+test("Solana: a freeze authority, pausable transfers and a transfer fee above 300 bps ask the owner on each trade, even when the owner's slippage cap is set", async () => {
+  const mints = (extra) => ({ [BONK]: extra });
+  for (const cap of ["none", "100"]) {
+    owner({ cap });
+    // a freeze authority on a classic mint
+    const frozen = solRig(bonkBuyPlan({ impactBps: 100 }), { mints: mints(mintEntry({ freeze: true })) });
+    const e = await needs(runSwap(BONK_BUY, {}, frozen.deps));
+    assert.deepEqual(e.intent.confirm_reasons, ["freeze_authority_set"], `cap ${cap}`);
+    assert.match(e.reasons[0], /a freeze authority is set: it can freeze this wallet's account for the token, and a frozen account cannot sell/);
+    assert.equal(frozen.planned.length, 0, "asked before any quote");
+    await runSwap(BONK_BUY, { approve: e.approval.code }, frozen.deps);
+    // selling it asks as well
+    assert.deepEqual((await needs(runSwap(BONK_SELL, {}, solRig(bonkSellPlan(), { mints: mints(mintEntry({ freeze: true })) }).deps))).intent.confirm_reasons, ["freeze_authority_set"]);
+    // pausable transfers
+    const pausable = solRig(bonkBuyPlan(), { mints: mints(mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [EXT.pausable] })) });
+    assert.deepEqual((await needs(runSwap(BONK_BUY, {}, pausable.deps))).intent.confirm_reasons, ["transfers_pausable"]);
+    // a transfer fee: 300 bps is the line, above it asks, and the band is bound ("…_upto_Npct")
+    const fee = (bps) => solRig(bonkBuyPlan(), { mints: mints(mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [EXT.transferFee(bps)] })) });
+    const at300 = await prepareSwap(BONK_BUY, fee(300).deps);
+    assert.deepEqual(at300.confirm.map((c) => c.code).filter((c) => c.startsWith("transfer_fee")), []);
+    const f4 = await needs(runSwap(BONK_BUY, {}, fee(400).deps));
+    assert.ok(f4.intent.confirm_reasons.includes("transfer_fee_upto_4pct"), `cap ${cap}: ${f4.intent.confirm_reasons}`);
+    assert.match(f4.reasons.join(" "), /the token takes a 4% fee on every transfer/);
+    // approving a 4% fee never approves a 40% one: another band is another approval
+    const f40 = await needs(runSwap(BONK_BUY, { approve: f4.approval.code }, fee(4000).deps));
+    assert.ok(f40.intent.confirm_reasons.includes("transfer_fee_upto_40pct") && f40.approval.code !== f4.approval.code);
+  }
+  // a plain mint with nothing of these asks for nothing
+  owner();
+  assert.deepEqual((await runSwap(BONK_BUY, {}, solRig(bonkBuyPlan({ impactBps: 100 })).deps)).confirm, []);
+});
+
+test("an issuer-power token like PYUSD (permanent delegate, transfer hook, confidential transfers) is allowed with per-trade confirmation; confidential mint and burn is still refused", async () => {
+  owner();
+  const pyusdish = mintEntry({ program: TOKEN_2022_PROGRAM, decimals: 6, extensions: [EXT.PermanentDelegate, EXT.ConfidentialTransferMint, EXT.ConfidentialTransferFeeConfig, EXT.TransferHook] });
+  const rig = solRig(bonkBuyPlan({ outDec: 6 }), { mints: { [BONK]: pyusdish } });
+  const e = await needs(runSwap(BONK_BUY, {}, rig.deps));
+  assert.deepEqual(e.intent.confirm_reasons, ["issuer_power_ConfidentialTransferFeeConfig", "issuer_power_ConfidentialTransferMint", "issuer_power_PermanentDelegate", "issuer_power_TransferHook"]);
+  assert.match(e.message, /confidential transfers are enabled on this token; plain transfers still work, but the issuer can configure accounts for private balances/);
+  await runSwap(BONK_BUY, { approve: e.approval.code }, rig.deps);
+  assert.deepEqual(await rules(runSwap(BONK_BUY, {}, solRig(bonkBuyPlan(), { mints: { [BONK]: mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [EXT.ConfidentialMintBurn] }) } }).deps)), ["solana_swap.token_extension_refused"]);
+});
+
+test("a token sale is sized from the venue's PUBLIC quote before Sato Hub (and its public record) is asked; a quote over the limits is refused first", async () => {
+  owner();
+  // Base: the public quote says 150 USDC comes back; the per-transaction limit is $100
+  const base = baseRig(sellPlan(), { publicQuote: async () => 150_000_000n });
+  assert.deepEqual(await rules(prepareSwap(DEGEN_SELL, base.deps)), ["max_usd_per_tx"]);
+  assert.equal(base.calls.length, 0, "Sato Hub was never asked");
+  // ETH out: 0.05 ETH at $2500 = $125
+  const eth_ = baseRig(baseTokenPlan({ side: "sell", major: "ETH", majorUnits: 10n ** 16n, tokenUnits: 5000n * 10n ** 18n, usd: 0 }), { publicQuote: async () => 5n * 10n ** 16n });
+  assert.deepEqual(await rules(prepareSwap({ chain: "base", from: DEGEN, to: "ETH", amount: "5000" }, eth_.deps)), ["max_usd_per_tx"]);
+  assert.equal(eth_.calls.length, 0);
+  // Solana: Jupiter's public quote, and the day's remaining room counts
+  const sol_ = solRig(bonkSellPlan(), { extra: { publicQuote: async () => 150_000_000n } });
+  assert.deepEqual(await rules(prepareSwap(BONK_SELL, sol_.deps)), ["max_usd_per_tx"]);
+  assert.deepEqual([sol_.asked.length, sol_.planned.length], [0, 0], "neither Sato Hub nor the planner was reached");
+  setPolicy({ perDay: "10" });
+  const day = solRig(bonkSellPlan(), { extra: { publicQuote: async () => 19_700_000n } });
+  assert.deepEqual(await rules(prepareSwap(BONK_SELL, day.deps)), ["max_usd_per_day"]);
+  assert.equal(day.asked.length, 0);
+  setPolicy({ perDay: "300" });
+  // within the limits it goes on to Sato Hub, whose own quote is sized and checked again; no answer from the venue skips the pre-size
+  const fine = solRig(bonkSellPlan(), { extra: { publicQuote: async () => 19_700_000n } });
+  await prepareSwap(BONK_SELL, fine.deps);
+  assert.equal(fine.asked.length, 1);
+  const silent = solRig(bonkSellPlan(), { extra: { publicQuote: async () => { throw new Error("venue down"); } } });
+  await prepareSwap(BONK_SELL, silent.deps);
+  const afterQuote = solRig(bonkSellPlan({ out: 150_000_000 }), { extra: { publicQuote: async () => 19_700_000n } });
+  assert.deepEqual(await rules(prepareSwap(BONK_SELL, afterQuote.deps)), ["max_usd_per_tx"], "the post-quote check still holds");
+  // a buy is sized from the major leg already: no public quote is asked for
+  let asked = 0;
+  await prepareSwap(BONK_BUY, solRig(bonkBuyPlan(), { extra: { publicQuote: async () => (asked++, null) } }).deps);
+  assert.equal(asked, 0);
+});
+
+test("every long-tail token is labelled with its short address in the intent and the display", async () => {
+  owner();
+  const sized = await sizeSwap(DEGEN_BUY, baseRig(buyPlan()).deps);
+  const i = swapIntent(sized, []);
+  assert.deepEqual([i.from, i.to], ["USDC", "DEGEN 0x4ed4…efed"]);
+  const d = (await prepareSwap(DEGEN_SELL, baseRig(sellPlan()).deps)).display;
+  assert.match(swapLines(d).join("\n"), /sell 5000 DEGEN 0x4ed4…efed for about/);
+  const s = await sizeSwap(BONK_BUY, solRig(bonkBuyPlan()).deps);
+  assert.deepEqual([swapIntent(s, []).to, swapIntent(s, []).to_id], ["DezX…B263", BONK]);
+  // a token that calls itself USDC is still told apart
+  const liar = { ...degenToken, symbol: "USDC" };
+  const sized2 = await sizeSwap(DEGEN_BUY, { ...baseRig(buyPlan()).deps, resolveBaseToken: async (x) => (String(x).toLowerCase() === DEGEN.toLowerCase() ? { ...liar } : baseResolver(x)) });
+  assert.equal(sized2.to, "USDC 0x4ed4…efed");
+});
+
+test("an approval for a worse band, or for reasons the quote no longer shows, is asked again cleanly (a new approval request, never an error)", async () => {
+  owner();
+  // auto mode: approved at 9%, the quote now shows 5%: another band, another approval
+  const loud = await needs(runSwap(BONK_SELL, {}, solRig(bonkSellPlan({ impactBps: 900 })).deps));
+  assert.deepEqual(loud.intent.confirm_reasons, ["price_impact_over_300_bps_upto_9pct"]);
+  const better = await needs(runSwap(BONK_SELL, { approve: loud.approval.code }, solRig(bonkSellPlan({ impactBps: 500 })).deps));
+  assert.deepEqual(better.intent.confirm_reasons, ["price_impact_over_300_bps_upto_5pct"]);
+  assert.notEqual(better.approval.code, loud.approval.code);
+  assert.match(better.message, /moves the price by 5%/);
+  // the same band still matches
+  await runSwap(BONK_SELL, { approve: better.approval.code }, solRig(bonkSellPlan({ impactBps: 450 })).deps);
+  // ask mode: the code was for the quote-time intent (impact 9%); the quote is calm now, and the approval of the trade is still due
+  owner({ ask: true });
+  try {
+    const first = await needs(runSwap(BONK_SELL, {}, solRig(bonkSellPlan({ impactBps: 900 })).deps));
+    const second = await needs(runSwap(BONK_SELL, { approve: first.approval.code }, solRig(bonkSellPlan({ impactBps: 900 })).deps));
+    const calm = await needs(runSwap(BONK_SELL, { approve: second.approval.code }, solRig(bonkSellPlan({ impactBps: 100 })).deps));
+    assert.ok(calm, "asked again, not an error");
+    assert.deepEqual(calm.intent.confirm_reasons, []);
+    assert.notEqual(calm.approval.code, second.approval.code);
+  } finally {
+    owner();
+  }
+});
+
+test("Solana: a SOL -> token trade rebuilt after a stale plan is valued again at the new Chainlink price", async () => {
+  owner();
+  let reads = 0;
+  let built = 0;
+  const rig = solRig((a) => (built++, solTokenPlan({ from: a.from, to: a.to, amountIn: 500_000_000, out: 100_000_000_000, inDec: 9, outDec: 5 })), {
+    extra: {
+      oraclePrice: async () => solPrice(reads++ === 0 ? 110 : 250)(), // $55 for 0.5 SOL, then $125
+      executeSolanaSwap: async function exec(_p, d) { if (built === 1) throw new PlanStale("old"); return { tx: "sig", seen: d.usdNotional }; },
+    },
+  });
+  const p = await prepareSwap({ chain: "solana", from: "SOL", to: BONK, amount: "0.5" }, rig.deps);
+  assert.equal(p.display.usd_held_to_limits, 55);
+  assert.deepEqual(await rules(p.execute()), ["max_usd_per_tx"], "$125 is over the $100 limit once the price is read again");
+  assert.equal(reads, 2, "the oracle was read again for the rebuilt plan");
+  // a price that is still inside the limit is what reaches the signer
+  reads = 0;
+  built = 0;
+  const rig2 = solRig((a) => (built++, solTokenPlan({ from: a.from, to: a.to, amountIn: 500_000_000, out: 100_000_000_000, inDec: 9, outDec: 5 })), {
+    extra: { oraclePrice: async () => solPrice(reads++ === 0 ? 110 : 160)(), executeSolanaSwap: async (_p, d) => { if (built === 1) throw new PlanStale("old"); return { tx: "sig", seen: d.usdNotional }; } },
+  });
+  const ok = await (await prepareSwap({ chain: "solana", from: "SOL", to: BONK, amount: "0.5" }, rig2.deps)).execute();
+  assert.equal(ok.seen, 80);
+});
+
+test("a non-ASCII token symbol is flagged on the card, and the card names the token with its short address", async () => {
+  const hubless = { resolveHub: async () => ({ ok: false, reason: "unavailable", error: "x" }), runCheck: async () => ({ unavailable: false, verdict: "go", rule: "r", text: "t", checked_at: "2026-10-09T10:00:00Z" }) };
+  const { describeToken, renderTokenCard } = await import("../src/swap/run.js");
+  const card = await describeToken(DEGEN, {}, { ...hubless, resolveBaseToken: async () => ({ ...degenToken, symbol: "USDС" }) }); // a Cyrillic С
+  assert.equal(card.symbol_non_ascii, true);
+  assert.equal(card.label, "USDС 0x4ed4…efed");
+  assert.match(card.notes.join(" "), /outside plain ASCII/);
+  assert.match(renderTokenCard(card)[0], /\(USDС 0x4ed4…efed\) on Base/);
+  const plain = await describeToken(DEGEN, {}, { ...hubless, resolveBaseToken: async () => ({ ...degenToken }) });
+  assert.equal(plain.symbol_non_ascii, false);
+  assert.equal(plain.label, "DEGEN 0x4ed4…efed");
 });

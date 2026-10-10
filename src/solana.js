@@ -50,7 +50,13 @@ export function rpc() {
 }
 
 const withTimeout = (p, ms = 20_000) =>
-  Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`Solana RPC timed out after ${ms} ms`)), ms))]);
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Solana RPC timed out after ${ms} ms`)), ms);
+    Promise.resolve(p).then(
+      (v) => (clearTimeout(timer), resolve(v)),
+      (e) => (clearTimeout(timer), reject(e)),
+    );
+  });
 
 export async function balances(owner = loadWallet().solana.address, r = rpc()) {
   const [lamports, accounts] = await Promise.all([
@@ -134,7 +140,16 @@ export async function sendUsdc({ to, amount }, r = rpc()) {
     throw err;
   }
 
-  const { wire, signature } = built;
+  await broadcastAndConfirm(entry, built, r);
+  return { tx: built.signature, explorer: explorer(built.signature), usd, to };
+}
+
+/**
+ * The tail every Solana spend shares, once a transaction is reserved and signed: record the signature, broadcast,
+ * poll. A preflight refusal releases the reservation (it never went out); anything unclear stays counted (Pending,
+ * exit 4: do NOT retry). Returns { tx, explorer } once confirmed.
+ */
+export async function broadcastAndConfirm(entry, { wire, signature }, r = rpc(), { sleep = (ms) => new Promise((res) => setTimeout(res, ms)), pollMs = 1500, maxPolls = 40 } = {}) {
   record({ id: entry.id, status: "signed", tx: signature });
   try {
     await withTimeout(r.sendTransaction(wire, { encoding: "base64", preflightCommitment: "confirmed" }).send());
@@ -148,8 +163,8 @@ export async function sendUsdc({ to, amount }, r = rpc()) {
     }
     throw new Pending(`broadcast of ${signature} reported an error (${err.message}).`, { tx: signature, explorer: explorer(signature) });
   }
-  for (let i = 0; i < 40; i++) {
-    await new Promise((res) => setTimeout(res, 1500));
+  for (let i = 0; i < maxPolls; i++) {
+    await sleep(pollMs);
     let s;
     try {
       s = (await withTimeout(r.getSignatureStatuses([signature]).send())).value[0];
@@ -162,8 +177,8 @@ export async function sendUsdc({ to, amount }, r = rpc()) {
     }
     if (s && (s.confirmationStatus === "confirmed" || s.confirmationStatus === "finalized")) {
       record({ id: entry.id, status: "confirmed", tx: signature });
-      return { tx: signature, explorer: explorer(signature), usd, to };
+      return { tx: signature, explorer: explorer(signature) };
     }
   }
-  throw new Pending(`${signature} was sent but not confirmed within 60 s.`, { tx: signature, explorer: explorer(signature) });
+  throw new Pending(`${signature} was sent but not confirmed within ${Math.round((maxPolls * pollMs) / 1000)} s.`, { tx: signature, explorer: explorer(signature) });
 }

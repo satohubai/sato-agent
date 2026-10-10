@@ -383,7 +383,9 @@ export async function quoteX402(url, { chain: requestedChain, method = "GET", bo
  * (Base) and `signer` / `scheme` / `rpc` / `rpcTimeoutMs` (Solana) are for tests;
  * by default they come from the agent's own wallet and SATO_AGENT_SOLANA_RPC.
  */
-export async function pay(url, { chain: requestedChain, method = "GET", body, headers = {}, maxUsd, payTo, account, signer, scheme, rpc, rpcTimeoutMs, fetchImpl = fetch, timeoutMs = 60_000 } = {}) {
+export async function pay(url, { chain: requestedChain, method = "GET", body, headers = {}, maxUsd, payTo, account, signer, scheme, rpc, rpcTimeoutMs, fetchImpl = fetch, timeoutMs = 60_000, tag } = {}) {
+  // `tag`: plain fields a caller adds to the ledger line (a purchase's kind and invoice id). Never a secret.
+  const tagFields = tag && typeof tag === "object" ? Object.fromEntries(Object.entries(tag).map(([k, v]) => [k, clean(v, 120)])) : {};
   const bound = boundTerms({ maxUsd, payTo }); // the price (and payee) the owner approved, if one was quoted first
   const { policy, chain } = await prepare({ chain: requestedChain, headers, account, signer, scheme, rpc, rpcTimeoutMs });
 
@@ -426,7 +428,7 @@ export async function pay(url, { chain: requestedChain, method = "GET", body, he
     }
     const req = view(raw, version);
     try {
-      entry = await reserve(loadPolicy(), { kind: "x402", chain: chain.name, asset: "USDC", usd: usdOf(req), to: req.payTo, url });
+      entry = await reserve(loadPolicy(), { ...tagFields, kind: "x402", chain: chain.name, asset: "USDC", usd: usdOf(req), to: req.payTo, url });
       units = unitsOf(req);
     } catch (err) {
       if (err instanceof Refused) {

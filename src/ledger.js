@@ -63,7 +63,9 @@ export async function reserve(policy, spend) {
   });
 }
 
-const SPEND_KINDS = ["send", "x402", "swap", "register", "register_sent", "register_uri"];
+/** Kinds that move value: shown in `status`, `history` and `proof`. "order" and "checkout" are purchases. */
+export const VALUE_KINDS = ["send", "x402", "swap", "order", "checkout"];
+const SPEND_KINDS = [...VALUE_KINDS, "register", "register_sent", "register_uri"];
 
 /**
  * One row per action (its ledger lines share an id; later lines update it),

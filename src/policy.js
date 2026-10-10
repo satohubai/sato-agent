@@ -27,6 +27,15 @@ export const CHAINS = ["base", "solana"];
 export const CHECK_GATES = ["off", "no", "caution"]; // "no": refuse on a `no` verdict; "caution": refuse on `caution` or `no`
 export const APPROVAL_MODES = ["auto", "ask"]; // "ask": every spend needs the owner's approval of that exact intent
 export const UNAVAILABLE_MODES = ["allow", "refuse"]; // when the check cannot be run
+// Purchases (gift cards, Amazon orders, checkouts): "ask" (the default, also when unset) shows the price and waits for the
+// owner's yes; "auto" buys within the limits. x402 `pay` and `send` keep following `approval`.
+export const PURCHASE_MODES = ["ask", "auto"];
+
+/**
+ * True unless BOTH choices are "auto": the stricter of `approval` and `purchase_approval` wins. An unset purchase choice
+ * asks, and an owner who chose "ask before every payment" is asked before every purchase too.
+ */
+export const purchasesAsk = (p) => p?.purchase_approval !== "auto" || p?.approval === "ask";
 
 /** Parse a limit: a plain positive decimal number of USD, or "none". */
 export function parseLimit(raw, flag) {
@@ -83,6 +92,8 @@ export function raisesBetween(prev, next) {
   // Gates order strictest-last; a move toward "off" (or unset) loosens.
   if (looser(["off", "no", "caution"], next.check_gate, prev.check_gate)) r.push("check_gate loosened");
   if (prev.approval === "ask" && next.approval !== "ask") r.push("approval: ask -> auto");
+  // Unset means "ask", so unset -> auto is a raise too.
+  if (purchasesAsk(prev) && !purchasesAsk(next)) r.push("purchases: ask -> auto");
   // Unset counts as "refuse" (gateRefusals fails closed), so unset -> allow is a raise too.
   if ((prev.on_check_unavailable ?? "refuse") === "refuse" && next.on_check_unavailable === "allow") r.push("on_check_unavailable: refuse -> allow");
   // Swaps: turning them on, removing or raising a cap all let the agent do more.
@@ -131,7 +142,7 @@ function parseTrades(raw) {
  * are required (no defaults). Later calls may change any one. Returns the new
  * policy and what (if anything) it loosened, which the CLI flags loudly.
  */
-export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, approval, onCheckUnavailable, swapSlippageBps, maxTradesPerDay, swaps }) {
+export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, approval, onCheckUnavailable, swapSlippageBps, maxTradesPerDay, swaps, purchases }) {
   const prev = loadPolicy();
   // If policy.json is gone (deleted, or never written after a crash) but the
   // ledger recorded one, compare against that: deleting the file and starting
@@ -156,6 +167,8 @@ export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, a
     check_gate: pick(parseChoice(checkGate, CHECK_GATES, "--check-gate"), "check_gate"),
     approval: pick(parseChoice(approval, APPROVAL_MODES, "--approval"), "approval"),
     on_check_unavailable: pick(parseChoice(onCheckUnavailable, UNAVAILABLE_MODES, "--on-check-unavailable"), "on_check_unavailable"),
+    // null = never chosen, which asks (purchasesAsk).
+    purchase_approval: pick(parseChoice(purchases, PURCHASE_MODES, "--purchases"), "purchase_approval"),
   };
   // Swaps: on unless the owner turned them off (`--swaps off`, or the older `--swap-slippage-bps off`).
   // The two caps are optional; "none" removes one (a raise).

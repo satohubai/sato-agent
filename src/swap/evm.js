@@ -96,7 +96,7 @@ export const KYBER_API_BASE = "https://aggregator-api.kyberswap.com/base/api/v1"
 const KYBER_TIMEOUT_MS = 20_000;
 /** The sell-back is only simulated, so it is built with a wide slippage: a revert then means the token cannot be sold, not that the price moved. The round-trip rule decides. */
 const SELL_BACK_SLIPPAGE_BPS = 1000;
-/** The round trip (buy, then sell everything back) may lose 2x the owner's slippage, 2x the Sato fee and this margin for pool fees and spread. */
+/** The round trip (buy, then sell everything back) may lose 2x the owner's slippage, the Sato fee on the buy (the simulated sell pays none) and this margin for pool fees and spread. */
 export const ROUND_TRIP_MARGIN_BPS = 300;
 /** How far below min_out Kyber's own rounding can put the minimum in the calldata when the fee is on the output (measured: 2; one unit of margin). */
 const FEE_OUT_ROUNDING_UNITS = 3n;
@@ -1046,7 +1046,8 @@ const sellBackRefusal = (message, observed = null) => new Refused([refusal("cann
  * Sell back what a purchase of a long-tail token delivers, in ONE more eth_simulateV1 that repeats the buy and then sells
  * the amount the buy delivered (measured in the first simulation) back to the major asset through a live KyberSwap route
  * (pinned router, an exact approval of the token, no Sato fee). Refuses (cannot_sell_back) when no route exists, when the
- * approval or the sell would fail, or when the round trip returns less than amount_in * (1 - 2 x slippage - 2 x fee - 3%).
+ * approval or the sell would fail, or when the round trip returns less than amount_in * (1 - 2 x slippage - fee - 3%): one
+ * Sato fee, the buy's, as the simulated sell pays none.
  * The sell is never sent and costs no gas; the only cost is one more simulation and a KyberSwap route + build.
  */
 async function sellBackCheck({ intent, facts, tx, approvalNeeded, sim, deps, getClient }) {
@@ -1057,7 +1058,9 @@ async function sellBackCheck({ intent, facts, tx, approvalNeeded, sim, deps, get
   const majorKey = assetKey(major);
   const tokenKey = assetKey(token);
   const feeBps = BigInt(facts.feeBps);
-  const allowedLossBps = BigInt(2 * intent.slippageBps) + 2n * feeBps + BigInt(ROUND_TRIP_MARGIN_BPS);
+  // ONE Sato fee: the buy leg pays it; the sell leg is simulated with no fee (below), so a second fee's worth of room would
+  // only hide a sell tax (at 75 bps, three-quarters of a percent of it).
+  const allowedLossBps = BigInt(2 * intent.slippageBps) + feeBps + BigInt(ROUND_TRIP_MARGIN_BPS);
   const minReturn = (intent.amountIn * (10_000n - allowedLossBps)) / 10_000n;
 
   let units = sim.out_delta;
@@ -1119,7 +1122,7 @@ async function sellBackCheck({ intent, facts, tx, approvalNeeded, sim, deps, get
     if (returned < minReturn) {
       const d = (u) => unitsToDecimal(u, major.decimals);
       throw sellBackRefusal(
-        `buying ${intent.to} and selling it straight back returns ${d(returned)} ${major.symbol} for ${d(intent.amountIn)} ${major.symbol}, a loss of ${(lossBps / 100).toFixed(2)}%; the most this kit allows is ${(Number(allowedLossBps) / 100).toFixed(2)}% (twice the slippage, twice the Sato fee and ${ROUND_TRIP_MARGIN_BPS / 100}% for spread). The token may be hard to sell or take a fee on selling.`,
+        `buying ${intent.to} and selling it straight back returns ${d(returned)} ${major.symbol} for ${d(intent.amountIn)} ${major.symbol}, a loss of ${(lossBps / 100).toFixed(2)}%; the most this kit allows is ${(Number(allowedLossBps) / 100).toFixed(2)}% (twice the slippage, the Sato fee on the buy and ${ROUND_TRIP_MARGIN_BPS / 100}% for spread). The token may be hard to sell or take a fee on selling.`,
         `${lossBps} bps`,
       );
     }

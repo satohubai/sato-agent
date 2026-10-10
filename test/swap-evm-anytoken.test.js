@@ -569,7 +569,7 @@ for (const name of ["usdc-to-degen", "eth-to-degen"]) {
       assert.equal(sb.loss_bps, Number(((plan.amount_in - sb.returned_units) * 10_000n) / plan.amount_in));
       assert.equal(plan.simulation.reported_out, plan.simulation.out_delta, "the router's own Swapped event agrees with what reached the wallet");
       assert.ok(plan.simulation.reported_out > 0n);
-      assert.equal(sb.allowed_loss_bps, 2 * 50 + 2 * 15 + 300);
+      assert.equal(sb.allowed_loss_bps, 2 * 50 + 15 + 300, "one Sato fee (the buy's): the simulated sell pays none");
       assert.ok(sb.loss_bps > 0 && sb.loss_bps < sb.allowed_loss_bps, `lost ${sb.loss_bps} bps of an allowed ${sb.allowed_loss_bps}`);
       assert.ok(BigInt(sb.gas_used.sell) > 0n && BigInt(sb.gas_used.approve) > 0n);
       assert.equal(response.sato_fee_side, feeSide);
@@ -607,29 +607,48 @@ test("cannot_sell_back: the token will not let the router spend it (the approval
   assert.match(e.message, /will not let the router spend it \(the approval would fail: execution reverted: approvals paused\)/);
 });
 
-test("cannot_sell_back: the round trip returns too little; the boundary is amount_in x (1 - 2 x slippage - 2 x fee - 3%)", async () => {
+test("cannot_sell_back: the round trip returns too little; the boundary is amount_in x (1 - 2 x slippage - fee - 3%)", async () => {
   const back = (value) => (s) => rewrite([s.result[0].calls.at(-1)], toTaker(USDC), () => value);
   const e = await refusal(verifyLT("usdc-to-degen", { feeSide: "in", editSell: back(14_000_000n) }));
   assert.deepEqual(e.refusals.map((r) => r.rule), ["cannot_sell_back"]);
-  assert.match(e.message, /returns 14 USDC for 20 USDC, a loss of 30\.00%; the most this kit allows is 4\.30%/);
-  // 50 bps slippage, 15 bps fee: 2*50 + 2*15 + 300 = 430 bps, so 20 USDC must come back as at least 19.14
-  const floor = 19_140_000n;
+  assert.match(e.message, /returns 14 USDC for 20 USDC, a loss of 30\.00%; the most this kit allows is 4\.15% \(twice the slippage, the Sato fee on the buy/);
+  // 50 bps slippage, 15 bps fee (the buy's only): 2*50 + 15 + 300 = 415 bps, so 20 USDC must come back as at least 19.17
+  const floor = 19_170_000n;
   const ok = await verifyLT("usdc-to-degen", { feeSide: "in", editSell: back(floor) });
   assert.equal(ok.plan.sell_back.minimum_return_units, floor);
-  assert.equal(ok.plan.sell_back.loss_bps, 430);
+  assert.equal(ok.plan.sell_back.loss_bps, 415);
   assert.deepEqual(await rules(verifyLT("usdc-to-degen", { feeSide: "in", editSell: back(floor - 1n) })), ["cannot_sell_back"]);
-  // the owner's slippage widens it: at 500 bps the allowance is 2*500 + 30 + 300 = 1330 bps
+  // the owner's slippage widens it: at 500 bps the allowance is 2*500 + 15 + 300 = 1315 bps
   const wide = await verifyLT("usdc-to-degen", { feeSide: "in", slippageBps: 500, editSell: back(17_400_000n) });
-  assert.equal(wide.plan.sell_back.allowed_loss_bps, 1330);
+  assert.equal(wide.plan.sell_back.allowed_loss_bps, 1315);
   assert.deepEqual(await rules(verifyLT("usdc-to-degen", { feeSide: "in", slippageBps: 500, editSell: back(17_000_000n) })), ["cannot_sell_back"]);
   // a sell-back that returns NOTHING is a refusal too
   assert.deepEqual(await rules(verifyLT("usdc-to-degen", { feeSide: "in", editSell: (s) => { s.result[0].calls.at(-1).logs = s.result[0].calls.at(-1).logs.filter((l) => !toTaker(USDC)(l)); } })), ["cannot_sell_back"]);
 });
 
+test("cannot_sell_back at 75 bps: a hidden 1% sell tax is caught (the allowance counts ONE fee, the buy's)", async () => {
+  const back = (value) => (s) => rewrite([s.result[0].calls.at(-1)], toTaker(USDC), () => value);
+  const at75 = (r) => {
+    tamper((d) => (d.feeAmounts = d.feeAmounts.map(() => 75n)))(r);
+    r.sato_fee_bps = 75;
+    r.sato_fee_tier = "token";
+  };
+  // 50 bps slippage, a 75 bps fee on the buy: 2*50 + 75 + 300 = 475 bps, so 20 USDC must come back as at least 19.05.
+  const honest = await verifyLT("usdc-to-degen", { feeSide: "in", edit: at75, editSell: back(19_050_000n) });
+  assert.equal(honest.plan.sell_back.allowed_loss_bps, 475);
+  // The same route plus a 1% tax the token takes on selling: 20 x (1 - 0.0475 - 0.01) = 18.85 back. Under the old
+  // 2 x fee allowance (550 bps, a floor of 18.90) a slightly smaller tax still slipped through; 18.95 shows it:
+  // it loses 525 bps, within 550 and over 475.
+  const e = await refusal(verifyLT("usdc-to-degen", { feeSide: "in", edit: at75, editSell: back(18_950_000n) }));
+  assert.deepEqual(e.refusals.map((r) => r.rule), ["cannot_sell_back"]);
+  assert.match(e.message, /a loss of 5\.25%; the most this kit allows is 4\.75%/);
+  assert.deepEqual(await rules(verifyLT("usdc-to-degen", { feeSide: "in", edit: at75, editSell: back(18_850_000n) })), ["cannot_sell_back"], "the full 1% tax");
+});
+
 test("cannot_sell_back, on the ETH side: the proceeds in ETH are read from the traced native transfer", async () => {
   const back = (value) => (s) => rewrite([s.result[0].calls.at(-1)], toTaker(NATIVE_PLACEHOLDER), () => value);
-  // 0.01 ETH in; allowed loss 430 bps => at least 0.009570 ETH back
-  const floor = 9_570_000_000_000_000n;
+  // 0.01 ETH in; allowed loss 415 bps => at least 0.009585 ETH back
+  const floor = 9_585_000_000_000_000n;
   await verifyLT("eth-to-degen", { feeSide: "in", editSell: back(floor) });
   assert.deepEqual(await rules(verifyLT("eth-to-degen", { feeSide: "in", editSell: back(floor - 1n) })), ["cannot_sell_back"]);
 });

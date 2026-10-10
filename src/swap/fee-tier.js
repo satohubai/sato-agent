@@ -73,5 +73,18 @@ export function feeTierRefusals({ bps, tier, disclosedTier, prefix = "" }) {
   return out;
 }
 
+/** The most a swap approval allows Sato Hub to charge on a pair of this tier. */
+export const approvalFeeCeiling = (tier) => (tier === "token" ? FEE_CEILING_BPS : MAJOR_FEE_CEILING_BPS);
+
+/**
+ * The plain line an approval request carries for a swap (approved before the quote, so the rate is the published one and
+ * the ceiling is what the approval allows): "Sato Hub fee: 0.75% for a token trade (this approval allows up to 1%)".
+ */
+export function approvalFeeLine(tier) {
+  const pct = (bps) => `${Number((bps / 100).toFixed(2))}%`;
+  const words = { stable: " for a stablecoin pair", major: " for ETH or SOL with USDC", token: " for a token trade" }[tier] ?? "";
+  return `Sato Hub fee: ${pct(PUBLISHED_FEE_BPS[tier] ?? approvalFeeCeiling(tier))}${words} (this approval allows up to ${pct(approvalFeeCeiling(tier))}).`;
+}
+
 /** Cheapest first. */
 export const TIER_ORDER = Object.freeze({ stable: 0, major: 1, token: 2 });

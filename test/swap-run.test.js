@@ -630,6 +630,22 @@ test("a dry run asks nobody and says what would need approval", async () => {
   assert.match(swapLines(r.prepared.display).join("\n"), /Needs the owner's approval before it is signed, because: Jupiter estimates this swap moves the price by 9%/);
 });
 
+test("ask mode: the approval request says the fee in plain words (published rate, and the most this approval allows)", async () => {
+  owner({ ask: true });
+  try {
+    const token = await needs(runSwap(DEGEN_BUY, {}, baseRig(buyPlan()).deps));
+    assert.equal(token.intent.fee_tier, "token");
+    assert.equal(token.intent.fee_max_bps, 100);
+    assert.match(token.message, /\nSato Hub fee: 0\.75% for a token trade \(this approval allows up to 1%\)\.$/);
+    assert.equal(token.fee_line, "Sato Hub fee: 0.75% for a token trade (this approval allows up to 1%).");
+    const major = await needs(runSwap({ chain: "base", from: "USDC", to: "ETH", amount: "50" }, {}, { oraclePrice: eth(2500) }));
+    assert.equal(major.intent.fee_tier, "major");
+    assert.match(major.message, /Sato Hub fee: 0\.15% for ETH or SOL with USDC \(this approval allows up to 0\.15%\)\./);
+  } finally {
+    owner();
+  }
+});
+
 test("ask mode: the normal approval comes first; a reason only the quote shows needs a second one that names it", async () => {
   owner({ ask: true });
   try {

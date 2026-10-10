@@ -88,6 +88,12 @@ test("Solana: the ceiling is 1% for a token pair, and USDC <-> SOL is held to 0.
   await assert.rejects(S.planSolanaSwap({ from: "USDC", to: "SOL", amount: "1", slippageBps: 50 }, { ...noFetch, satoFeeBps: 101 }), /whole number from 0 to 100/);
 });
 
+test("the approval line uses the published table and the tier ceiling", () => {
+  assert.equal(F.approvalFeeLine("token"), "Sato Hub fee: 0.75% for a token trade (this approval allows up to 1%).");
+  assert.equal(F.approvalFeeLine("major"), "Sato Hub fee: 0.15% for ETH or SOL with USDC (this approval allows up to 0.15%).");
+  assert.equal(F.approvalFeeLine("stable"), "Sato Hub fee: 0.03% for a stablecoin pair (this approval allows up to 0.15%).");
+});
+
 test("the approval intent binds the fee tier and the most that tier may cost", () => {
   const sized = (fromKind, toKind, from, to) => ({ chain: "base", from, to, fromAsset: { kind: fromKind, id: "a" }, toAsset: { kind: toKind, id: "b" }, amount: "1", slippageBps: 50, longTail: fromKind === "token" || toKind === "token" });
   const token = swapIntent(sized("major", "token", "USDC", "DEGEN 0x4ed4…efed"));

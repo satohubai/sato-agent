@@ -867,7 +867,7 @@ main().catch((err) => {
   }
   if (err instanceof NeedsApproval) {
     // A purchase's price card goes to stdout (it can name the order's recipient, which never goes in an error message).
-    if (flags.json) console.log(json({ needs_approval: { code: err.approval.code, expires_at: err.approval.expires_at, intent: err.intent, ...(err.reasons ? { reasons: err.reasons } : {}), ...(err.card?.length ? { card: err.card } : {}) } }));
+    if (flags.json) console.log(json({ needs_approval: { code: err.approval.code, expires_at: err.approval.expires_at, intent: err.intent, ...(err.reasons ? { reasons: err.reasons } : {}), ...(err.fee_line ? { fee: err.fee_line } : {}), ...(err.card?.length ? { card: err.card } : {}) } }));
     else {
       if (err.card?.length) console.log(err.card.join("\n"));
       errLine(err.message);

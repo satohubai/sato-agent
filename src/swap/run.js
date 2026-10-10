@@ -47,7 +47,7 @@ import { clients as baseClients } from "../base.js";
 import * as evm from "./evm.js";
 import * as sol from "./solana.js";
 import { rpc as solanaRpc } from "../solana.js";
-import { FEE_CEILING_BPS, MAJOR_FEE_CEILING_BPS, feePercent, feeText, feeTierRefusals, pairTier } from "./fee-tier.js";
+import { approvalFeeCeiling, approvalFeeLine, feePercent, feeText, feeTierRefusals, pairTier } from "./fee-tier.js";
 
 const refuse = (rule, message, limit = null, observed = null) => new Refused([{ rule, limit, observed, message }]);
 /** The kit's own fee tier for a sized swap: from which side is a major (its symbol) and which a long-tail token. */
@@ -502,7 +502,7 @@ export function swapIntent(sized, reasonCodes = [], { skipCheck = false } = {}) 
     // The fee tier the kit reads for this pair (stable / major / token), with the most Sato Hub may charge on it. The exact
     // rate comes with the quote, after this approval; it is held to this ceiling and to the transaction (src/swap/fee-tier.js).
     fee_tier: tierOfSized(sized),
-    fee_max_bps: tierOfSized(sized) === "token" ? FEE_CEILING_BPS : MAJOR_FEE_CEILING_BPS,
+    fee_max_bps: approvalFeeCeiling(tierOfSized(sized)),
   };
 }
 
@@ -682,6 +682,12 @@ async function needsApproval(intent, reasons) {
   if (reasons.length) {
     err.reasons = reasons.map((r) => r.text);
     err.message = `This swap needs the owner's approval even though the agent acts within its limits, because:\n${reasons.map((r) => `  - ${r.text}`).join("\n")}\n${err.message}`;
+  }
+  // The approval comes before the quote, so the owner sees the fee in plain words here: the published rate for this pair and
+  // the most this approval allows (the intent binds fee_tier and fee_max_bps).
+  if (intent.fee_tier) {
+    err.fee_line = approvalFeeLine(intent.fee_tier);
+    err.message = `${err.message}\n${err.fee_line}`;
   }
   return err;
 }

@@ -66,16 +66,18 @@ if command -v flock >/dev/null; then flock ~/.sato-agent-install.lock npm instal
 ```
 Never run `init` again: your wallet, limits and history stay in `~/.sato-agent/NAME` and are kept as they are.
 
+After upgrading to 0.3, run `~/sato-agent-NAME status` and tell the owner what the `swaps:` line says. Version 0.3 can trade any token. If swaps show as off (they stay off for an owner who had turned them off), tell the owner they can turn them on with `policy set --swaps on`, and only do that if they ask.
+
 ## What you can do
 
 - **Pay for APIs and data with x402.** Run `~/sato-agent-NAME pay <url> --chain <CHAIN>` (base or solana, always your own CHAIN; the kit refuses a chain the owner did not choose). It first asks the server's price, shows Sato Hub's check of the resource, then pays in USDC on that chain if the owner's limits allow. If the server only accepts another chain or token, it refuses before anything is approved; tell the owner and stop. If the server does not ask for payment, nothing is paid and its answer is shown. For POST APIs: `--method POST --data '<json>'` (a JSON content-type is added automatically) and `--header 'name: value'` (repeatable).
 - **Trade any token.** When the owner drops a contract address, a mint or a link:
-  1. `~/sato-agent-NAME token <address|mint|link> --chain <CHAIN>` and show the owner the card: name, symbol, address, price and liquidity with their source and date, and Sato Hub's evidence lines read as written. Read any line about issuer powers, freeze authority, poison transfers or a failed sell-back test word for word.
+  1. `~/sato-agent-NAME token <address|mint|link> --chain <CHAIN>` and show the owner the card: name, symbol, address, price and liquidity with their source and date, and Sato Hub's evidence lines read as written. Read any line about issuer powers, freeze authority or a pause word for word. From here on, use the ADDRESS (or mint) printed on the card, never the link: a link can point somewhere else later.
   2. Ask the amount if they didn't give one. Never suggest what to buy or sell, or how much.
-  3. Buy: `~/sato-agent-NAME swap --chain <CHAIN> --from USDC --to <address|mint|link> --amount 20 --dry-run`, show the result (quote, minimum, price impact, Sato Hub's fee and on which side, the sell-back test on Base), then run it without `--dry-run`. Pay with ETH or SOL instead of USDC if the owner says so.
-  4. Sell: `--from <address|mint|link> --to USDC --amount <n|all>` (`all` = the whole balance of that token).
+  3. Buy: `~/sato-agent-NAME swap --chain <CHAIN> --from USDC --to <address or mint from the card> --amount 20 --dry-run`, show the result (the token's address, quote, minimum, price impact, Sato Hub's fee and on which side, and on Base the sell-back test), then run it without `--dry-run`. Pay with ETH or SOL instead of USDC if the owner says so.
+  4. Sell: `--from <address or mint> --to USDC --amount <n|all>` (`all` = the whole balance of that token).
   - One side is always USDC, ETH/WETH (Base) or USDC/SOL (Solana). Token-for-token isn't available yet; say so.
-  - Exit code 5 on a trade means it needs the owner's yes, even if they chose that you act on your own: unusually high slippage or price impact, a bad sell-back test, or a token whose issuer can move or block it. Show the reasons it printed, word for word, and wait.
+  - Exit code 5 on a trade means it needs the owner's yes, even if they chose that you act on your own: unusually high slippage or price impact, no USD figures to check the price impact against, a bad sell-back test, a large transfer fee, or a token whose issuer can move, freeze, pause or block it. Show the reasons it printed, word for word, and wait.
   - Swaps between USDC and ETH/SOL are also checked against an independent Chainlink price. A token has no independent price: its value comes from the quote, and your limits still apply.
   - The kit verifies each transaction before signing (pinned router or programs; the minimum, recipient and fee written into the transaction; its own simulation). Sato Hub's fee is always taken in USDC, ETH or SOL, never in the token.
   - A dry run signs nothing, but it asks Sato Hub for a quote, and Sato Hub keeps a public record of every quote (pair and amount, never the wallet).

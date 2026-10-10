@@ -10,8 +10,11 @@
 //   - any pair: at most FEE_CEILING_BPS (1%);
 //   - a stable or major pair: at most MAJOR_FEE_CEILING_BPS (0.15%). Only a pair with a long-tail token may go higher.
 //
-// The kit classifies the pair itself (it already knows which side is a major and which a long-tail token). A disclosed
-// tier that disagrees with that is refused (`fee_tier_mismatch`); without a disclosed tier the kit's own is used.
+// The kit classifies the pair itself (it already knows which side is a major and which a long-tail token). Sato Hub's
+// majors are a wider set (USDT, DAI, ...), so its disclosed tier may be CHEAPER than the kit's reading: that is accepted,
+// held to the ceiling of the tier Sato Hub claimed (a "stable" claim can never charge 0.75%). A disclosed tier MORE
+// expensive than the kit's reading is an overcharge and is refused (`fee_tier_mismatch`). Without a disclosed tier the
+// kit's own is used. The fee side is always decided by the kit's own majors (USDC / ETH / WETH / SOL), whatever the tier.
 // Where the fee is taken is unchanged: always on the major side, never in the long-tail token (checked elsewhere).
 
 export const FEE_CEILING_BPS = 100;
@@ -47,15 +50,28 @@ export function feeText(bps, tier) {
 export function feeTierRefusals({ bps, tier, disclosedTier, prefix = "" }) {
   const out = [];
   const r = (rule, message, limit, observed) => out.push({ rule: `${prefix}${rule}`, limit, observed, message });
-  if (disclosedTier !== undefined && disclosedTier !== null && disclosedTier !== tier) {
-    r("fee_tier_mismatch", `Sato Hub priced this as a "${String(disclosedTier).slice(0, 20)}" trade, but it is a ${tier} pair to this kit; nothing was signed`, tier, String(disclosedTier).slice(0, 20));
+  // Tiers are ordered by cost. Sato Hub's set of majors is wider than the kit's (USDT, DAI, USDbC, EURC, ...), so it may
+  // call a pair cheaper than the kit does (USDC -> USDT: "stable" to Sato Hub, "token" to the kit): that charges the owner
+  // LESS and is accepted, held to the ceiling of the tier Sato Hub claimed. Only a tier MORE expensive than the kit's own
+  // reading is an overcharge, and is refused.
+  const claimed = disclosedTier === undefined || disclosedTier === null ? null : disclosedTier;
+  let ceilingTier = tier;
+  if (claimed !== null) {
+    if (!FEE_TIERS.includes(claimed) || TIER_ORDER[claimed] > TIER_ORDER[tier]) {
+      r("fee_tier_mismatch", `Sato Hub priced this as a "${String(claimed).slice(0, 20)}" trade, which costs more than the ${tier} pair it is to this kit; nothing was signed`, tier, String(claimed).slice(0, 20));
+    } else {
+      ceilingTier = claimed;
+    }
   }
   if (!Number.isInteger(bps) || bps < 0) {
     r("fee_disclosure_missing", "Sato Hub's fee is not a whole number of basis points", "0-100", bps ?? null);
   } else if (bps > FEE_CEILING_BPS) {
     r("fee_over_ceiling", `the fee is ${feePercent(bps)} (${bps} bps), above the ${feePercent(FEE_CEILING_BPS)} this kit ever accepts; nothing was signed`, FEE_CEILING_BPS, bps);
-  } else if (tier !== "token" && bps > MAJOR_FEE_CEILING_BPS) {
-    r("fee_over_major_ceiling", `the fee is ${feePercent(bps)} (${bps} bps) on a ${tier} pair; only a trade with a long-tail token may cost more than ${feePercent(MAJOR_FEE_CEILING_BPS)}; nothing was signed`, MAJOR_FEE_CEILING_BPS, bps);
+  } else if (ceilingTier !== "token" && bps > MAJOR_FEE_CEILING_BPS) {
+    r("fee_over_major_ceiling", `the fee is ${feePercent(bps)} (${bps} bps) on a pair priced as ${ceilingTier}; only a trade with a long-tail token may cost more than ${feePercent(MAJOR_FEE_CEILING_BPS)}; nothing was signed`, MAJOR_FEE_CEILING_BPS, bps);
   }
   return out;
 }
+
+/** Cheapest first. */
+export const TIER_ORDER = Object.freeze({ stable: 0, major: 1, token: 2 });

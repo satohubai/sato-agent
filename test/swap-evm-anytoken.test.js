@@ -463,7 +463,17 @@ test("tiered fee (rc.3): a token pair may cost 0.75% (and up to 1%); 101 bps is 
     await verifyLT(name, { feeSide, edit: at(75) }); // no tier disclosed: the kit's own reading (token) applies
     await verifyLT(name, { feeSide, edit: at(100, "token") });
     assert.deepEqual(await rules(verifyLT(name, { feeSide, edit: at(101, "token") })), ["fee_over_ceiling"], name);
-    assert.deepEqual(await rules(verifyLT(name, { feeSide, edit: at(75, "major") })), ["fee_tier_mismatch"], name);
+    // Sato Hub's majors are wider than the kit's: DEGEN priced as "major" at 15 bps charges less, and is accepted;
+    // as "major" or "stable" it is held to 0.15%, so 75 bps under that claim is refused.
+    const { plan: cheaper } = await verifyLT(name, { feeSide, edit: at(15, "major") });
+    assert.equal(cheaper.fee.bps, 15);
+    // (A 3 bps "stable" claim is covered in test/fee-tier.test.js: the recorded simulation here pays 15 bps, which the kit
+    // rightly refuses against a 3 bps disclosure as fee_exceeds_disclosed.)
+    assert.deepEqual(await rules(verifyLT(name, { feeSide, edit: at(3, "stable") })), ["fee_exceeds_disclosed"], name);
+    assert.deepEqual(await rules(verifyLT(name, { feeSide, edit: at(75, "major") })), ["fee_over_major_ceiling"], name);
+    assert.deepEqual(await rules(verifyLT(name, { feeSide, edit: at(75, "stable") })), ["fee_over_major_ceiling"], name);
+    // Even priced as "stable", the fee stays on the kit's major side (USDC), never on DEGEN.
+    assert.equal(evm.summarizeBaseSwapPlan(cheaper).sato_fee.asset, "USDC");
   }
   // The fee side rule is unchanged at 75 bps: a disclosure that puts it on the DEGEN side is still refused.
   assert.ok((await rules(verifyLT("degen-to-usdc", { feeSide: "out", edit: (r) => (at(75, "token")(r), (r.sato_fee_side = "in")) }))).includes("fee_side_not_major"));

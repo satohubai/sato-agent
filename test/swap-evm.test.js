@@ -904,8 +904,11 @@ test("tiered fee (rc.3): USDC <-> ETH is a major pair held to 0.15%, even when t
   assert.equal(evm.tierOf(parseIntent({ from: "USDC", to: "ETH", amount: "1", slippageBps: 50 })), "major");
   assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: at(75) })), ["fee_over_major_ceiling"]);
   assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: at(16, "major") })), ["fee_over_major_ceiling"]);
+  // Priced as a "token" trade (more expensive than a major pair): an overcharge, refused.
   assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: at(15, "token") })), ["fee_tier_mismatch"]);
-  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: at(15, "stable") })), ["fee_tier_mismatch"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: at(75, "token") })), ["fee_tier_mismatch", "fee_over_major_ceiling"]);
+  // Priced as "stable" (cheaper): accepted within the stable ceiling.
+  await verifyCase("usdc-to-eth", { edit: at(15, "stable") });
   assert.equal(evm.MAX_SATO_FEE_BPS, 100);
 });
 

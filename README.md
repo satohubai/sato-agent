@@ -16,8 +16,10 @@ Two Bots, one kit:
 
 | Bot | Message | Today |
 |---|---|---|
-| **Sato Base Agent** | `NAME = base, CHAIN = base` | buy or sell any Base token against USDC or ETH (by address or link), gift cards / eSIMs / top-ups (Bitrefill), Amazon US orders (once Sato Hub switches them on), USDC payment links (EIP-681), x402 payments, USDC sends, ERC-8004 identity, Sato Hub checks |
-| **Sato Solana Agent** | `NAME = solana, CHAIN = solana` | buy or sell any Solana token against USDC or SOL via Jupiter (by mint or link), Amazon US orders (once switched on), Solana Pay requests (USDC or SOL), x402 payments in USDC on Solana (`pay --chain solana`), USDC sends (wallet recipients only), Sato Hub checks |
+| **Sato Base Bot** | `NAME = base, CHAIN = base` | buy or sell any Base token against USDC or ETH (by address or link), gift cards / eSIMs / top-ups (Bitrefill), USDC payment links (EIP-681), x402 payments, USDC sends, ERC-8004 identity, Sato Hub checks |
+| **Sato Solana Bot** | `NAME = solana, CHAIN = solana` | buy or sell any Solana token against USDC or SOL via Jupiter (by mint or link), Solana Pay requests (USDC or SOL), x402 payments in USDC on Solana (`pay --chain solana`), USDC sends (wallet recipients only), Sato Hub checks |
+
+The Bots run Sato Agent, this kit. Each Bot's name is yours to choose; these are the names the setup prompt uses.
 
 Each Bot keeps its own wallet, limits and ledger, even on the same Grok Bot computer.
 

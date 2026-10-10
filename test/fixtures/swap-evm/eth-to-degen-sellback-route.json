@@ -1,0 +1,164 @@
+{
+ "code": 0,
+ "message": "successfully",
+ "data": {
+  "routeSummary": {
+   "tokenIn": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+   "amountIn": "24909188180271599452160",
+   "amountInUsd": "24.761204811977077",
+   "tokenOut": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+   "amountOut": "9934322148647370",
+   "amountOutUsd": "24.69730397156687",
+   "gas": "1247081",
+   "gasPrice": "6000000",
+   "gasUsd": "0.018601896379025217",
+   "l1FeeUsd": "0.00001794988407300881",
+   "extraFee": {
+    "feeAmount": "",
+    "chargeFeeBy": "",
+    "isInBps": false,
+    "feeReceiver": ""
+   },
+   "route": [
+    [
+     {
+      "pool": "bebop_0x4ed4e862860bed51a9570b96d89af5e1b0efefed_0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "tokenIn": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+      "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "swapAmount": "24909188180271599452160",
+      "amountOut": "24720708",
+      "exchange": "bebop/aerodrome",
+      "poolType": "bebop",
+      "poolExtra": {
+       "timestamp": 1791589361
+      },
+      "extra": {
+       "_ce": {
+        "prCnt": 0,
+        "tgtAmtOut": "24720708",
+        "ces": [
+         {
+          "pool": "0x637ad8d2611d3efe2ef41fdbb40b9f21abaf9585",
+          "tokenIn": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+          "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "swapAmount": "24909188180271599452160",
+          "amountOut": "24100776",
+          "exchange": "aerodrome",
+          "poolType": "velodrome-v2",
+          "poolExtra": {
+           "fee": 30,
+           "feePrecision": 10000,
+           "blockNumber": 52397255
+          },
+          "extra": null
+         }
+        ]
+       },
+       "_cs": "11689719286942731327",
+       "_fr": {
+        "amountOut": "9693377558805992",
+        "amountOutUsd": 24.09830167562993
+       },
+       "_fs": {
+        "pool": "0x637ad8d2611d3efe2ef41fdbb40b9f21abaf9585",
+        "tokenIn": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+        "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "swapAmount": "24909188180271599452160",
+        "amountOut": "24100776",
+        "exchange": "aerodrome",
+        "poolType": "velodrome-v2",
+        "poolExtra": {
+         "fee": 30,
+         "feePrecision": 10000,
+         "blockNumber": 52397255
+        },
+        "extra": null
+       },
+       "_ts": "1791589362",
+       "b": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+       "bAmt": "24909188180271599452160",
+       "q": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+       "qAmt": "24736392",
+       "ri": "7c5cb766DkNNSaxv"
+      }
+     },
+     {
+      "pool": "pmm_1_0x4200000000000000000000000000000000000006_0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "tokenOut": "0x4200000000000000000000000000000000000006",
+      "swapAmount": "24720708",
+      "amountOut": "9934322148647370",
+      "exchange": "pmm-1/kipseli-prop",
+      "poolType": "orderbook",
+      "poolExtra": {
+       "approvalAddress": "",
+       "blockNumber": 0
+      },
+      "extra": {
+       "_ce": {
+        "prCnt": 1,
+        "tgtAmtOut": "9934322148647370",
+        "ces": [
+         {
+          "pool": "pmm_13_0x4200000000000000000000000000000000000006_0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "tokenOut": "0x4200000000000000000000000000000000000006",
+          "swapAmount": "24720708",
+          "amountOut": "9937439564971229",
+          "exchange": "pmm-13",
+          "poolType": "orderbook",
+          "poolExtra": {
+           "approvalAddress": "",
+           "blockNumber": 0
+          },
+          "extra": null
+         },
+         {
+          "pool": "0x4e392fbfe4d0557c82d2f97f02ec39daa31516dd",
+          "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "tokenOut": "0x4200000000000000000000000000000000000006",
+          "swapAmount": "24720708",
+          "amountOut": "9941546410104424",
+          "exchange": "aerodrome-cl-3",
+          "poolType": "slipstream",
+          "poolExtra": {
+           "swapFee": 80,
+           "priceLimit": "1461446703485210103287273052203988822378723970341",
+           "blockNumber": 52400005
+          },
+          "extra": {
+           "rAI": "0",
+           "nSqrtRx96": "3950637846436587328980557",
+           "nT": -198135
+          }
+         }
+        ]
+       },
+       "_fs": {
+        "pool": "kipseli-prop_0x4200000000000000000000000000000000000006_0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "tokenOut": "0x4200000000000000000000000000000000000006",
+        "swapAmount": "24720708",
+        "amountOut": "9936627693365137",
+        "exchange": "kipseli-prop",
+        "poolType": "kipseli-prop",
+        "poolExtra": {
+         "blockNumber": 52400006,
+         "routerAddress": "0x71c2ed90cc288229be59f26b8b3eef3c07d7ab99",
+         "approvalAddress": "0x71c2ed90cc288229be59f26b8b3eef3c07d7ab99"
+        },
+        "extra": null
+       }
+      }
+     }
+    ]
+   ],
+   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+   "routeID": "7c5cb766DkNNSaxv",
+   "checksum": "11689719286942731327",
+   "timestamp": 1791589362
+  },
+  "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
+ },
+ "requestId": "7c5cb766-0e43-4d49-ac6f-b849e2990e71"
+}

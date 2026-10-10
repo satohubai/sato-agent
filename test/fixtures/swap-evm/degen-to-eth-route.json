@@ -1,0 +1,132 @@
+{
+ "code": 0,
+ "message": "successfully",
+ "data": {
+  "routeSummary": {
+   "tokenIn": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+   "amountIn": "5000000000000000000000",
+   "amountInUsd": "4.970363274642541",
+   "tokenOut": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+   "amountOut": "1991450054987385",
+   "amountOutUsd": "4.9508609260183585",
+   "gas": "750081",
+   "gasPrice": "6000000",
+   "gasUsd": "0.011188470546721195",
+   "l1FeeUsd": "0.0000183249191029703",
+   "extraFee": {
+    "feeAmount": "15",
+    "chargeFeeBy": "currency_out",
+    "isInBps": true,
+    "feeReceiver": "0xcee53eb001d4d1743ef9df333dcf45bc38622be9"
+   },
+   "route": [
+    [
+     {
+      "pool": "bebop_0x4ed4e862860bed51a9570b96d89af5e1b0efefed_0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "tokenIn": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+      "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "swapAmount": "5000000000000000000000",
+      "amountOut": "4958673",
+      "exchange": "bebop/aerodrome",
+      "poolType": "bebop",
+      "poolExtra": {
+       "timestamp": 1791589369
+      },
+      "extra": {
+       "_ce": {
+        "prCnt": 0,
+        "tgtAmtOut": "4958673",
+        "ces": [
+         {
+          "pool": "0x637ad8d2611d3efe2ef41fdbb40b9f21abaf9585",
+          "tokenIn": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+          "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "swapAmount": "5000000000000000000000",
+          "amountOut": "4921110",
+          "exchange": "aerodrome",
+          "poolType": "velodrome-v2",
+          "poolExtra": {
+           "fee": 30,
+           "feePrecision": 10000,
+           "blockNumber": 52397255
+          },
+          "extra": null
+         }
+        ]
+       },
+       "_cs": "8821540492450842039",
+       "_fr": {
+        "amountOut": "1979311284679021",
+        "amountOutUsd": 4.920683235415933
+       },
+       "_fs": {
+        "pool": "0x637ad8d2611d3efe2ef41fdbb40b9f21abaf9585",
+        "tokenIn": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+        "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "swapAmount": "5000000000000000000000",
+        "amountOut": "4921110",
+        "exchange": "aerodrome",
+        "poolType": "velodrome-v2",
+        "poolExtra": {
+         "fee": 30,
+         "feePrecision": 10000,
+         "blockNumber": 52397255
+        },
+        "extra": null
+       },
+       "_ts": "1791589373",
+       "b": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+       "bAmt": "5000000000000000000000",
+       "q": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+       "qAmt": "4966860",
+       "ri": "6cf02484iflF1rHQ"
+      }
+     },
+     {
+      "pool": "0x0000efc4ec03a7c47d3a38a9be7ff1d52dd01b99",
+      "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "tokenOut": "0x4200000000000000000000000000000000000006",
+      "swapAmount": "4958673",
+      "amountOut": "1994441717563730",
+      "exchange": "lunarbase",
+      "poolType": "lunarbase",
+      "poolExtra": {
+       "blockHash": "0xe57796e38ab6ccb3ad8d0366abbca6bdfdba9b51c61fff7007cab8591b20d9f0",
+       "blockNumber": 52400011,
+       "approvalAddress": "0x0000efc4ec03a7c47d3a38a9be7ff1d52dd01b99",
+       "n": true
+      },
+      "extra": {
+       "_ce": {
+        "prCnt": 1,
+        "tgtAmtOut": "1994441717563730",
+        "ces": [
+         {
+          "pool": "0xdf033790907c60c9b81ae355f76f74f52f92114a",
+          "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "tokenOut": "0x4200000000000000000000000000000000000006",
+          "swapAmount": "4958673",
+          "amountOut": "1994189958864134",
+          "exchange": "maverick-v2",
+          "poolType": "maverick-v2",
+          "poolExtra": {
+           "approvalAddress": "",
+           "blockNumber": 52399956
+          },
+          "extra": {}
+         }
+        ]
+       }
+      }
+     }
+    ]
+   ],
+   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+   "routeID": "6cf02484iflF1rHQ",
+   "checksum": "8821540492450842039",
+   "timestamp": 1791589373
+  },
+  "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
+ },
+ "requestId": "6cf02484-89f9-45d6-b1d0-d64cc28ac270"
+}

@@ -1,0 +1,71 @@
+{
+ "code": 0,
+ "message": "successfully",
+ "data": {
+  "routeSummary": {
+   "tokenIn": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+   "amountIn": "10000000000000000",
+   "amountInUsd": "24.86058293864528",
+   "tokenOut": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+   "amountOut": "24909188180271599452160",
+   "amountOutUsd": "24.7615428264764",
+   "gas": "330498",
+   "gasPrice": "6000000",
+   "gasUsd": "0.004929823764033833",
+   "l1FeeUsd": "0.000016128576682663264",
+   "extraFee": {
+    "feeAmount": "15",
+    "chargeFeeBy": "currency_in",
+    "isInBps": true,
+    "feeReceiver": "0xcee53eb001d4d1743ef9df333dcf45bc38622be9"
+   },
+   "route": [
+    [
+     {
+      "pool": "0xafb62448929664bfccb0aae22f232520e765ba88",
+      "tokenIn": "0x4200000000000000000000000000000000000006",
+      "tokenOut": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+      "swapAmount": "9985000000000000",
+      "amountOut": "24909188180271599452160",
+      "exchange": "aerodrome-cl",
+      "poolType": "slipstream",
+      "poolExtra": {
+       "swapFee": 2430,
+       "priceLimit": "4310618293",
+       "blockNumber": 52399497
+      },
+      "extra": {
+       "_cs": "11694320724602432992",
+       "_ss": {
+        "pool": "0x2c4909355b0c036840819484c3a882a95659abf3",
+        "tokenIn": "0x4200000000000000000000000000000000000006",
+        "tokenOut": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+        "swapAmount": "9985000000000000",
+        "amountOut": "24844527813725905351610",
+        "exchange": "aerodrome",
+        "poolType": "velodrome-v2",
+        "poolExtra": {
+         "fee": 30,
+         "feePrecision": 10000,
+         "blockNumber": 52399497
+        },
+        "extra": null
+       },
+       "_ts": "1791589357",
+       "nSqrtRx96": "125277693885181133820479093828217",
+       "nT": 147326,
+       "rAI": "0",
+       "ri": "92ecc415b45Fu4l7"
+      }
+     }
+    ]
+   ],
+   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+   "routeID": "92ecc415b45Fu4l7",
+   "checksum": "11694320724602432992",
+   "timestamp": 1791589357
+  },
+  "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
+ },
+ "requestId": "92ecc415-6f8e-45bb-897b-9be8d1cc2889"
+}

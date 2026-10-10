@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   address,
+  fetchAddressesForLookupTables,
   generateKeyPairSigner,
   getBase64Decoder,
   getBase64Encoder,
@@ -48,6 +49,22 @@ const fixture = (name) => JSON.parse(readFileSync(new URL(`./fixtures/swap-solan
 const USDC_SOL = fixture("usdc-to-sol");
 const SOL_USDC = fixture("sol-to-usdc");
 const NOFEE = fixture("usdc-to-sol-nofee");
+// Long-tail tokens, recorded from mainnet 2026-10-09 (record.mjs): BONK is a classic SPL mint, SI a Token-2022 mint with a
+// 1% transfer fee; WIF and GOAT are routed through other tokens (two and three hops); the "fresh" ones are for a wallet that
+// holds nothing, so they are only decoded and inspected (they show the account creations).
+const BONK_BUY = fixture("usdc-to-bonk");
+const BONK_SELL = fixture("bonk-to-usdc");
+const SOL_BONK = fixture("sol-to-bonk");
+const BONK_SOL = fixture("bonk-to-sol");
+const WIF_BUY = fixture("usdc-to-wif-multihop");
+const GOAT_SELL = fixture("goat-to-usdc-multihop");
+const SI_BUY = fixture("usdc-to-si-token2022");
+const SI_SELL = fixture("si-to-usdc-token2022");
+const FRESH_BUY = fixture("usdc-to-bonk-fresh");
+const FRESH_SELL = fixture("bonk-to-sol-fresh");
+const TAIL_FIXTURES = [BONK_BUY, BONK_SELL, SOL_BONK, BONK_SOL, WIF_BUY, GOAT_SELL, SI_BUY, SI_SELL];
+const BONK = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263";
+const SI = "DEW9dSN6QpWyNthphCpMmAbZP1Q4cEKR9xQXAri98WDP";
 const JUP_IDL = fixture("jupiter-idl");
 const WALLET = USDC_SOL.wallet;
 const WSOL = S.WSOL_MINT;
@@ -79,6 +96,17 @@ function fakeRpc(fx, o = {}) {
         const rec = recorded("getMultipleAccounts");
         // Recorded for the same table list; serve it for any request of that list.
         return structuredClone(rec);
+      },
+    }),
+    // A mint (or any account) read: served from what was recorded for that address, or from `o.accounts` (address -> RPC entry or null).
+    getAccountInfo: (addr) => ({
+      send: async () => {
+        o.onGetAccountInfo?.(String(addr));
+        if (o.accountsThrow) throw new Error(o.accountsThrow);
+        if (o.accounts && String(addr) in o.accounts) return { context: { slot: 1n }, value: structuredClone(o.accounts[String(addr)]) };
+        const rec = fx.rpc.find((c) => c.method === "getAccountInfo" && c.args[0] === String(addr));
+        if (!rec) throw new Error(`no recorded getAccountInfo for ${addr}`);
+        return structuredClone(rec.result);
       },
     }),
     simulateTransaction: (wire, opts) => ({
@@ -144,7 +172,7 @@ const indexOf = (c, addr) => c.staticAccounts.indexOf(addr);
 /** The fixture plan, rebuilt through planSolanaSwap against the recorded Jupiter replies. */
 async function planFrom(fx, extra = {}) {
   const { fetch } = fakeFetch(fx);
-  return S.planSolanaSwap(fx.request, { agent: fx.wallet, satoFeeBps: fx.request.satoFeeBps, fetch, minGapMs: 0, now: () => fx.built_at, ...extra });
+  return S.planSolanaSwap(fx.request, { agent: fx.wallet, satoFeeBps: fx.request.satoFeeBps, fetch, rpc: fakeRpc(fx).rpc, minGapMs: 0, now: () => fx.built_at, ...extra });
 }
 const verifyDeps = (fx, o) => ({ rpc: fakeRpc(fx, o).rpc, minGapMs: 0 });
 const intentOf = (fx) => ({ agent: fx.wallet, from: fx.request.from, to: fx.request.to, amount: fx.request.amount });
@@ -292,7 +320,7 @@ test("plan: SOL -> USDC takes the fee in wrapped SOL, to the pinned wSOL referra
   assert.match(plan.fee.text, /0\.00075 SOL/);
 });
 
-test("plan: amounts are strict (no rounding), assets are USDC and SOL only, slippage is bounded", async () => {
+test("plan: amounts are strict (no rounding), an asset is USDC, SOL or a mint address, slippage is bounded", async () => {
   const base = { agent: WALLET, satoFeeBps: 15, fetch: fakeFetch(USDC_SOL).fetch, minGapMs: 0 };
   const bad = (p, re) => assert.rejects(S.planSolanaSwap(p, base), re);
   await bad({ from: "USDC", to: "SOL", amount: "1.0000001" }, /not a USDC amount/);
@@ -301,7 +329,7 @@ test("plan: amounts are strict (no rounding), assets are USDC and SOL only, slip
   await bad({ from: "USDC", to: "SOL", amount: "0" }, /not a positive USDC amount/);
   await bad({ from: "SOL", to: "USDC", amount: "-1" }, /not a SOL amount/);
   await bad({ from: "USDC", to: "USDC", amount: "1" }, /two different assets/);
-  await bad({ from: "USDC", to: "BONK", amount: "1" }, /USDC <-> SOL only/);
+  await bad({ from: "USDC", to: "BONK", amount: "1" }, /"BONK" is not USDC, SOL or a Solana mint address/);
   await bad({ from: "USDC", to: "SOL", amount: "1", slippageBps: 0 }, /slippage/);
   await bad({ from: "USDC", to: "SOL", amount: "1", slippageBps: 501 }, /slippage/);
   await bad({ from: "USDC", to: "SOL", amount: "1", slippageBps: 12.5 }, /slippage/);
@@ -1150,12 +1178,13 @@ test("balanceDeltas: wrapping, unwrapping and closing net to zero; new USDC acco
 
 // ----------------------------------------------------------------- execute
 
-async function readdressed(fx, to) {
+async function readdressed(fx, to, extraMints = []) {
   // Same recorded swap, but for a throwaway key, so it can really be signed in the test.
   const T = to.address;
   const ata = async (mint) => (await findAssociatedTokenPda({ owner: address(T), mint: address(mint), tokenProgram: TOKEN_PROGRAM_ADDRESS }))[0];
   const oldAta = async (mint) => (await findAssociatedTokenPda({ owner: address(fx.wallet), mint: address(mint), tokenProgram: TOKEN_PROGRAM_ADDRESS }))[0];
   const map = new Map([[fx.wallet, T], [await oldAta(USDC_MINT), await ata(USDC_MINT)], [await oldAta(WSOL), await ata(WSOL)]]);
+  for (const m of extraMints) map.set(await oldAta(m), await ata(m)); // a classic SPL long-tail mint's account
   const swapAll = (text) => [...map].reduce((t, [a, b]) => t.split(a).join(b), text);
   const next = JSON.parse(swapAll(JSON.stringify(fx)));
   next.wallet = T;
@@ -1178,7 +1207,7 @@ async function readdressed(fx, to) {
 
 async function setup(fxName = USDC_SOL, o = {}) {
   const signer = await generateKeyPairSigner();
-  const { fx, plan } = await readdressed(fxName, signer);
+  const { fx, plan } = await readdressed(fxName, signer, o.extraMints);
   const rig = fakeRpc(fx, { accountKeys: compiledOf(plan.swap_transaction).staticAccounts, ...o });
   // usdNotional is what the orchestrator measures independently; the plan's own estimate is never used.
   const deps = { rpc: rig.rpc, signer, now: () => plan.built_at + 2_000, sleep: async () => {}, minGapMs: 0, pollMs: 0, usdNotional: 25, ...(o.deps ?? {}) };
@@ -1376,6 +1405,918 @@ test("dry run: plans and verifies, reserves nothing, signs nothing, and leaves o
   assert.equal(entries().length, before);
 });
 
+// ================================================================= any SPL / Token-2022 mint against USDC or SOL
+//
+// The fixtures are real mainnet builds (see TAIL_FIXTURES above). Mint data for the extension rules is synthetic:
+// built here, byte by byte, in the layout spl-token and spl-token-2022 use.
+
+const ENC = getAddressEncoder();
+const SIM_TAIL = 4; // in a fee-carrying fixture's `accounts` read-back: agent, USDC, wrapped SOL, fee account, the token's account
+
+/** Token-2022 mint-extension bodies (type numbers and sizes are spl-token-2022's ExtensionType). */
+const EXT = {
+  PermanentDelegate: [12, () => Buffer.alloc(32, 7)],
+  TransferHook: [14, () => Buffer.alloc(64, 7)],
+  NonTransferable: [9, () => Buffer.alloc(0)],
+  ConfidentialTransferMint: [4, () => Buffer.alloc(65, 1)],
+  ConfidentialTransferFeeConfig: [16, () => Buffer.alloc(129, 1)],
+  ConfidentialMintBurn: [24, () => Buffer.alloc(196, 1)],
+  DefaultAccountStateFrozen: [6, () => Buffer.from([2])],
+  DefaultAccountStateInitialized: [6, () => Buffer.from([1])],
+  PausablePaused: [26, () => Buffer.concat([Buffer.alloc(32, 3), Buffer.from([1])])],
+  PausableLive: [26, () => Buffer.concat([Buffer.alloc(32, 3), Buffer.from([0])])],
+  MintCloseAuthority: [3, () => Buffer.alloc(32, 5)],
+  InterestBearingConfig: [10, () => Buffer.alloc(52, 1)],
+  ScaledUiAmountConfig: [25, () => Buffer.alloc(56, 1)],
+  MetadataPointer: [18, () => Buffer.alloc(64, 2)],
+  TokenMetadata: [19, () => Buffer.alloc(90, 65)],
+  TransferFeeConfig: [1, (bps = 250, newerBps = bps) => {
+    const b = Buffer.alloc(108);
+    Buffer.alloc(32, 9).copy(b, 0); // transfer fee config authority
+    b.writeBigUInt64LE(1n, 72); b.writeBigUInt64LE(5_000n, 80); b.writeUInt16LE(bps, 88); // older fee
+    b.writeBigUInt64LE(2n, 90); b.writeBigUInt64LE(7_000n, 98); b.writeUInt16LE(newerBps, 106); // newer fee
+    return b;
+  }],
+  Unknown: [99, () => Buffer.alloc(8)],
+};
+const ext = (name, ...args) => [EXT[name][0], EXT[name][1](...args)];
+
+/** An RPC mint account: spl-token's 82 bytes, and for Token-2022 padding to 165, the account-type byte and a TLV list. */
+function mintEntry({ program = TOKEN_PROGRAM_ADDRESS, decimals = 6, mintAuthority = null, freezeAuthority = null, extensions = [], initialized = true, space } = {}) {
+  const base = Buffer.alloc(82);
+  if (mintAuthority) { base.writeUInt32LE(1, 0); Buffer.from(ENC.encode(address(mintAuthority))).copy(base, 4); }
+  base.writeBigUInt64LE(1_000_000_000n, 36);
+  base[44] = decimals;
+  base[45] = initialized ? 1 : 0;
+  if (freezeAuthority) { base.writeUInt32LE(1, 46); Buffer.from(ENC.encode(address(freezeAuthority))).copy(base, 50); }
+  let raw = base;
+  if (program === TOKEN_2022_PROGRAM && extensions.length) {
+    const tlv = Buffer.concat(extensions.map(([type, data]) => {
+      const h = Buffer.alloc(4);
+      h.writeUInt16LE(type, 0); h.writeUInt16LE(data.length, 2);
+      return Buffer.concat([h, data]);
+    }));
+    raw = Buffer.concat([base, Buffer.alloc(165 - 82), Buffer.from([1]), tlv]);
+  }
+  return { data: [raw.toString("base64"), "base64"], executable: false, lamports: "1461600", owner: program, rentEpoch: "1", space: String(space ?? raw.length) };
+}
+/** A resolver rig over the recorded fixtures' RPC that serves `entry` for `mint`. */
+const rpcFor = (mint, entry) => fakeRpc(BONK_BUY, { accounts: { [mint]: entry } }).rpc;
+
+test("tokens: USDC and SOL are pinned (by symbol, in any case, or by mint) and read nothing from the chain", async () => {
+  const noChain = { rpc: new Proxy({}, { get: () => () => { throw new Error("the chain must not be read for a major"); } }) };
+  const usdc = await S.resolveSolanaToken("usdc", noChain);
+  assert.deepEqual({ mint: usdc.mint, decimals: usdc.decimals, program: usdc.program, major: usdc.major, onchain: usdc.onchain }, { mint: USDC_MINT, decimals: 6, program: TOKEN_PROGRAM_ADDRESS, major: "USDC", onchain: false });
+  const sol = await S.resolveSolanaToken("SOL", noChain);
+  assert.deepEqual({ mint: sol.mint, decimals: sol.decimals, major: sol.major }, { mint: WSOL, decimals: 9, major: "SOL" });
+  assert.equal((await S.resolveSolanaToken(USDC_MINT, noChain)).major, "USDC");
+  assert.equal((await S.resolveSolanaToken(WSOL, noChain)).major, "SOL", "the wrapped-SOL mint is SOL");
+  for (const t of [usdc, sol]) assert.deepEqual([t.extensions, t.refusals], [[], []]);
+});
+
+test("tokens: a classic SPL mint is read from the chain: program, decimals, authorities, no extensions (BONK, recorded)", async () => {
+  const t = await S.resolveSolanaToken(BONK, { rpc: fakeRpc(BONK_BUY).rpc });
+  assert.equal(t.mint, BONK);
+  assert.equal(t.program, TOKEN_PROGRAM_ADDRESS);
+  assert.equal(t.program_name, "Token");
+  assert.equal(t.decimals, 5);
+  assert.equal(t.major, null);
+  assert.equal(t.onchain, true);
+  assert.equal(t.mint_authority, null);
+  assert.equal(t.freeze_authority, null);
+  assert.deepEqual(t.extensions, []);
+  assert.deepEqual(t.refusals, []);
+  assert.equal(t.transfer_fee, null);
+  assert.ok(t.notes.some((n) => /No freeze authority/.test(n)) && t.notes.some((n) => /No mint authority/.test(n)));
+});
+
+test("tokens: a Token-2022 mint with a transfer fee is read from the chain, the fee reported with its bps, and it is allowed (SI, recorded)", async () => {
+  const t = await S.resolveSolanaToken(SI, { rpc: fakeRpc(SI_BUY).rpc });
+  assert.equal(t.program, TOKEN_2022_PROGRAM);
+  assert.equal(t.program_name, "Token-2022");
+  assert.equal(t.decimals, 6);
+  assert.deepEqual(t.extensions, ["MetadataPointer", "TransferFeeConfig", "TokenMetadata"]);
+  assert.equal(t.transfer_fee.bps, 100);
+  assert.equal(t.extension_details.TransferFeeConfig.bps, 100);
+  assert.deepEqual(t.refusals, []);
+  assert.match(t.notes.join("\n"), /transfer fee of 1% \(100 bps/);
+  S.assertSolanaTokenTradable(t); // does not throw
+});
+
+test("tokens: Token-2022 extensions that let someone move or freeze the agent's tokens, or stop a sale, are refused, naming the extension", async () => {
+  const mint = await randomAddress();
+  for (const name of ["PermanentDelegate", "TransferHook", "NonTransferable", "ConfidentialTransferMint", "ConfidentialTransferFeeConfig", "ConfidentialMintBurn"]) {
+    // On its own and among harmless ones.
+    for (const extensions of [[ext(name)], [ext("MetadataPointer"), ext(name), ext("TokenMetadata")]]) {
+      const t = await S.resolveSolanaToken(mint, { rpc: rpcFor(mint, mintEntry({ program: TOKEN_2022_PROGRAM, extensions })) });
+      assert.deepEqual(t.refusals.map((r) => r.rule), ["solana_swap.token_extension_refused"], name);
+      assert.match(t.refusals[0].message, new RegExp(`\\b${name}\\b`), "the refusal names the extension");
+      assert.throws(() => S.assertSolanaTokenTradable(t), (e) => e instanceof Refused && rules(e).includes("solana_swap.token_extension_refused"));
+    }
+  }
+  // A mint whose new accounts start frozen, or that is paused right now, cannot be sold; one the kit has no table entry for could do anything.
+  for (const [extensions, re] of [[[ext("DefaultAccountStateFrozen")], /DefaultAccountState.*frozen/], [[ext("PausablePaused")], /paused right now/], [[ext("Unknown")], /does not know \(type 99\)/]]) {
+    const t = await S.resolveSolanaToken(mint, { rpc: rpcFor(mint, mintEntry({ program: TOKEN_2022_PROGRAM, extensions })) });
+    assert.deepEqual(t.refusals.map((r) => r.rule), ["solana_swap.token_extension_refused"]);
+    assert.match(t.refusals[0].message, re);
+  }
+  // All of them at once: every one is named.
+  const all = await S.resolveSolanaToken(mint, { rpc: rpcFor(mint, mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [ext("PermanentDelegate"), ext("TransferHook"), ext("NonTransferable")] })) });
+  assert.equal(all.refusals.length, 3);
+  assert.deepEqual(S.TOKEN_2022_EXTENSION_POLICY.refuse && Object.keys(S.TOKEN_2022_EXTENSION_POLICY.refuse).sort(), ["ConfidentialMintBurn", "ConfidentialTransferFeeConfig", "ConfidentialTransferMint", "NonTransferable", "PermanentDelegate", "TransferHook"]);
+});
+
+test("tokens: a transfer fee, a freeze or mint authority, metadata and the like are reported and allowed", async () => {
+  const mint = await randomAddress();
+  const auth = await randomAddress();
+  const t = await S.resolveSolanaToken(mint, { rpc: rpcFor(mint, mintEntry({ program: TOKEN_2022_PROGRAM, freezeAuthority: auth, mintAuthority: auth, extensions: [ext("MetadataPointer"), ext("TransferFeeConfig", 250, 400), ext("MintCloseAuthority"), ext("PausableLive"), ext("InterestBearingConfig"), ext("DefaultAccountStateInitialized"), ext("TokenMetadata")] })) });
+  assert.deepEqual(t.refusals, []);
+  assert.equal(t.freeze_authority, auth);
+  assert.equal(t.mint_authority, auth);
+  assert.equal(t.transfer_fee.bps, 400, "the higher of the older and newer fee, so the owner is never shown less than may be charged");
+  assert.equal(t.transfer_fee.older.bps, 250);
+  assert.equal(t.transfer_fee.newer.bps, 400);
+  const notes = t.notes.join("\n");
+  assert.match(notes, new RegExp(`freeze authority is set \\(${auth}\\)`));
+  assert.match(notes, new RegExp(`mint authority is set \\(${auth}\\)`));
+  assert.match(notes, /transfer fee of 4% \(400 bps/);
+  assert.match(notes, /can be paused/);
+  assert.match(notes, /can be closed/);
+  assert.match(notes, /metadata/);
+  assert.match(notes, /interest-adjusted/);
+  assert.doesNotMatch(notes, /\b(safe|secure|trusted|guaranteed?|scam|malicious)\b/i);
+  S.assertSolanaTokenTradable(t);
+  // A classic mint reports its authorities too.
+  const classic = await S.resolveSolanaToken(mint, { rpc: rpcFor(mint, mintEntry({ freezeAuthority: auth })) });
+  assert.equal(classic.freeze_authority, auth);
+  assert.equal(classic.mint_authority, null);
+  assert.deepEqual(classic.refusals, []);
+});
+
+test("tokens: an address that is not a readable mint is refused or errors, never guessed at", async () => {
+  const mint = await randomAddress();
+  const refused = async (entry, re) => {
+    await assert.rejects(S.resolveSolanaToken(mint, { rpc: rpcFor(mint, entry) }), (e) => e instanceof Refused && rules(e)[0] === "solana_swap.token_not_a_mint" && re.test(e.message), re.source);
+  };
+  await refused(null, /nothing exists at that address/);
+  await refused({ ...mintEntry(), owner: "11111111111111111111111111111111" }, /owned by 1111/);
+  await refused({ ...mintEntry(), owner: S.JUPITER_PROGRAM }, /not a token mint/);
+  await refused(tokenAccountEntry({ mint: USDC_MINT, owner: WALLET }), /token account/); // 165 bytes under the Token program
+  await refused(mintEntry({ initialized: false }), /never initialised/);
+  await refused({ data: ["AAAA", "base64"], executable: false, lamports: "1", owner: TOKEN_PROGRAM_ADDRESS, space: "3" }, /too short/);
+  // Token-2022: a token account (type byte 2) in place of a mint; a truncated extension list; an extension of the wrong size listed twice.
+  const t22 = mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [ext("MetadataPointer")] });
+  const raw = Buffer.from(t22.data[0], "base64");
+  const asAccount = Buffer.from(raw); asAccount[165] = 2;
+  await refused({ ...t22, data: [asAccount.toString("base64"), "base64"] }, /not a mint/);
+  await refused({ ...t22, data: [raw.subarray(0, raw.length - 10).toString("base64"), "base64"] }, /malformed extension list/);
+  const wrongSize = mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [[12, Buffer.alloc(33)]] }); // a PermanentDelegate of 33 bytes
+  await refused(wrongSize, /PermanentDelegate extension is 33 bytes, not the 32/);
+  await refused(mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [ext("MetadataPointer"), ext("MetadataPointer")] }), /lists the MetadataPointer extension twice/);
+  // A tag other than 0 or 1 in an optional field.
+  const bad = Buffer.from(mintEntry().data[0], "base64"); bad.writeUInt32LE(7, 0);
+  await refused({ ...mintEntry(), data: [bad.toString("base64"), "base64"] }, /malformed authority field/);
+  // Not an address at all, and an RPC that fails: errors before anything is signed.
+  await assert.rejects(S.resolveSolanaToken("BONK", { rpc: rpcFor(mint, null) }), /"BONK" is not USDC, SOL or a Solana mint address/);
+  await assert.rejects(S.resolveSolanaToken(mint, { rpc: fakeRpc(BONK_BUY, { accountsThrow: "rpc down" }).rpc }), /could not be read from the chain \(rpc down\); nothing was signed/);
+});
+
+test("tokens: a swap with a refused mint, with two tokens, or with the same asset twice is refused before Jupiter is asked", async () => {
+  const mint = await randomAddress();
+  const calls = [];
+  const fetch = async (u) => (calls.push(String(u)), new Response("{}"));
+  const base = (entry) => ({ agent: WALLET, satoFeeBps: 15, fetch, minGapMs: 0, rpc: rpcFor(mint, entry) });
+  const hooked = mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [ext("TransferHook")] });
+  await assert.rejects(S.planSolanaSwap({ from: "USDC", to: mint, amount: "5" }, base(hooked)), (e) => e instanceof Refused && rules(e)[0] === "solana_swap.token_extension_refused" && /TransferHook/.test(e.message));
+  await assert.rejects(S.planSolanaSwap({ from: mint, to: "SOL", amount: "5" }, base(hooked)), (e) => e instanceof Refused && rules(e)[0] === "solana_swap.token_extension_refused");
+  // Token <-> token is a later phase.
+  const other = await randomAddress();
+  const two = { ...base(mintEntry()), rpc: fakeRpc(BONK_BUY, { accounts: { [mint]: mintEntry(), [other]: mintEntry() } }).rpc };
+  await assert.rejects(S.planSolanaSwap({ from: mint, to: other, amount: "5" }, two), (e) => e instanceof Refused && rules(e)[0] === "solana_swap.token_to_token" && /USDC or SOL/.test(e.message));
+  await assert.rejects(S.planSolanaSwap({ from: mint, to: mint, amount: "5" }, base(mintEntry())), /two different assets/);
+  await assert.rejects(S.planSolanaSwap({ from: WSOL, to: "SOL", amount: "1" }, base(mintEntry())), /two different assets/);
+  assert.deepEqual(calls, [], "Jupiter was never asked");
+});
+
+
+// ----------------------------------------------------------------- plan: a long-tail token
+
+test("plan: a long-tail token asks for shared accounts and multi-hop routes, and the fee account is always the USDC or SOL one", async () => {
+  const cases = [
+    // fixture, the fee mint, the fee leg
+    [BONK_BUY, USDC_MINT, "input"],
+    [BONK_SELL, USDC_MINT, "output"],
+    [SOL_BONK, WSOL, "input"],
+    [BONK_SOL, WSOL, "output"],
+    [WIF_BUY, USDC_MINT, "input"],
+    [GOAT_SELL, USDC_MINT, "output"],
+    [SI_BUY, USDC_MINT, "input"],
+    [SI_SELL, USDC_MINT, "output"],
+  ];
+  for (const [fx, feeMint, leg] of cases) {
+    const { fetch, calls } = fakeFetch(fx);
+    const plan = await S.planSolanaSwap(fx.request, { agent: fx.wallet, satoFeeBps: 15, fetch, rpc: fakeRpc(fx).rpc, minGapMs: 0, now: () => fx.built_at });
+    const q = new URL(calls[0].url).searchParams;
+    assert.equal(q.get("onlyDirectRoutes"), null, "a long-tail token may be routed through other tokens");
+    assert.equal(q.get("restrictIntermediateTokens"), "true");
+    assert.equal(q.get("platformFeeBps"), "15");
+    const body = JSON.parse(calls[1].init.body);
+    assert.equal(body.useSharedAccounts, true, "the hops sit in Jupiter's own accounts");
+    assert.equal(body.feeAccount, S.SATO_FEE_ACCOUNTS[feeMint], `${fx.request.from} -> ${fx.request.to}: the fee account is the one for ${feeMint === USDC_MINT ? "USDC" : "wrapped SOL"}`);
+    assert.notEqual(plan.fee.mint, plan.token.mint, "never the long-tail token");
+    assert.equal(plan.fee.mint, feeMint);
+    assert.equal(plan.fee.leg, leg);
+    assert.equal(plan.fee.account, S.SATO_FEE_ACCOUNTS[feeMint]);
+    // from / to: the symbol for USDC and SOL, the mint for the token.
+    const tokenMint = plan.token.mint;
+    assert.deepEqual([plan.from, plan.to].filter((x) => x === tokenMint), [tokenMint]);
+    assert.ok([plan.mint_in, plan.mint_out].includes(tokenMint));
+    assert.equal(plan.tokens.in.mint, plan.mint_in);
+    assert.equal(plan.tokens.out.mint, plan.mint_out);
+    assert.equal(plan.tokens.in.decimals, plan.mint_in === tokenMint ? plan.token.decimals : plan.mint_in === USDC_MINT ? 6 : 9);
+    assert.match(plan.disclosure.join("\n"), new RegExp(`mint ${tokenMint}`));
+    assert.equal(plan.quote.route_hops, plan.quote.route.length || plan.quote.route_hops);
+    assert.doesNotMatch(plan.disclosure.join("\n"), /\b(safe|secure|trusted|guaranteed?)\b/i);
+  }
+  // USDC <-> SOL is unchanged: direct routes, no shared accounts.
+  const { fetch, calls } = fakeFetch(USDC_SOL);
+  await S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, fetch, minGapMs: 0 });
+  assert.equal(new URL(calls[0].url).searchParams.get("onlyDirectRoutes"), "true");
+  assert.equal(JSON.parse(calls[1].init.body).useSharedAccounts, false);
+});
+
+test("plan: the fee text says which leg it comes from; an output fee is a share of the payout, never of the other token", async () => {
+  const buy = await planFrom(BONK_BUY);
+  assert.match(buy.fee.text, /0\.15% of the USDC you swap \(up to 0\.0075 USDC\)/);
+  assert.equal(buy.fee.max_units, "7500");
+  assert.equal(buy.fee.estimated, undefined);
+  const sell = await planFrom(BONK_SELL);
+  assert.match(sell.fee.text, /0\.15% of the USDC the swap pays out \(about [\d.]+ USDC at Jupiter's estimate\).*FMEXEnUt2fxKkZewdWq5PKebLw4vs1ddyayJjKap4LGo.*same transaction.*nothing is ever taken in the other token/);
+  assert.equal(sell.fee.estimated, true);
+  // 15 bps of what the pool paid out: out / (1 - 0.0015) x 0.0015, rounded up, plus a unit.
+  const out = BigInt(sell.quote.out_amount);
+  assert.ok(BigInt(sell.fee.max_units) >= (out * 15n) / 9985n && BigInt(sell.fee.max_units) <= (out * 15n) / 9985n + 2n, sell.fee.max_units);
+  const sellSol = await planFrom(BONK_SOL);
+  assert.match(sellSol.fee.text, /0\.15% of the SOL the swap pays out/);
+});
+
+test("plan: amounts of a token follow the mint's decimals, strictly; SOL <-> token has no USD estimate, USDC <-> token has", async () => {
+  const bad = (p, re) => assert.rejects(S.planSolanaSwap(p, { agent: WALLET, satoFeeBps: 15, fetch: fakeFetch(BONK_SELL).fetch, rpc: fakeRpc(BONK_SELL).rpc, minGapMs: 0 }), re);
+  await bad({ from: BONK, to: "USDC", amount: "1.000001" }, /not a .* amount: "1\.000001" \(a plain number with at most 5 decimals\)/); // BONK has 5
+  await bad({ from: BONK, to: "USDC", amount: "0" }, /not a positive/);
+  await bad({ from: BONK, to: "USDC", amount: "-1" }, /not a .* amount/);
+  await bad({ from: BONK, to: "USDC", amount: "1e3" }, /not a .* amount/);
+  await bad({ from: BONK, to: "USDC", amount: "184467440737095516160" }, /too large to count exactly/);
+  assert.equal(S.tokenUnits("1.5", 5), 150000n);
+  assert.equal(S.tokenUnits("3", 0), 3n);
+  assert.throws(() => S.tokenUnits("3.1", 0), /at most 0 decimals/);
+  const sell = await planFrom(BONK_SELL);
+  assert.equal(sell.amount_in, "50000000000", "500,000 BONK at 5 decimals");
+  assert.equal(sell.usd_estimate, Number(sell.quote.out_amount) / 1e6, "read off the USDC leg");
+  const buy = await planFrom(BONK_BUY);
+  assert.equal(buy.usd_estimate, 5);
+  assert.equal((await planFrom(SOL_BONK)).usd_estimate, null, "no USDC leg: the caller prices it independently");
+  assert.equal((await planFrom(BONK_SOL)).usd_estimate, null);
+});
+
+test("plan: Jupiter's price impact is passed through (as sent, and in basis points), never enforced; a missing one is null", async () => {
+  const edit = (impact) => fakeFetch(BONK_SELL, { edit: (path, text) => (path.startsWith("/quote") ? JSON.stringify({ ...JSON.parse(text), priceImpactPct: impact }) : text) });
+  const run = (impact) => S.planSolanaSwap(BONK_SELL.request, { agent: BONK_SELL.wallet, satoFeeBps: 15, fetch: edit(impact).fetch, rpc: fakeRpc(BONK_SELL).rpc, minGapMs: 0, now: () => BONK_SELL.built_at });
+  // Jupiter's priceImpactPct is a fraction: 0.0344 is 3.44% (measured on 2026-10-09).
+  const big = await run("0.0344");
+  assert.equal(big.quote.price_impact_pct, "0.0344");
+  assert.equal(big.quote.price_impact_bps, 344);
+  assert.match(big.disclosure.join("\n"), /Price impact: Jupiter estimates this swap moves the price by about 3\.44%/);
+  // A 40% impact still plans and still verifies: it is shown, not limited (the caller decides).
+  const huge = await run("0.4");
+  assert.equal(huge.quote.price_impact_bps, 4000);
+  assert.equal((await S.verifySolanaSwapPlan(huge, intentOf(BONK_SELL), verifyDeps(BONK_SELL))).ok, true);
+  const none = await run(undefined);
+  assert.equal(none.quote.price_impact_pct, null);
+  assert.equal(none.quote.price_impact_bps, null);
+  assert.doesNotMatch(none.disclosure.join("\n"), /Price impact/);
+  const real = await planFrom(BONK_BUY);
+  assert.equal(real.quote.price_impact_pct, JSON.parse(BONK_BUY.http[0].text).priceImpactPct, "the recorded value, as sent");
+});
+
+test("plan: a fee account other than the pinned one for the USDC or SOL side is refused, with a token on either side", async () => {
+  const mk = (extra) => ({ agent: BONK_SELL.wallet, fetch: fakeFetch(BONK_SELL).fetch, rpc: fakeRpc(BONK_SELL).rpc, minGapMs: 0, satoFeeBps: 15, ...extra });
+  // Selling BONK for USDC: the USDC account is the pinned one; the wrapped-SOL account is not.
+  await assert.rejects(S.planSolanaSwap(BONK_SELL.request, mk({ feeAccount: S.SATO_FEE_ACCOUNTS[WSOL] })), (e) => e instanceof Refused && rules(e)[0] === "solana_swap.fee_account_unpinned");
+  const ok = await S.planSolanaSwap(BONK_SELL.request, mk({ feeAccount: S.SATO_FEE_ACCOUNTS[USDC_MINT] }));
+  assert.equal(ok.fee.account, S.SATO_FEE_ACCOUNTS[USDC_MINT]);
+});
+
+// ----------------------------------------------------------------- verify: the recorded long-tail builds
+
+test("verify: every recorded long-tail build passes, read as Jupiter's shared_accounts_route, with the fee on the USDC or SOL side", async () => {
+  for (const fx of TAIL_FIXTURES) {
+    const label = `${fx.request.from.slice(0, 4)} -> ${fx.request.to.slice(0, 4)}`;
+    const plan = await planFrom(fx);
+    const v = await S.verifySolanaSwapPlan(plan, intentOf(fx), verifyDeps(fx));
+    assert.equal(v.ok, true, label);
+    assert.equal(v.jupiter.instruction, "shared_accounts_route", label);
+    assert.equal(v.jupiter.in_amount, plan.amount_in, label);
+    assert.equal(v.jupiter.quoted_out, plan.quote.out_amount, label);
+    assert.equal(v.jupiter.platform_fee_bps, 15);
+    assert.equal(v.jupiter.enforced_min_out, plan.quote.min_out);
+    assert.ok(BigInt(v.simulated.output_inflow) >= BigInt(plan.quote.min_out), label);
+    assert.equal(v.simulated.fee_leg, plan.fee.leg);
+    // The fee observed in the USDC or SOL account is within the disclosed share.
+    assert.ok(BigInt(v.simulated.fee_observed_units) > 0n && BigInt(v.simulated.fee_observed_units) <= BigInt(v.simulated.fee_disclosed_max_units), label);
+    if (plan.fee.leg === "input") assert.equal(v.simulated.fee_observed_units, ((BigInt(plan.amount_in) * 15n) / 10000n).toString(), "15 bps of the input");
+    assert.equal(v.token.mint, plan.token.mint);
+    assert.equal(v.token.program, plan.token.program);
+    assert.ok(v.programs.every((p) => S.SWAP_PROGRAM_ALLOWLIST[p.id]), label);
+  }
+  // Two or more hops, through Jupiter's accounts: the agent holds no account for the middle tokens.
+  assert.ok((await S.verifySolanaSwapPlan(await planFrom(WIF_BUY), intentOf(WIF_BUY), verifyDeps(WIF_BUY))).jupiter.route_steps >= 2);
+  assert.ok((await S.verifySolanaSwapPlan(await planFrom(GOAT_SELL), intentOf(GOAT_SELL), verifyDeps(GOAT_SELL))).jupiter.route_steps >= 3);
+});
+
+test("verify: a Token-2022 buy creates the agent's account under Token-2022 (rent counted), and a transfer fee leaves the plan's minimum as the check", async () => {
+  const plan = await planFrom(SI_BUY);
+  const v = await S.verifySolanaSwapPlan(plan, intentOf(SI_BUY), verifyDeps(SI_BUY));
+  assert.deepEqual(v.token.extensions, ["MetadataPointer", "TransferFeeConfig", "TokenMetadata"]);
+  assert.equal(v.token.transfer_fee_bps, 100);
+  assert.equal(v.token.program_name, "Token-2022");
+  assert.ok(BigInt(v.simulated.created_token_rent_lamports) > 0n && BigInt(v.simulated.created_token_rent_lamports) < 3_000_000n, "the new Token-2022 account's rent");
+  assert.equal(v.simulated.created_usdc_rent_lamports, "0");
+  assert.ok(v.programs.some((p) => p.name === "Associated Token"));
+  // The agent's net balance is what is held to the minimum, so a transfer fee that took more than the slippage allows is refused.
+  const got = await refusedBy(plan, SI_BUY, { editSim: (sim) => {
+    const keys = [...compiledOf(plan.swap_transaction).staticAccounts, ...sim.loadedAddresses.writable, ...sim.loadedAddresses.readonly];
+    const i = keys.indexOf(PLAN_TAIL_ATA.get(SI_BUY));
+    const t = sim.postTokenBalances.find((b) => b.accountIndex === i);
+    t.uiTokenAmount.amount = (BigInt(t.uiTokenAmount.amount) * 98n / 100n).toString(); // 2% gone, slippage allows 1.5%
+  } });
+  assert.deepEqual(got, ["solana_swap.sim_output_inflow"]);
+});
+
+const PLAN_TAIL_ATA = new Map();
+for (const [fx, program] of [[BONK_BUY, TOKEN_PROGRAM_ADDRESS], [BONK_SELL, TOKEN_PROGRAM_ADDRESS], [SOL_BONK, TOKEN_PROGRAM_ADDRESS], [BONK_SOL, TOKEN_PROGRAM_ADDRESS], [SI_BUY, TOKEN_2022_PROGRAM], [SI_SELL, TOKEN_2022_PROGRAM]]) {
+  const mint = [fx.request.from, fx.request.to].find((x) => x !== "USDC" && x !== "SOL");
+  PLAN_TAIL_ATA.set(fx, (await findAssociatedTokenPda({ owner: address(fx.wallet), mint: address(mint), tokenProgram: address(program) }))[0]);
+}
+
+test("verify: the plan is checked against what the chain says about the mint, read again here", async () => {
+  const plan = await planFrom(BONK_BUY);
+  // The mint now carries a permanent delegate (the fake chain says so): the swap is refused though the transaction is untouched.
+  const hooked = mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [ext("PermanentDelegate")] });
+  const deps = { rpc: fakeRpc(BONK_BUY, { accounts: { [BONK]: hooked } }).rpc, minGapMs: 0 };
+  await assert.rejects(S.verifySolanaSwapPlan(plan, intentOf(BONK_BUY), deps), (e) => e instanceof Refused && rules(e).includes("solana_swap.token_extension_refused"));
+  // A plan that describes the token differently from the chain (here: decimals) is refused.
+  const lied = { ...plan, token: { ...plan.token, decimals: 9 } };
+  assert.ok((await refusedBy(lied, BONK_BUY)).includes("solana_swap.intent"));
+  // A token on both sides, and a USDC swap where the plan names a token that is not what was asked.
+  const swapped = { ...plan, to: "SOL", mint_out: WSOL };
+  assert.ok((await refusedBy(swapped, BONK_BUY)).includes("solana_swap.intent"));
+  const intentTokens = { ...intentOf(BONK_BUY), from: BONK, to: SI };
+  await assert.rejects(S.verifySolanaSwapPlan(plan, intentTokens, { rpc: fakeRpc(BONK_BUY, { accounts: { [SI]: fakeRpc(SI_BUY).rpc && mintEntry() } }).rpc }), (e) => e instanceof Refused && rules(e).includes("solana_swap.token_to_token"));
+});
+
+test("verify: the fee is held to the USDC or SOL side whatever the plan says (an account for the token, the wrong side, or the wrong leg is refused)", async () => {
+  const stranger = await randomAddress();
+  const plan = await planFrom(BONK_SELL);
+  const run = (fee) => refusedBy({ ...plan, fee: { ...plan.fee, ...fee } }, BONK_SELL);
+  assert.ok((await run({ account: stranger })).includes("solana_swap.fee_account"));
+  assert.ok((await run({ account: S.SATO_FEE_ACCOUNTS[WSOL] })).includes("solana_swap.fee_account"), "the wrapped-SOL account is not the one for a USDC payout");
+  assert.ok((await run({ mint: BONK })).includes("solana_swap.fee_account"), "a fee in the token being sold");
+  assert.ok((await run({ leg: "input" })).includes("solana_swap.fee_account"), "a sell's fee comes from the payout");
+  const buy = await planFrom(BONK_BUY);
+  assert.ok((await refusedBy({ ...buy, fee: { ...buy.fee, leg: "output" } }, BONK_BUY)).includes("solana_swap.fee_account"));
+  assert.ok((await refusedBy({ ...buy, fee: { ...buy.fee, mint: BONK } }, BONK_BUY)).includes("solana_swap.fee_account"));
+});
+
+// ----------------------------------------------------------------- Jupiter's shared_accounts_route: decode
+
+const ixData = (fx) => jupiterIxs(compiledOf(JSON.parse(fx.http.find((h) => h.url === "/swap").text).swapTransaction))[0].data;
+
+test("decode: shared_accounts_route is the route's data with an id byte in front; the arguments are read where the route plan ends", () => {
+  assert.equal(S.JUPITER_SHARED_ROUTE_DISCRIMINATOR, "c1209b3341d69c81");
+  assert.equal(createHash("sha256").update("global:shared_accounts_route").digest().subarray(0, 8).toString("hex"), S.JUPITER_SHARED_ROUTE_DISCRIMINATOR, "Anchor's rule");
+  for (const fx of TAIL_FIXTURES) {
+    const data = ixData(fx);
+    assert.equal(Buffer.from(data).subarray(0, 8).toString("hex"), S.JUPITER_SHARED_ROUTE_DISCRIMINATOR);
+    const r = S.decodeJupiterRoute(data);
+    assert.equal(r.instruction, "shared_accounts_route");
+    assert.equal(r.id, data[8]);
+    assert.ok(r.id >= 0 && r.id <= 255 && r.steps >= 1);
+    const plan = JSON.parse(fx.http.find((h) => h.url.startsWith("/quote")).text);
+    assert.equal(r.inAmount.toString(), plan.inAmount);
+    assert.equal(r.quotedOut.toString(), plan.outAmount);
+    assert.equal(r.slippageBps, fx.request.slippageBps);
+    assert.equal(r.platformFeeBps, 15);
+  }
+  const honest = ixData(BONK_BUY);
+  assert.throws(() => S.decodeJupiterRoute(Uint8Array.from([...honest, 0])), /extra or missing bytes/);
+  assert.throws(() => S.decodeJupiterRoute(honest.subarray(0, honest.length - 1)), /extra or missing bytes|runs past/);
+  assert.throws(() => S.decodeJupiterRoute(Uint8Array.from(honest.subarray(0, 13))), /too short/);
+  // The id byte is not part of the route plan: a plan length read from the wrong place is refused, not misread.
+  const shifted = Uint8Array.from([...honest.subarray(0, 8), ...honest.subarray(9)]); // the id byte removed, still the shared discriminator
+  assert.throws(() => S.decodeJupiterRoute(shifted), /RouteLayout|extra or missing|runs past|claims more|newer|malformed|too short/);
+  // A route (not shared) read with the id byte in the front of its plan is not accepted either.
+  const asRoute = Uint8Array.from(honest); asRoute.set(Buffer.from(S.JUPITER_ROUTE_DISCRIMINATOR, "hex"), 0);
+  assert.throws(() => S.decodeJupiterRoute(asRoute), /RouteLayout|extra or missing|runs past|claims more|newer|malformed|too short/);
+  // The Swap variants of a shared route are found to their end like a route's.
+  const { encode, byName } = idlWalker(JUP_IDL.types);
+  const swapN = byName.Swap.type.variants.length;
+  const tail = [...u64le(1_000_000), ...u64le(900_000), ...u16le(50), 15];
+  for (let v = 0; v < swapN; v += 7) {
+    const swapBytes = encode({ defined: { name: "Swap" } }, { optSome: true, variant: (name, n) => (name === "Swap" ? v : 0) });
+    const d = Uint8Array.from([...Buffer.from(S.JUPITER_SHARED_ROUTE_DISCRIMINATOR, "hex"), 4, ...u32le(2), ...swapBytes, 100, 0, 1, 0, 100, 1, 2, ...tail]);
+    const r = S.decodeJupiterRoute(d);
+    assert.deepEqual([r.instruction, r.id, r.steps, r.inAmount, r.quotedOut, r.slippageBps, r.platformFeeBps], ["shared_accounts_route", 4, 2, 1_000_000n, 900_000n, 50, 15], `variant ${v}`);
+  }
+});
+
+test("decode: the account indices the kit reads are the IDL's (names, order, optional ones) and the stored IDL has both forms", () => {
+  assert.equal(JUP_IDL.instructions.shared_accounts_route, S.JUPITER_SHARED_ROUTE_DISCRIMINATOR);
+  const names = JUP_IDL.shared_accounts_route.accounts.map((a) => a.name);
+  const L = S.ROUTE_ACCOUNTS.shared_accounts_route;
+  assert.equal(names[L.tokenProgram], "token_program");
+  assert.equal(names[L.programAuthority], "program_authority");
+  assert.equal(names[L.authority], "user_transfer_authority");
+  assert.equal(JUP_IDL.shared_accounts_route.accounts[L.authority].signer, true);
+  assert.equal(names[L.source], "source_token_account");
+  assert.equal(names[L.programSource], "program_source_token_account");
+  assert.equal(names[L.programDest], "program_destination_token_account");
+  assert.equal(names[L.dest], "destination_token_account");
+  assert.equal(names[L.sourceMint], "source_mint");
+  assert.equal(names[L.destMint], "destination_mint");
+  assert.equal(names[L.fee], "platform_fee_account");
+  assert.equal(names[L.token2022Program], "token_2022_program");
+  assert.equal(names[L.program], "program");
+  assert.deepEqual(JUP_IDL.shared_accounts_route.accounts.filter((a) => a.optional).map((a) => a.name), ["platform_fee_account", "token_2022_program"]);
+  assert.equal(names.length, L.min, "a shared route has this many accounts before the venues' own");
+  assert.deepEqual(JUP_IDL.shared_accounts_route.args.map((a) => a.name), ["id", "route_plan", "in_amount", "quoted_out_amount", "slippage_bps", "platform_fee_bps"]);
+  assert.deepEqual(JUP_IDL.shared_accounts_route.args.map((a) => a.type).filter((t) => typeof t === "string"), ["u8", "u64", "u64", "u16", "u8"]);
+  const R = S.ROUTE_ACCOUNTS.route;
+  const rnames = JUP_IDL.route.accounts.map((a) => a.name);
+  assert.deepEqual([rnames[R.tokenProgram], rnames[R.authority], rnames[R.source], rnames[R.dest], rnames[R.destMint], rnames[R.fee], rnames[R.program]], ["token_program", "user_transfer_authority", "source_token_account".replace("source_token_account", "user_source_token_account"), "user_destination_token_account", "destination_mint", "platform_fee_account", "program"]);
+  assert.ok(Object.isFrozen(S.ROUTE_ACCOUNTS) && Object.isFrozen(S.ROUTE_ACCOUNTS.route) && Object.isFrozen(S.ROUTE_ACCOUNTS.shared_accounts_route));
+});
+
+test("decode: the real builds' accounts are where the IDL says: program authority, its accounts, the agent's accounts, the fee account, the mints", async () => {
+  const { getProgramDerivedAddress } = await import("@solana/kit");
+  for (const fx of TAIL_FIXTURES) {
+    const plan = await planFrom(fx);
+    const swap = JSON.parse(fx.http.find((h) => h.url === "/swap").text).swapTransaction;
+    const c = compiledOf(swap);
+    const tx = getTransactionDecoder().decode(b64e.encode(swap));
+    void tx;
+    const alts = await fetchAddressesForLookupTables([...new Set((c.addressTableLookups ?? []).map((l) => l.lookupTableAddress))], fakeRpc(fx).rpc);
+    const keys = [...c.staticAccounts, ...c.addressTableLookups.flatMap((l) => l.writableIndexes.map((i) => alts[l.lookupTableAddress][i])), ...c.addressTableLookups.flatMap((l) => l.readonlyIndexes.map((i) => alts[l.lookupTableAddress][i]))];
+    const ixn = jupiterIxs(c)[0];
+    const at = (i) => keys[ixn.accountIndices[i]];
+    const L = S.ROUTE_ACCOUNTS.shared_accounts_route;
+    const id = ixn.data[8];
+    const [authority] = await getProgramDerivedAddress({ programAddress: address(S.JUPITER_PROGRAM), seeds: [new TextEncoder().encode("authority"), Uint8Array.of(id)] });
+    assert.equal(at(L.programAuthority), authority, "PDA ['authority', [id]] of Jupiter's program");
+    assert.equal(at(L.authority), fx.wallet);
+    assert.equal(at(L.sourceMint), plan.mint_in);
+    assert.equal(at(L.destMint), plan.mint_out);
+    assert.equal(at(L.fee), plan.fee.account);
+    assert.equal(at(L.program), S.JUPITER_PROGRAM);
+    assert.equal(at(L.tokenProgram), TOKEN_PROGRAM_ADDRESS, "the classic Token program in slot 0, even for a Token-2022 mint");
+    const prog = (mint) => (mint === SI ? TOKEN_2022_PROGRAM : TOKEN_PROGRAM_ADDRESS);
+    const ata = async (owner, mint) => (await findAssociatedTokenPda({ owner: address(owner), mint: address(mint), tokenProgram: address(prog(mint)) }))[0];
+    assert.equal(at(L.source), await ata(fx.wallet, plan.mint_in), "the agent's own associated account for the input");
+    assert.equal(at(L.dest), await ata(fx.wallet, plan.mint_out), "the agent's own associated account for the output");
+    // The slots in the middle: the authority's own account, or (seen for a Token-2022 output) the agent's.
+    assert.ok([await ata(authority, plan.mint_in), await ata(fx.wallet, plan.mint_in)].includes(at(L.programSource)));
+    assert.ok([await ata(authority, plan.mint_out), await ata(fx.wallet, plan.mint_out)].includes(at(L.programDest)));
+    assert.ok([S.JUPITER_PROGRAM, TOKEN_2022_PROGRAM].includes(at(L.token2022Program)));
+  }
+});
+
+// ----------------------------------------------------------------- verify: tampering with a shared_accounts_route
+
+test("verify refuses (shared route): in_amount, quoted_out, slippage and platform_fee_bps rewritten in Jupiter's instruction", async () => {
+  for (const fx of [BONK_BUY, BONK_SELL, WIF_BUY]) {
+    const plan = await planFrom(fx);
+    const amount = BigInt(plan.amount_in);
+    for (const inAmount of [1n, amount - 1n, amount + 1n]) {
+      const got = await refusalsOf(withArgs(plan, { inAmount }), fx);
+      assert.deepEqual(got.map((r) => r.rule), ["solana_swap.jupiter_amount_mismatch"], `${fx.request.to.slice(0, 4)} in_amount ${inAmount}`);
+    }
+    // The minimum output: quoted_out=1, slippage 10000, and both; an honest-looking copy of the tail appended after tampered ones.
+    for (const a of [{ quotedOut: 1n }, { slippageBps: 10_000 }, { quotedOut: 1n, slippageBps: 10_000 }, { slippageBps: 0 }, { slippageBps: 51 }]) {
+      assert.ok((await refusedBy(withArgs(plan, a), fx)).includes("solana_swap.min_out_not_enforced"), JSON.stringify(a, (_k, v) => (typeof v === "bigint" ? v.toString() : v)));
+    }
+    const trailing = withTx(plan, mutate(plan.swap_transaction, (c) => {
+      const jix = jupiterIxs(c)[0];
+      const honestTail = Buffer.from(jix.data).subarray(jix.data.length - ARGS);
+      writeArgs(jix, { quotedOut: 1n, slippageBps: 10_000 });
+      jix.data = new Uint8Array(Buffer.concat([Buffer.from(jix.data), honestTail]));
+    }));
+    assert.deepEqual(await refusedBy(trailing, fx), ["solana_swap.jupiter_instruction_unrecognized"]);
+    // The fee: a different rate, none, and a higher one.
+    for (const feeBps of [0, 14, 16, 255]) {
+      assert.ok((await refusedBy(withArgs(plan, { feeBps }), fx)).includes("solana_swap.fee_not_as_disclosed"), `fee ${feeBps}`);
+    }
+  }
+});
+
+test("verify refuses (shared route): the fee, the destination, the source and the authority pointed at accounts that are not the agent's or Sato's", async () => {
+  const stranger = await randomAddress();
+  const L = S.ROUTE_ACCOUNTS.shared_accounts_route;
+  for (const fx of [BONK_BUY, BONK_SELL, SI_BUY, SI_SELL]) {
+    const plan = await planFrom(fx);
+    const tag = `${fx.request.from.slice(0, 4)} -> ${fx.request.to.slice(0, 4)}`;
+    const want = {
+      [L.fee]: "solana_swap.fee_not_as_disclosed",
+      [L.dest]: "solana_swap.recipient_not_agent",
+      [L.source]: "solana_swap.jupiter_source_not_agent",
+      [L.authority]: "solana_swap.jupiter_authority_not_agent",
+      [L.programAuthority]: "solana_swap.jupiter_account_mismatch",
+      [L.programSource]: "solana_swap.jupiter_account_mismatch",
+      [L.programDest]: "solana_swap.jupiter_account_mismatch",
+      [L.sourceMint]: "solana_swap.jupiter_account_mismatch",
+      [L.destMint]: "solana_swap.jupiter_account_mismatch",
+      [L.program]: "solana_swap.jupiter_account_mismatch",
+      [L.tokenProgram]: "solana_swap.jupiter_account_mismatch",
+      [L.token2022Program]: "solana_swap.jupiter_account_mismatch",
+    };
+    for (const [slot, rule] of Object.entries(want)) {
+      const got = await refusedBy(withAccount(plan, Number(slot), stranger), fx);
+      assert.ok(got.includes(rule), `${tag}: slot ${slot} -> ${rule}, got ${got.join()}`);
+    }
+    // The authority's id: a different id byte names a different program authority than the accounts do.
+    const otherId = withTx(plan, mutate(plan.swap_transaction, (c) => {
+      const jix = jupiterIxs(c)[0];
+      const d = Buffer.from(jix.data); d[8] = (d[8] + 1) % 256; jix.data = new Uint8Array(d);
+    }));
+    assert.deepEqual(await refusedBy(otherId, fx), ["solana_swap.jupiter_account_mismatch"], tag);
+  }
+  // The agent's own destination and source swapped for one another's mint, or the agent's USDC account for the token's.
+  const buy = await planFrom(BONK_BUY);
+  const bonkAta = (await findAssociatedTokenPda({ owner: address(BONK_BUY.wallet), mint: address(BONK), tokenProgram: TOKEN_PROGRAM_ADDRESS }))[0];
+  assert.ok((await refusedBy(withAccount(buy, L.source, bonkAta), BONK_BUY)).includes("solana_swap.jupiter_source_not_agent"), "the input taken from the account of the token being bought");
+});
+
+test("verify refuses (shared route): a shared route in a USDC <-> SOL swap, and the other Jupiter forms everywhere", async () => {
+  // USDC <-> SOL keeps the direct, non-shared route: the shared form is refused by name there.
+  const plan = await planFrom(USDC_SOL);
+  const disc = (hex) => mutate(plan.swap_transaction, (c) => {
+    const d = Buffer.from(jupiterIxs(c)[0].data);
+    Buffer.from(hex, "hex").copy(d, 0);
+    jupiterIxs(c)[0].data = new Uint8Array(d);
+  });
+  const got = await refusalsOf(withTx(plan, disc(S.JUPITER_SHARED_ROUTE_DISCRIMINATOR)), USDC_SOL);
+  assert.deepEqual(got.map((r) => r.rule), ["solana_swap.jupiter_instruction_unrecognized"]);
+  assert.match(got[0].message, /Jupiter's shared_accounts_route, which this kit does not read or allow/);
+  // With a token, every other form is still refused by name.
+  const tail = await planFrom(BONK_BUY);
+  const tdisc = (hex) => withTx(tail, mutate(tail.swap_transaction, (c) => {
+    const d = Buffer.from(jupiterIxs(c)[0].data);
+    Buffer.from(hex, "hex").copy(d, 0);
+    jupiterIxs(c)[0].data = new Uint8Array(d);
+  }));
+  for (const [hex, name] of Object.entries(S.JUPITER_INSTRUCTION_NAMES)) {
+    if (name === "route" || name === "shared_accounts_route") continue;
+    const r = await refusalsOf(tdisc(hex), BONK_BUY);
+    assert.deepEqual(r.map((x) => x.rule), ["solana_swap.jupiter_instruction_unrecognized"], name);
+    assert.match(r[0].message, new RegExp(`is Jupiter's ${name}, which this kit does not read or allow`));
+  }
+  // A second Jupiter instruction beside a shared route is refused as a count (and the extra one by name).
+  const two = withTx(tail, mutate(tail.swap_transaction, (c) => {
+    const jix = jupiterIxs(c)[0];
+    c.instructions.splice(c.instructions.indexOf(jix) + 1, 0, { ...jix, accountIndices: [...jix.accountIndices], data: new Uint8Array(jix.data) });
+  }));
+  assert.deepEqual(await refusedBy(two, BONK_BUY), ["solana_swap.jupiter_route_count"]);
+  // Too few accounts for a shared route.
+  const short = withTx(tail, mutate(tail.swap_transaction, (c) => { jupiterIxs(c)[0].accountIndices = jupiterIxs(c)[0].accountIndices.slice(0, 11); }));
+  assert.deepEqual(await refusedBy(short, BONK_BUY), ["solana_swap.jupiter_instruction_unrecognized"]);
+});
+
+// ----------------------------------------------------------------- the agent's account for the token: creation, balance, post-state
+
+/** Decode and inspect a recorded build (lookup tables from the fixture), as verify does before the simulation. */
+async function inspectFixture(fx, { tx, tail, feeBps = 15 } = {}) {
+  const plan = await planFrom(fx);
+  const swap = tx ?? plan.swap_transaction;
+  const rpc = fakeRpc(fx).rpc;
+  const tables = [...new Set((compiledOf(swap).addressTableLookups ?? []).map((l) => l.lookupTableAddress))];
+  const alts = tables.length ? await fetchAddressesForLookupTables(tables, rpc) : {};
+  const t = tail ?? (await S.resolveSolanaToken(plan.token.mint, { rpc }));
+  return S.inspectSolanaSwapTransaction(swap, { agent: fx.wallet, mintIn: plan.mint_in, mintOut: plan.mint_out, amountIn: BigInt(plan.amount_in), feeAccount: feeBps ? plan.fee.account : null, feeBps, slippageBps: fx.request.slippageBps, minOut: BigInt(plan.quote.min_out), tail: { mint: t.mint, program: t.program } }, alts);
+}
+const ATA_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+const ataIxs = (c) => c.instructions.filter((i) => c.staticAccounts[i.programAddressIndex] === ATA_PROGRAM);
+/** Point one account slot of the first instruction of a program at another address (added as a read-only key). */
+function rewire(tx64, programId, slot, addr, which = 0) {
+  return mutate(tx64, (c) => {
+    const old = c.staticAccounts.length;
+    c.staticAccounts.push(addr);
+    c.header.numReadonlyNonSignerAccounts += 1;
+    for (const i of c.instructions) {
+      if (i.accountIndices) i.accountIndices = i.accountIndices.map((x) => (x >= old ? x + 1 : x));
+      if (i.programAddressIndex >= old) i.programAddressIndex += 1;
+    }
+    c.instructions.filter((i) => c.staticAccounts[i.programAddressIndex] === programId)[which].accountIndices[slot] = old;
+  });
+}
+
+test("accounts: a brand-new agent's real builds (BONK buy and sell) inspect cleanly, and the buy creates exactly one account: the agent's own for BONK", async () => {
+  const buy = await inspectFixture(FRESH_BUY);
+  assert.deepEqual(buy.refusals, []);
+  const bonkAta = (await findAssociatedTokenPda({ owner: address(FRESH_BUY.wallet), mint: address(BONK), tokenProgram: TOKEN_PROGRAM_ADDRESS }))[0];
+  assert.deepEqual(buy.facts.created_atas, [bonkAta]);
+  assert.equal(buy.facts.route.instruction, "shared_accounts_route");
+  assert.ok(buy.facts.route.steps >= 2);
+  const sell = await inspectFixture(FRESH_SELL);
+  assert.deepEqual(sell.refusals, []);
+  assert.equal(sell.facts.created_atas.length, 1, "the wrapped-SOL account for the payout");
+  // The creation in the buy is idempotent, under the Token program, payer and owner the agent.
+  const c = compiledOf(FRESH_BUY.http.find((h) => h.url === "/swap").text && JSON.parse(FRESH_BUY.http.find((h) => h.url === "/swap").text).swapTransaction);
+  const create = ataIxs(c);
+  assert.equal(create.length, 1);
+  assert.deepEqual(Array.from(create[0].data), [1]);
+});
+
+test("accounts: the creation is only the agent's own account, idempotent, for the swapped token, once; anything else about it is refused", async () => {
+  const stranger = await randomAddress();
+  const swap = JSON.parse(FRESH_BUY.http.find((h) => h.url === "/swap").text).swapTransaction;
+  const bad = async (tx, re) => {
+    const r = await inspectFixture(FRESH_BUY, { tx });
+    assert.ok(r.refusals.some((x) => x.rule === "solana_swap.ata_instruction" && re.test(x.message)), `${re}: ${r.refusals.map((x) => x.rule + " " + x.message).join(" | ")}`);
+  };
+  await bad(rewire(swap, ATA_PROGRAM, 2, stranger), /not exactly the agent's own idempotent account/); // an account for someone else
+  await bad(rewire(swap, ATA_PROGRAM, 1, stranger), /not exactly the agent's own idempotent account/); // not the derived address
+  await bad(rewire(swap, ATA_PROGRAM, 0, stranger), /not exactly the agent's own idempotent account/); // someone else pays
+  await bad(rewire(swap, ATA_PROGRAM, 5, TOKEN_2022_PROGRAM), /not exactly the agent's own idempotent account/); // BONK is a classic mint
+  await bad(rewire(swap, ATA_PROGRAM, 3, stranger), /neither|not the agent's own USDC, wrapped-SOL or swapped-token account/); // a mint that is not the swapped one
+  await bad(mutate(swap, (c) => { const d = ataIxs(c)[0]; d.data = new Uint8Array([0]); }), /not exactly the agent's own idempotent account/); // plain create, not idempotent
+  await bad(mutate(swap, (c) => { const d = ataIxs(c)[0]; d.data = new Uint8Array([2]); }), /Associated Token instruction this kit does not allow/);
+  // A second creation of the same account.
+  await bad(mutate(swap, (c) => { const d = ataIxs(c)[0]; c.instructions.splice(c.instructions.indexOf(d) + 1, 0, { ...d, accountIndices: [...d.accountIndices], data: new Uint8Array(d.data) }); }), /a second time/);
+  // The Token-2022 buy (recorded, funded): the creation is under Token-2022, and the same changes are refused there.
+  const siPlan = await planFrom(SI_BUY);
+  const siTx = (fn) => withTx(siPlan, fn(siPlan.swap_transaction));
+  assert.equal(ataIxs(compiledOf(siPlan.swap_transaction)).length, 1, "the recorded Token-2022 buy creates the agent's account");
+  assert.deepEqual(await refusedBy(siTx((t) => rewire(t, ATA_PROGRAM, 5, TOKEN_PROGRAM_ADDRESS)), SI_BUY), ["solana_swap.ata_instruction"], "a Token-2022 mint's account made under the classic Token program");
+  assert.deepEqual(await refusedBy(siTx((t) => rewire(t, ATA_PROGRAM, 2, stranger)), SI_BUY), ["solana_swap.ata_instruction"]);
+});
+
+test("accounts: the same creation rules on a plain `route` with a token, built by hand (classic and Token-2022 mints)", async () => {
+  const agent = (await generateKeyPairSigner()).address;
+  const SYS = "11111111111111111111111111111111";
+  for (const program of [TOKEN_PROGRAM_ADDRESS, TOKEN_2022_PROGRAM]) {
+    const mint = await randomAddress();
+    const usdcAta = (await findAssociatedTokenPda({ owner: address(agent), mint: address(USDC_MINT), tokenProgram: TOKEN_PROGRAM_ADDRESS }))[0];
+    const tokenAta = (await findAssociatedTokenPda({ owner: address(agent), mint: address(mint), tokenProgram: program }))[0];
+    const create = (a, m, kind = 1, prog = program) => ix(ATA_PROGRAM, [[agent, WS], [a, W], [agent, R], [m, R], [SYS, R], [prog, R]], [kind]);
+    const route = ix(S.JUPITER_PROGRAM, [[TOKEN_PROGRAM_ADDRESS, R], [agent, WS], [usdcAta, W], [tokenAta, W], [S.JUPITER_PROGRAM, R], [mint, R], [S.JUPITER_PROGRAM, R], [EVENT_AUTHORITY, R], [S.JUPITER_PROGRAM, R]], routeData({ inAmount: 5_000_000n, quotedOut: 900n, slippageBps: 50 }));
+    const opts = { agent, mintIn: USDC_MINT, mintOut: mint, amountIn: 5_000_000n, feeAccount: null, feeBps: 0, slippageBps: 50, minOut: 895n, tail: { mint, program } };
+    const budget = ix("ComputeBudget111111111111111111111111111111", [], [2, 160, 134, 1, 0]);
+    const good = await S.inspectSolanaSwapTransaction(await synthetic(agent, [budget, create(tokenAta, mint), route]), opts, {});
+    assert.deepEqual(good.refusals, [], program);
+    assert.deepEqual(good.facts.created_atas, [tokenAta]);
+    const check = async (instrs, o = opts, re = /ata_instruction/) => {
+      const r = await S.inspectSolanaSwapTransaction(await synthetic(agent, instrs), o, {});
+      assert.ok(r.refusals.some((x) => re.test(x.rule)), `${program} ${r.refusals.map((x) => x.rule)}`);
+    };
+    await check([budget, create(tokenAta, mint), create(tokenAta, mint), route]); // twice
+    await check([budget, create(tokenAta, mint, 0), route]); // not idempotent
+    await check([budget, create(tokenAta, mint, 1, program === TOKEN_PROGRAM_ADDRESS ? TOKEN_2022_PROGRAM : TOKEN_PROGRAM_ADDRESS), route]); // the other token program
+    await check([budget, create(usdcAta, mint), route]); // the USDC account's address for the token
+    const other = await randomAddress();
+    await check([budget, create((await findAssociatedTokenPda({ owner: address(agent), mint: address(other), tokenProgram: program }))[0], other), route]); // some other mint
+    // A token swap without `tail` given: the same creation is refused (the kit does not guess which mint is the token).
+    await check([budget, create(tokenAta, mint), route], { ...opts, tail: undefined });
+    // A shared route is refused when there is no token, and a plain route with a token passes.
+    assert.ok((await S.inspectSolanaSwapTransaction(await synthetic(agent, [budget, route]), opts, {})).refusals.length === 0);
+  }
+  // `tail` that is neither side is bad input.
+  await assert.rejects(S.inspectSolanaSwapTransaction(await synthetic(agent, []), { agent, mintIn: USDC_MINT, mintOut: WSOL, amountIn: 1n, feeAccount: null, feeBps: 0, slippageBps: 50, minOut: 1n, tail: { mint: BONK, program: TOKEN_PROGRAM_ADDRESS } }, {}), /tail is neither side/);
+});
+
+test("accounts: after the swap the agent's account for the token is held to the same rules as its USDC account (owner, delegate, close authority, program)", async () => {
+  const stranger = await randomAddress();
+  for (const [fx, program] of [[BONK_BUY, TOKEN_PROGRAM_ADDRESS], [BONK_SELL, TOKEN_PROGRAM_ADDRESS], [SI_BUY, TOKEN_2022_PROGRAM], [SI_SELL, TOKEN_2022_PROGRAM]]) {
+    const tag = fx.request.to.slice(0, 4) + "/" + fx.request.from.slice(0, 4);
+    const plan = await planFrom(fx);
+    const mint = plan.token.mint;
+    const edit = (fn) => refusalsOf(plan, fx, { editSim: (v) => { v.accounts[SIM_TAIL] = fn(v.accounts[SIM_TAIL]); } });
+    const mk = (o) => (entry) => ({ ...tokenAccountEntry({ mint, owner: fx.wallet, program, ...o }), lamports: entry.lamports });
+    // As recorded it passes (and the account really is there).
+    assert.ok(S.verifySolanaSwapPlan(plan, intentOf(fx), verifyDeps(fx)), tag);
+    const recorded = JSON.parse(JSON.stringify(fx.rpc.find((c) => c.method === "simulateTransaction").result.value.accounts[SIM_TAIL]));
+    assert.equal(recorded.owner, program, `${tag}: the account is owned by the mint's program`);
+    for (const [name, o, re] of [
+      ["a delegate", { delegate: stranger }, /would have a delegate/],
+      ["a different owner", { owner: stranger }, /would be owned by/],
+      ["a close authority", { closeAuthority: stranger }, /would have a close authority/],
+      ["a different mint", { mint: USDC_MINT }, /would hold a different token/],
+    ]) {
+      const got = await edit(mk(o));
+      assert.deepEqual([...new Set(got.map((r) => r.rule))], ["solana_swap.account_authority_changed"], `${tag}: ${name}`);
+      assert.match(got[0].message, re);
+      assert.match(got[0].message, /the agent's .* account/);
+    }
+    // The wrong token program for the mint: refused as not a plain account of it.
+    const otherProgram = program === TOKEN_PROGRAM_ADDRESS ? TOKEN_2022_PROGRAM : TOKEN_PROGRAM_ADDRESS;
+    const got = await edit((entry) => ({ ...tokenAccountEntry({ mint, owner: fx.wallet, program: otherProgram }), lamports: entry.lamports }));
+    assert.deepEqual(got.map((r) => r.rule), ["solana_swap.account_authority_changed"]);
+    assert.match(got[0].message, new RegExp(`would not be a plain ${program === TOKEN_PROGRAM_ADDRESS ? "Token" : "Token-2022"} account`));
+  }
+  // A Token-2022 account with extensions (account-type byte 2 after the 165 bytes) is plain; a wrong type byte or an odd size is not.
+  const plan = await planFrom(SI_BUY);
+  const withExt = (type, size = 182) => (entry) => {
+    const e = tokenAccountEntry({ mint: SI, owner: SI_BUY.wallet, program: TOKEN_2022_PROGRAM });
+    const raw = Buffer.concat([Buffer.from(e.data[0], "base64"), Buffer.alloc(size - 165)]);
+    raw[165] = type;
+    return { ...e, data: [raw.toString("base64"), "base64"], lamports: entry.lamports, space: String(size) };
+  };
+  assert.equal((await refusalsOfOk(plan, SI_BUY, withExt(2))).ok, true);
+  assert.equal((await refusedByEdit(plan, SI_BUY, withExt(1))).length, 1);
+  const tiny = (entry) => { const e = withExt(2)(entry); const raw = Buffer.from(e.data[0], "base64").subarray(0, 100); return { ...e, data: [raw.toString("base64"), "base64"] }; };
+  assert.equal((await refusedByEdit(plan, SI_BUY, tiny)).length, 1);
+});
+async function refusalsOfOk(plan, fx, fn) {
+  return S.verifySolanaSwapPlan(plan, intentOf(fx), verifyDeps(fx, { editSim: (v) => { v.accounts[SIM_TAIL] = fn(v.accounts[SIM_TAIL]); } }));
+}
+async function refusedByEdit(plan, fx, fn) {
+  try {
+    await refusalsOfOk(plan, fx, fn);
+  } catch (err) {
+    assert.ok(err instanceof Refused, err.stack);
+    return err.refusals;
+  }
+  assert.fail("expected a refusal");
+}
+
+test("balanceDeltas: the token being swapped is counted on its own (buy and sell), its new account's rent separately, and it is not an 'other' asset", () => {
+  const agent = "Agent1111111111111111111111111111111111111";
+  const T = "TokenMint1111111111111111111111111111111111";
+  const tok = (accountIndex, mint, amount, owner = agent) => ({ accountIndex, mint, owner, uiTokenAmount: { amount: String(amount) } });
+  // Buy: USDC out, the token in to a new account (keys: 0 agent, 1 USDC account, 2 token account created here).
+  const buy = S.balanceDeltas({
+    keys: [agent, "u", "t"],
+    preBalances: [10_000_000_000, 2_039_280, 0],
+    postBalances: [10_000_000_000 - 5_000 - 2_074_080, 2_039_280, 2_074_080],
+    preTokenBalances: [tok(1, USDC_MINT, 5_000_000)],
+    postTokenBalances: [tok(1, USDC_MINT, 0), tok(2, T, 123_456)],
+  }, agent, T);
+  assert.deepEqual([buy.usdc.delta, buy.tail.delta, buy.tail.pre, buy.tail.post], [-5_000_000n, 123_456n, 0n, 123_456n]);
+  assert.equal(buy.created_tail_rent, 2_074_080n);
+  assert.equal(buy.created_usdc_rent, 0n);
+  assert.deepEqual(buy.others, [], "the token is not an other asset");
+  assert.equal(buy.sol.delta, -5_000n - 2_074_080n, "the fee and the new account's rent");
+  // Sell: the token out (existing account), USDC in.
+  const sell = S.balanceDeltas({
+    keys: [agent, "u", "t"],
+    preBalances: [10_000_000_000, 2_039_280, 2_039_280],
+    postBalances: [10_000_000_000 - 5_000, 2_039_280, 2_039_280],
+    preTokenBalances: [tok(1, USDC_MINT, 0), tok(2, T, 900)],
+    postTokenBalances: [tok(1, USDC_MINT, 77), tok(2, T, 400)],
+  }, agent, T);
+  assert.deepEqual([sell.tail.delta, sell.usdc.delta, sell.created_tail_rent], [-500n, 77n, 0n]);
+  // Without naming the token, it is an 'other' asset like any (the form every existing caller uses).
+  const plain = S.balanceDeltas({ keys: [agent, "u", "t"], preBalances: [1, 1, 1], postBalances: [1, 1, 1], preTokenBalances: [tok(2, T, 900)], postTokenBalances: [tok(2, T, 400)] }, agent);
+  assert.equal(plain.tail, null);
+  assert.deepEqual(plain.others, [{ mint: T, delta: -500n }]);
+  // Other agents' accounts of the token do not count as the agent's.
+  const theirs = S.balanceDeltas({ keys: [agent, "x"], preBalances: [1, 1], postBalances: [1, 1], preTokenBalances: [tok(1, T, 10, "Stranger")], postTokenBalances: [tok(1, T, 0, "Stranger")] }, agent, T);
+  assert.equal(theirs.tail.delta, 0n);
+});
+
+// ----------------------------------------------------------------- verify: the simulation, with a token
+
+test("verify refuses on the simulation (token): too little of the token comes back, too much of it leaves, SOL leaves beyond fees and rent", async () => {
+  const keysOf = (plan, v) => [...compiledOf(plan.swap_transaction).staticAccounts, ...v.loadedAddresses.writable, ...v.loadedAddresses.readonly];
+  const tailRows = (plan, fx, v) => {
+    const i = keysOf(plan, v).indexOf(PLAN_TAIL_ATA.get(fx));
+    assert.ok(i > 0, "the agent's token account is in the transaction");
+    return { post: v.postTokenBalances.find((b) => b.accountIndex === i), pre: v.preTokenBalances.find((b) => b.accountIndex === i) };
+  };
+  // Buy: the token's balance rises by less than the minimum.
+  const buy = await planFrom(BONK_BUY);
+  const less = await refusedBy(buy, BONK_BUY, { editSim: (v) => { const { post, pre } = tailRows(buy, BONK_BUY, v); post.uiTokenAmount.amount = (BigInt(pre.uiTokenAmount.amount) + 1n).toString(); } });
+  assert.deepEqual(less, ["solana_swap.sim_output_inflow"]);
+  // Sell: more of the token leaves than was swapped.
+  const sell = await planFrom(BONK_SELL);
+  const more = await refusedBy(sell, BONK_SELL, { editSim: (v) => { const { post } = tailRows(sell, BONK_SELL, v); post.uiTokenAmount.amount = (BigInt(post.uiTokenAmount.amount) - 1n).toString(); } });
+  assert.deepEqual(more, ["solana_swap.sim_input_outflow"]);
+  // A buy that costs SOL beyond the network fee and the rent of an account.
+  const drained = await refusedBy(buy, BONK_BUY, { editSim: shiftAgentLamports(-3_000_000_000) });
+  assert.deepEqual(drained, ["solana_swap.sim_input_outflow"]);
+  // A sell for SOL that also drained USDC from another account of the agent's.
+  const sellSol = await planFrom(BONK_SOL);
+  const usdcLoss = await refusedBy(sellSol, BONK_SOL, { editSim: (v) => {
+    const keys = keysOf(sellSol, v);
+    const i = keys.indexOf(sellSol.agent === WALLET ? "FzbcyEZ9m8xjtergWgWDq7mfPoHEbboBF791B6cTpzbq" : "x");
+    assert.ok(i > 0);
+    const post = v.postTokenBalances.find((b) => b.accountIndex === i);
+    post.uiTokenAmount.amount = (BigInt(post.uiTokenAmount.amount) - 1_000_000n).toString();
+  } });
+  assert.ok(usdcLoss.length >= 1);
+  // The token's tokens are only that: another mint draining is still caught as an 'other' asset.
+  const otherMint = await randomAddress();
+  const drain = await refusedBy(buy, BONK_BUY, { editSim: (v) => {
+    v.preTokenBalances.push({ accountIndex: 1, mint: otherMint, owner: WALLET, uiTokenAmount: { amount: "50" } });
+    v.postTokenBalances.push({ accountIndex: 1, mint: otherMint, owner: WALLET, uiTokenAmount: { amount: "0" } });
+  } });
+  assert.deepEqual(drain, ["solana_swap.sim_other_asset"]);
+});
+
+test("verify refuses on the simulation (fee): an output fee above the share of the payout, in the wrong account, or missing; an input fee above its share", async () => {
+  const keysOf = (plan, v) => [...compiledOf(plan.swap_transaction).staticAccounts, ...v.loadedAddresses.writable, ...v.loadedAddresses.readonly];
+  for (const fx of [BONK_SELL, BONK_SOL, SI_SELL, GOAT_SELL, BONK_BUY, SOL_BONK]) {
+    const plan = await planFrom(fx);
+    const bump = (n) => (v) => {
+      const i = keysOf(plan, v).indexOf(plan.fee.account);
+      const post = v.postTokenBalances.find((b) => b.accountIndex === i);
+      post.uiTokenAmount.amount = (BigInt(post.uiTokenAmount.amount) + BigInt(n)).toString();
+    };
+    const tag = `${fx.request.from.slice(0, 4)} -> ${fx.request.to.slice(0, 4)}`;
+    // Honest: passes. A fee that is far more than 15 bps of the payout: refused as a fee.
+    const ok = await S.verifySolanaSwapPlan(plan, intentOf(fx), verifyDeps(fx));
+    const observed = BigInt(ok.simulated.fee_observed_units);
+    const huge = plan.fee.leg === "output" ? 10n * BigInt(ok.simulated.output_inflow) / 100n : 10n * BigInt(plan.amount_in) / 100n; // 10%
+    assert.deepEqual(await refusedBy(plan, fx, { editSim: bump(huge) }), ["solana_swap.fee_account"], tag);
+    assert.ok(observed > 0n);
+  }
+  // The fee account absent from the simulation's token balances (not an initialised account of that mint).
+  const plan = await planFrom(BONK_SELL);
+  const missing = await refusedBy(plan, BONK_SELL, { editSim: (v) => {
+    const keys = keysOf(plan, v);
+    const i = keys.indexOf(plan.fee.account);
+    v.preTokenBalances = v.preTokenBalances.filter((b) => b.accountIndex !== i);
+  } });
+  assert.deepEqual(missing, ["solana_swap.fee_account"]);
+});
+
+test("verify refuses on the simulation (rent): a new account for the token that holds more than the rent-exempt minimum for its size", async () => {
+  const plan = await planFrom(SI_BUY);
+  const keys = (v) => [...compiledOf(plan.swap_transaction).staticAccounts, ...v.loadedAddresses.writable, ...v.loadedAddresses.readonly];
+  const ok = await S.verifySolanaSwapPlan(plan, intentOf(SI_BUY), verifyDeps(SI_BUY));
+  const rent = BigInt(ok.simulated.created_token_rent_lamports);
+  assert.ok(rent > 0n);
+  const inflate = (extra) => (v) => {
+    const i = keys(v).indexOf(PLAN_TAIL_ATA.get(SI_BUY));
+    v.postBalances[i] = (BigInt(v.postBalances[i]) + BigInt(extra)).toString();
+    v.postBalances[0] = (BigInt(v.postBalances[0]) - BigInt(extra)).toString();
+    v.accounts[0].lamports = v.postBalances[0];
+    v.accounts[SIM_TAIL].lamports = v.postBalances[i];
+  };
+  assert.deepEqual(await refusedBy(plan, SI_BUY, { editSim: inflate(2_000_000) }), ["solana_swap.sim_input_outflow"]);
+  // Within the minimum (the rent rate was cut in 2026, so the real rent is below the old rate this cap uses) it passes.
+  assert.equal((await S.verifySolanaSwapPlan(plan, intentOf(SI_BUY), verifyDeps(SI_BUY, { editSim: inflate(100_000) }))).ok, true);
+});
+
+// ----------------------------------------------------------------- execute, with a token
+
+test("execute: a swap for a token and one of a token are signed under the limits and record the real amount out", async () => {
+  policyAllow("50", "100000"); // the ledger already holds the spends of the tests above
+  for (const [fx, mintOut] of [[BONK_BUY, BONK], [BONK_SELL, USDC_MINT]]) {
+    const before = entries().length;
+    const { plan, rig, deps } = await setup(fx, { extraMints: [BONK] });
+    const out = await S.executeSolanaSwap(plan, { ...deps, usdNotional: 5 });
+    assert.equal(out.asset_out, plan.to);
+    assert.equal(out.amount_in, plan.amount_in);
+    assert.equal(out.fee.account, "FMEXEnUt2fxKkZewdWq5PKebLw4vs1ddyayJjKap4LGo", "the fee is paid in USDC");
+    assert.equal(out.amount_out, out.verification.simulated.output_inflow, `${mintOut === BONK ? "the token as it landed" : "the USDC"} equals what the verified simulation delivered`);
+    assert.ok(BigInt(out.amount_out) >= BigInt(plan.quote.min_out));
+    assert.equal(rig.sent.length, 1);
+    assert.deepEqual(entries().slice(before).map((r) => r.status), ["submitted", "signed", "confirmed"]);
+  }
+});
+
+// ----------------------------------------------------------------- dry run, with a token
+
+test("dry run: a token swap plans and verifies, reserves nothing, and carries the token and the price impact for the caller", async () => {
+  policyAllow();
+  const before = entries().length;
+  const { fetch } = fakeFetch(SI_BUY);
+  const rig = fakeRpc(SI_BUY);
+  const out = await S.dryRunSolanaSwap(SI_BUY.request, { agent: SI_BUY.wallet, satoFeeBps: 15, fetch, rpc: rig.rpc, minGapMs: 0 });
+  assert.equal(out.verification.ok, true);
+  assert.equal(out.plan.token.mint, SI);
+  assert.equal(out.plan.token.transfer_fee.bps, 100);
+  assert.equal(out.plan.quote.price_impact_bps, Math.round(Number(JSON.parse(SI_BUY.http[0].text).priceImpactPct) * 10000));
+  assert.equal("swap_transaction" in out.plan, false);
+  assert.equal(rig.sent.length, 0);
+  assert.equal(entries().length, before);
+});
+
+test("every long-tail refusal message is plain words for the owner (no safe / secure / trusted / guaranteed)", async () => {
+  const stranger = await randomAddress();
+  const mint = await randomAddress();
+  const all = [];
+  const plan = await planFrom(BONK_BUY);
+  for (const slot of [1, 2, 3, 4, 5, 6, 9, 10]) all.push(...(await refusalsOf(withAccount(plan, slot, stranger), BONK_BUY)).map((r) => r.message));
+  for (const name of Object.keys(S.TOKEN_2022_EXTENSION_POLICY.refuse)) {
+    const t = await S.resolveSolanaToken(mint, { rpc: rpcFor(mint, mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [ext(name)] })) });
+    all.push(...t.refusals.map((r) => r.message), ...t.notes);
+  }
+  const freeze = await S.resolveSolanaToken(mint, { rpc: rpcFor(mint, mintEntry({ program: TOKEN_2022_PROGRAM, freezeAuthority: stranger, mintAuthority: stranger, extensions: [ext("TransferFeeConfig")] })) });
+  all.push(...freeze.notes);
+  assert.ok(all.length >= 20);
+  for (const m of all) assert.doesNotMatch(m, /\b(safe|secure|trusted|guaranteed?|guarantees)\b/i, m);
+});
+
 // ----------------------------------------------------------------- live, read-only (opt-in)
 
 const live = process.env.SATO_AGENT_LIVE_READ === "1";
@@ -1476,4 +2417,109 @@ test("LIVE read: builds at several sizes both ways, fee on and off, are all the 
     seen.add(out.verification.jupiter.instruction);
   }
   assert.deepEqual([...seen], ["route"]);
+});
+
+// -- a long-tail token, live (the same Jupiter keyless pace: one request per ~2 s) --
+
+const pause = (ms) => new Promise((res) => setTimeout(res, ms));
+/** Retry a read-only RPC call that the public node rate-limits. */
+async function patient(fn, tries = 5) {
+  for (let i = 0; ; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (i >= tries || !/429|Too Many/i.test(`${err.message} ${err.context?.statusCode}`)) throw err;
+      await pause(3000 * (i + 1));
+    }
+  }
+}
+
+test("LIVE read: a fresh keypair's BONK buy and sell builds (USDC and SOL sides) inspect cleanly: the creations are the agent's own, the route is read to its end", { skip: !live, timeout: 300_000 }, async () => {
+  const deps = liveDeps();
+  const fresh = (await generateKeyPairSigner()).address;
+  // Jupiter simulates a build before it answers and flags a wallet with no SOL; the transaction is still there to inspect. Drop the flag
+  // (the kit itself refuses a build that carries it, which is its own test above).
+  const stripped = async (url, init) => {
+    const res = await fetch(url, init);
+    let text = await res.text();
+    if (String(url).endsWith("/swap")) {
+      const j = JSON.parse(text);
+      delete j.simulationError;
+      text = JSON.stringify(j);
+    }
+    return new Response(text, { status: res.status });
+  };
+  const bonkAta = (await findAssociatedTokenPda({ owner: address(fresh), mint: address(BONK), tokenProgram: TOKEN_PROGRAM_ADDRESS }))[0];
+  let sawBonkCreation = false;
+  for (const params of [{ from: "USDC", to: BONK, amount: "5" }, { from: "SOL", to: BONK, amount: "0.05" }, { from: BONK, to: "USDC", amount: "100000" }, { from: BONK, to: "SOL", amount: "100000" }]) {
+    const plan = await patient(() => S.planSolanaSwap({ ...params, slippageBps: 100 }, { ...deps, agent: fresh, fetch: stripped }));
+    const tables = [...new Set((compiledOf(plan.swap_transaction).addressTableLookups ?? []).map((l) => l.lookupTableAddress))];
+    const alts = await patient(() => fetchAddressesForLookupTables(tables, deps.rpc));
+    const tail = await patient(() => S.resolveSolanaToken(BONK, deps));
+    const r = await S.inspectSolanaSwapTransaction(plan.swap_transaction, { agent: fresh, mintIn: plan.mint_in, mintOut: plan.mint_out, amountIn: BigInt(plan.amount_in), feeAccount: plan.fee.account, feeBps: 15, slippageBps: 100, minOut: BigInt(plan.quote.min_out), tail: { mint: tail.mint, program: tail.program } }, alts);
+    const tag = `${params.from.slice(0, 4)} -> ${params.to.slice(0, 4)}`;
+    assert.deepEqual(r.refusals, [], tag);
+    assert.equal(r.facts.route.instruction, "shared_accounts_route", tag);
+    assert.equal(plan.fee.mint === USDC_MINT || plan.fee.mint === WSOL, true, `${tag}: the fee is in USDC or SOL`);
+    assert.equal(plan.fee.leg, params.from === BONK ? "output" : "input", tag);
+    if (params.to === BONK) {
+      assert.deepEqual(r.facts.created_atas.filter((a) => a === bonkAta), [bonkAta], `${tag}: a buy creates the agent's BONK account, once`);
+      sawBonkCreation = true;
+    }
+    await pause(1500);
+  }
+  assert.ok(sawBonkCreation);
+});
+
+test("LIVE read: the funded wallet's BONK buy and sell (USDC and SOL) plan, verify and simulate against current prices; the fee lands in USDC or wrapped SOL", { skip: !live, timeout: 300_000 }, async () => {
+  const deps = liveDeps();
+  for (const [params, feeMint, leg] of [
+    [{ from: "USDC", to: BONK, amount: "2" }, USDC_MINT, "input"],
+    [{ from: BONK, to: "USDC", amount: "100000" }, USDC_MINT, "output"],
+    [{ from: "SOL", to: BONK, amount: "0.02" }, WSOL, "input"],
+    [{ from: BONK, to: "SOL", amount: "100000" }, WSOL, "output"],
+  ]) {
+    const out = await patient(() => S.dryRunSolanaSwap({ ...params, slippageBps: 100 }, deps));
+    const tag = `${params.from.slice(0, 4)} -> ${params.to.slice(0, 4)}`;
+    assert.equal(out.verification.ok, true, tag);
+    assert.equal(out.verification.jupiter.instruction, "shared_accounts_route", tag);
+    assert.equal(out.plan.fee.mint, feeMint, tag);
+    assert.equal(out.verification.simulated.fee_leg, leg, tag);
+    assert.ok(BigInt(out.verification.simulated.fee_observed_units) > 0n, tag);
+    assert.ok(BigInt(out.verification.simulated.output_inflow) >= BigInt(out.plan.quote.min_out), tag);
+    assert.equal(out.plan.token.mint, BONK);
+    await pause(1500);
+  }
+});
+
+test("LIVE read: mints are read from the chain: BONK is a plain mint; PYUSD, the PUMP token and an xStock are refused for what their extensions allow", { skip: !live, timeout: 120_000 }, async () => {
+  const deps = liveDeps();
+  const bonk = await patient(() => S.resolveSolanaToken(BONK, deps));
+  assert.deepEqual([bonk.program, bonk.decimals, bonk.extensions, bonk.refusals], [TOKEN_PROGRAM_ADDRESS, 5, [], []]);
+  await pause(1200);
+  const refused = {
+    "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo": ["PermanentDelegate", "TransferHook"], // PYUSD
+    pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn: ["TransferHook"], // PUMP
+    XsCPL9dNWBMvFtTmwcCA5v3xWPSMEBCszbQdiLLq6aN: ["PermanentDelegate", "TransferHook"], // an xStock
+  };
+  for (const [mint, names] of Object.entries(refused)) {
+    const t = await patient(() => S.resolveSolanaToken(mint, deps));
+    assert.equal(t.program, TOKEN_2022_PROGRAM);
+    for (const n of names) assert.ok(t.refusals.some((r) => new RegExp(`\\b${n}\\b`).test(r.message)), `${mint.slice(0, 6)} ${n}`);
+    await assert.rejects(S.planSolanaSwap({ from: "USDC", to: mint, amount: "1" }, { ...deps, agent: WALLET, satoFeeBps: 15 }), (e) => e instanceof Refused && rules(e).includes("solana_swap.token_extension_refused"));
+    await pause(1200);
+  }
+  // Not a mint: Sato's USDC fee account is a token account, and a wallet is not a token program's account at all.
+  await assert.rejects(patient(() => S.resolveSolanaToken(S.SATO_FEE_ACCOUNTS[USDC_MINT], deps)), (e) => e instanceof Refused && rules(e)[0] === "solana_swap.token_not_a_mint" && /token account/.test(e.message));
+  await pause(1200);
+  await assert.rejects(patient(() => S.resolveSolanaToken(WALLET, deps)), (e) => e instanceof Refused && rules(e)[0] === "solana_swap.token_not_a_mint");
+});
+
+test("LIVE read: Jupiter's shared_accounts_route is still the form this kit decodes (discriminator, arguments, account order)", { skip: !live }, async () => {
+  const { idl } = await patient(() => fetchJupiterIdl(liveDeps().rpc));
+  const shared = idl.instructions.find((i) => i.name === "shared_accounts_route");
+  assert.equal(Buffer.from(shared.discriminator).toString("hex"), S.JUPITER_SHARED_ROUTE_DISCRIMINATOR);
+  assert.deepEqual(shared.args.map((a) => a.name), ["id", "route_plan", "in_amount", "quoted_out_amount", "slippage_bps", "platform_fee_bps"]);
+  assert.deepEqual(shared.accounts.map((a) => a.name), JUP_IDL.shared_accounts_route.accounts.map((a) => a.name), "the account order moved: re-run test/fixtures/swap-solana/idl.mjs --write and check ROUTE_ACCOUNTS");
+  assert.deepEqual(shared.accounts.map((a) => !!a.optional), JUP_IDL.shared_accounts_route.accounts.map((a) => !!a.optional));
 });

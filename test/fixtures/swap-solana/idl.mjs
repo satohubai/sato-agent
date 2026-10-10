@@ -37,6 +37,7 @@ export function trim(idl, idlAddress) {
     program: PROGRAM,
     instructions: Object.fromEntries(idl.instructions.map((i) => [i.name, Buffer.from(i.discriminator).toString("hex")])),
     route: idl.instructions.find((i) => i.name === "route"),
+    shared_accounts_route: idl.instructions.find((i) => i.name === "shared_accounts_route"),
     types: idl.types,
   };
 }

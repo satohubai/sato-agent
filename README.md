@@ -16,15 +16,15 @@ Two Bots, one kit:
 
 | Bot | Message | Today |
 |---|---|---|
-| **Sato Base Agent** | `NAME = base, CHAIN = base` | x402 payments, USDC sends, swaps USDC ↔ ETH/WETH, ERC-8004 identity, Sato Hub checks |
-| **Sato Solana Agent** | `NAME = solana, CHAIN = solana` | x402 payments in USDC on Solana (`pay --chain solana`), USDC sends (wallet recipients only), swaps USDC ↔ SOL via Jupiter, Sato Hub checks |
+| **Sato Base Agent** | `NAME = base, CHAIN = base` | buy or sell any Base token against USDC or ETH (by address or link), x402 payments, USDC sends, ERC-8004 identity, Sato Hub checks |
+| **Sato Solana Agent** | `NAME = solana, CHAIN = solana` | buy or sell any Solana token against USDC or SOL via Jupiter (by mint or link), x402 payments in USDC on Solana (`pay --chain solana`), USDC sends (wallet recipients only), Sato Hub checks |
 
 Each Bot keeps its own wallet, limits and ledger, even on the same Grok Bot computer.
 
 ## Quickstart (any machine)
 
 ```sh
-npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.2.4
+npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.3.0
 alias sato-agent=~/.sato-agent-cli/node_modules/.bin/sato-agent
 # npm may print "ERESOLVE overriding peer dependency" three times (the Solana x402
 # library's helpers ask for an older @solana/kit). That is expected; the tests run on these versions.
@@ -49,7 +49,8 @@ sato-agent register --name "My agent" --description "What it does"
 | `policy set --chains <base\|solana\|base,solana> --per-tx <usd\|none> --per-day <usd\|none>` | The owner's choices (per day = rolling 24 hours). **There are no defaults:** nothing is spent until chains and both limits are set. |
 | `policy set [--allow <addrs>\|any] [--approval ask\|auto] [--check-gate off\|no\|caution] [--on-check-unavailable allow\|refuse]` | Optional choices: a recipient allowlist; ask the owner before every spend; let a Sato Hub `no` (or `caution`) stop a spend; what to do when the check can't run. **Anything that loosens a choice is logged as a raise.** |
 | `pay <url> [--chain base\|solana] [--method --data --header]` | Pays an x402 resource in USDC on Base or on Solana mainnet, after the kit asks the server's price (one unpaid request) and Sato Hub reads its payment terms. Any other token or chain is refused before an approval is asked for. A server that does not ask for payment is not paid. `--dry-run` shows the quoted price, chain and payee. The chain is the owner's: an agent set to one chain pays there (`--chain` may be left out), an agent set to both must say `--chain`, and a `--chain` the owner did not choose is refused before anything is reserved. A JSON `--data` gets a JSON content-type |
-| `swap --chain base\|solana --from <asset> --to <asset> --amount <n> [--slippage-bps <n>] [--dry-run]` | Swaps with USDC on one side (Base: ETH, WETH; Solana: SOL). Off until the owner sets `--swap-slippage-bps` and `--max-trades-per-day`. See "How swaps are checked" below. |
+| `token <address\|mint\|link> [--chain base\|solana]` | A token card: what the token is (read from the chain), its price and liquidity with source and date, and Sato Hub's evidence about it. Links from DexScreener, GeckoTerminal, Birdeye, pump.fun, gmgn, Basescan, Solscan, jup.ag, Uniswap, Aerodrome, Zora and Clanker are resolved by Sato Hub, then re-read from the chain. |
+| `swap --chain base\|solana --from <asset> --to <asset> --amount <n\|all> [--slippage-bps <n>] [--dry-run]` | Buy or sell any token, with USDC, ETH or WETH (Base) or USDC or SOL (Solana) on one side. An asset is a symbol for those majors, or a token's address, mint or link. `--amount all` sells a token's whole balance. On once the spending limits are set; `policy set --swaps off` turns it off. See "How swaps are checked" below. |
 | `send --chain base\|solana --to <addr> --amount <usdc>` | Sends USDC, after Sato Hub checks the recipient |
 | `register --name --description [--image] [--service name=endpoint] [--x402-support]` | Registers in the ERC-8004 IdentityRegistry on Base (`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`), with the registration file stored onchain |
 | `check "<install command>" [--cluster mainnet-beta\|devnet] [--skip-check]` | First, Solana build receipts for the npm packages in the command (see below). Then Sato Check: does an install take a key, does the key leave, can it move funds on its own |
@@ -163,18 +164,23 @@ Every limit change is written to the ledger and shown in `status`. `pay` frames 
 ## How swaps are checked
 
 Nothing is signed until all of these pass:
-- **The owner's choices:** swaps turned on, slippage under the owner's cap, trades per 24 hours, the USD limits. A swap counts against the same per-transaction and 24-hour limits as any spend.
-- **An independent price.** Chainlink ETH/USD or SOL/USD, read on Base. Selling ETH or SOL is valued at that price, never at the quote. With no fresh price, there is no swap, and a quote more than 3% (ETH) or 5% (SOL) from it is refused.
+- **The owner's choices:** the USD limits (a swap counts against the same per-transaction and 24-hour limits as any spend), and, only if the owner set them, a slippage cap and a trades-per-24h cap. Otherwise slippage is chosen per trade: 0.5% between majors, 1.5% with a token (plus a Solana token's own transfer fee), never above 5%.
+- **The owner is asked, even in auto mode,** before a trade with slippage above 3%, a price impact or value gap above 3%, a simulated sell-back loss above 3% (Base), or a Solana token whose issuer can move holders' tokens or run code on every transfer (PermanentDelegate, TransferHook). The approval covers the figure the owner saw, rounded up to the next whole percent; a worse quote asks again.
+- **An independent price.** Chainlink ETH/USD or SOL/USD, read on Base. Selling ETH or SOL is valued at that price, never at the quote. With no fresh price, there is no swap. Between USDC and ETH/SOL, a quote more than 3% (ETH) or 5% (SOL) from it is refused. **A token has no independent price:** a token sale is valued from the USDC/ETH/SOL its quote pays out, and the limits are checked on that before anything is signed.
+- **Tokens:** the kit reads each token from the chain itself (decimals, program, authorities, Token-2022 extensions); a resolver or link is only a hint.
+  - **Base buys:** the kit simulates buying the token and selling it straight back, in one simulation, before signing. A token that can't be sold back, or that loses far more than slippage and fees on the round trip, is refused, and so is a token that takes a hidden fee on transfer.
+  - **Solana:** a token that can't be transferred, uses confidential transfers, starts frozen, is paused, or has an extension the kit doesn't know is refused. A transfer fee, a freeze authority and a mint authority are shown to the owner.
 - **Sato Hub's signature** on the quote and on its fee disclosure.
 - **The minimum you receive is the kit's, and it is written into the transaction.** The kit computes it from the quote less your slippage cap, then decodes the transaction it is about to sign. The minimum written into the transaction must be at least the kit's (on Base, KyberSwap's rounding may put it 1 base unit lower), and the output must go to the agent's own wallet; otherwise nothing is signed. Onchain, the swap reverts rather than pay less than that minimum.
 - **On Base:** the transaction must go to the pinned KyberSwap router on chain 8453, with the right value. The kit decodes the router call: tokens, amount, recipient, minimum and fee must all match what was asked. It then runs its own simulation (`eth_simulateV1`) of the approval plus the swap: the wallet may lose at most the amount sold, must receive at least the minimum, and must lose nothing else. Approvals are for the exact amount only, never unlimited, and are set back to 0 afterwards. If a swap ends unclear (exit code 4) or the reset fails, the command says so; check the allowance before the next swap. One Base swap runs at a time.
 - **On Solana:** the kit builds the transaction through Jupiter itself. It decodes it with its lookup tables and allows only pinned programs (and only the exact wrap, unwrap and create-account steps). It also decodes the Jupiter route: the amount, minimum, slippage, fee and destination must all match. The agent must be the only signer and the fee payer, the priority fee is capped, and the kit runs its own simulation of the balance changes and of who controls its token accounts afterwards. A transaction close to expiry is rebuilt, checked again (with a new price reading) and reported to you, never re-signed.
-- **The Sato Hub fee** is shown before signing. It is taken inside the swap (3 bps for stablecoin pairs, 15 bps with ETH or SOL). The kit checks that the fee written into the transaction is exactly the disclosed one, paid to the pinned Sato Hub address and to no one else, and refuses anything above 15 bps.
+- **The Sato Hub fee** is shown before signing. It is taken inside the swap (3 bps for stablecoin pairs, 15 bps with ETH, SOL or a token), always in USDC, ETH or SOL: on the input when you buy a token, on the output when you sell one, never in the token. The kit checks that the fee written into the transaction is exactly the disclosed one, on the disclosed side, paid to the pinned Sato Hub address and to no one else, and refuses anything above 15 bps.
 - **What this does not cover:**
   - The simulation runs on the RPC you use (a public one by default), and prices can move between the quote and the block.
   - Whoever builds the route (Sato Hub and KyberSwap on Base, Jupiter on Solana) could route it so you get exactly the minimum and no more. On Base the kit only lets the tokens go to KyberSwap's own executor contract, which narrows this.
   - In every case, the minimum written into the transaction bounds a single swap: the quote, within 3% (ETH) or 5% (SOL) of the independent price, less your slippage cap. The 24-hour limit bounds the total.
-- **Sato Hub checks and swaps:** a swap has no Sato Hub check of its own (the checks above are the kit's), so `--check-gate` and `--skip-check` do not apply to swaps.
+- **Sato Hub checks and swaps:** `token` shows Sato Hub's evidence about a token (dated, not a verdict). The swap itself is held to the kit's own checks above, so `--check-gate` and `--skip-check` do not apply to swaps.
+- **What a token check can't tell you:** whether a token is a good buy, whether its team is honest, or whether its price will hold. The kit never suggests what to buy or sell.
 - **Sato Hub keeps a public record of every swap quote it gives:** the venue, the pair, the amounts and the fee, never the wallet address. A `--dry-run` asks for a quote too, so it is recorded the same way.
 
 ## Files, network and privacy

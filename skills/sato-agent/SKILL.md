@@ -1,6 +1,6 @@
 ---
 name: sato-agent
-description: Turn this Grok Bot into an onchain agent with its own wallet on Base or Solana, spending limits the owner sets, x402 payments, USDC sends, swaps checked against an independent price, ERC-8004 identity, and Sato Hub checks before it spends. Use when the owner wants an onchain agent, a crypto wallet for this bot, to pay for an API with x402, to send USDC, or to see the agent's proof of activity.
+description: Turn this Grok Bot into an onchain agent with its own wallet on Base or Solana, spending limits the owner sets, buying or selling any token by contract address or link, x402 payments, USDC sends, ERC-8004 identity, and Sato Hub checks before it spends. Use when the owner wants an onchain agent, a crypto wallet for this bot, to buy or sell a token, to pay for an API with x402, to send USDC, or to see the agent's proof of activity.
 when-to-use: "make you an onchain agent", "set up your wallet", "pay for this with x402", "send USDC", "show your proof", "sato agent"
 user-invocable: true
 metadata:
@@ -27,7 +27,7 @@ Ask the owner for a NAME (for example `base` or `solana`) and a CHAIN (`base` or
 5. Offer a dry run (`--dry-run`) before the first real spend, so the owner sees the checks and the simulation before anything is signed.
 6. On Base, offer ERC-8004 registration.
 
-**Commands:** `balance`, `send`, `swap`, `pay`, `register`, `check`, `recommend`, `status`, `history`, `proof`.
+**Commands:** `balance`, `token`, `swap`, `send`, `pay`, `register`, `check`, `recommend`, `status`, `history`, `proof`.
 
 **Exit codes:**
 - `3`: refused by the limits. Nothing was signed.

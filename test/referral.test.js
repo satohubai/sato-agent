@@ -55,7 +55,13 @@ test("a referrer is a Base address (lower-cased) or a Solana address (exact case
   assert.equal(normalizeReferrer(REF_EVM_MIXED), REF_EVM);
   assert.equal(normalizeReferrer(`  ${REF_EVM_MIXED}  `), REF_EVM, "surrounding spaces are not part of an address");
   assert.equal(normalizeReferrer(REF_SOL), REF_SOL, "a Solana address keeps its case");
-  for (const bad of ["", "none", "0x123", `0x${"g".repeat(40)}`, `0x${"a".repeat(41)}`, "a".repeat(30), "0".repeat(44), "O".repeat(44), "1".repeat(50), `${REF_SOL}0`, null, undefined, 42, {}]) {
+  // the zero address is refused (Sato Hub refuses it, and a saved one would stop every swap), in any spelling
+  assert.equal(normalizeReferrer(`0x${"0".repeat(40)}`), null);
+  assert.equal(normalizeReferrer(`0X${"0".repeat(40)}`), null);
+  assert.throws(() => parseReferrerInput(`0x${"0".repeat(40)}`), /--referrer must be a Base address/);
+  assert.throws(() => setReferrer(`0x${"0".repeat(40)}`), /--referrer must be/);
+  assert.equal(normalizeReferrer(`0x${"0".repeat(39)}1`), `0x${"0".repeat(39)}1`, "only the zero address itself");
+  for (const bad of ["", "none", "0x123",`0x${"g".repeat(40)}`, `0x${"a".repeat(41)}`, "a".repeat(30), "0".repeat(44), "O".repeat(44), "1".repeat(50), `${REF_SOL}0`, null, undefined, 42, {}]) {
     assert.equal(normalizeReferrer(bad), null, String(bad));
   }
   assert.deepEqual(parseReferrerInput("NONE"), { clear: true });
@@ -402,6 +408,12 @@ test("a quote with NO Sato fee: no referral warning, no referral line, and nothi
   }
   assert.equal(referralView(REF_SOL, null, 0), null);
   assert.equal(referralView(REF_SOL, referral(REF_SOL), 0), null);
+  // a null, undefined or missing fee is treated like 0: no warning, no line, nothing to report
+  for (const fee of [null, undefined]) {
+    assert.equal(referralView(REF_SOL, null, fee), null, String(fee));
+    assert.equal(referralView(REF_SOL, referral(REF_SOL), fee), null, String(fee));
+  }
+  assert.equal(referralView(REF_SOL, null), null, "no fee argument at all");
   // with a fee, a missing referral still warns (and a recorded one still shows)
   assert.equal(referralView(REF_SOL, null, 15).recorded, false);
   assert.match(referralView(REF_SOL, null, 15).warning, /didn't record your referrer/);
@@ -420,6 +432,23 @@ test("the taker is sent with the Base build-tx and the Solana disclosure (the ap
   const sol = solRig({ answer: (r) => ({ ...r, referral: referral(REF_EVM) }) });
   await prepareSwap(solReq, sol.deps);
   assert.equal(sol.asked[0].taker, addresses().solana, "Solana: the taker is the agent's own address");
+  // whenever a referrer is sent, a taker is sent with it - every direction, both chains (Sato Hub records a referral only
+  // when the quote names a taker)
+  const allBase = [];
+  const spy = async (_n, args) => (allBase.push(args), { structured: { ...satoResponse("usdc-to-eth"), referral: referral(REF_EVM) }, isError: false });
+  await evm.planBaseSwap({ from: "USDC", to: "ETH", amount: "100", slippageBps: 50 }, { callTool: spy, taker: SENDER, referrer: REF_EVM });
+  await evm.planBaseSwap({ from: "ETH", to: "USDC", amount: "0.01", slippageBps: 50 }, { callTool: spy, taker: SENDER, referrer: REF_EVM });
+  await assert.rejects(evm.planBaseSwap({ from: "USDC", to: "ETH", amount: "100", slippageBps: 50 }, { callTool: spy, taker: "not an address", referrer: REF_EVM }), /not a Base address/, "no taker, no request");
+  const allSol = [];
+  for (const [from, to, amount] of [["USDC", "SOL", "11"], ["SOL", "USDC", "0.1"]]) {
+    const s = solRig();
+    await prepareSwap({ chain: "solana", from, to, amount }, s.deps).catch(() => {});
+    allSol.push(...s.asked);
+  }
+  const withReferrer = [...base.calls.map((c) => c.args), ...allBase, ...sol.asked, ...allSol].filter((a) => a.referrer);
+  assert.ok(withReferrer.length >= 6, `checked ${withReferrer.length} requests`);
+  for (const a of withReferrer) assert.ok(typeof a.taker === "string" && a.taker.length >= 32, `a request with a referrer names a taker: ${JSON.stringify(a)}`);
+  assert.equal(allBase.length, 2, "the request with an unusable taker was never sent");
   // and the settle body stays exactly { route_id, chain, tx }: the taker is bound at quote time, not repeated here
   const r = recorder();
   await settleReferral({ routeId: "rt", chain: "solana", tx: "sig" }, { fetchImpl: r.fetchImpl, origin: "https://satohub.test" });
@@ -580,9 +609,9 @@ test("readReferral / referralView / referralFeeSentence", () => {
   assert.equal(readReferral({ referrer: REF_EVM, share_of_fee_bps: 20_000 }).share_of_fee_bps, null);
   assert.equal(referralView(null, referral(REF_EVM)), null, "nothing sent, nothing shown");
   assert.equal(referralFeeSentence(null), "");
-  assert.equal(referralFeeSentence(referralView(REF_EVM, null)), "", "an unrecorded referral is not claimed");
-  assert.match(referralFeeSentence(referralView(REF_EVM, referral(REF_EVM, { share_of_fee_bps: 2500 }))), /25% of it goes to the referrer/);
-  assert.match(referralFeeSentence(referralView(REF_EVM, { referrer: REF_EVM })), /Part of it goes to the referrer/, "no share stated: no number invented");
+  assert.equal(referralFeeSentence(referralView(REF_EVM, null, 15)), "", "an unrecorded referral is not claimed");
+  assert.match(referralFeeSentence(referralView(REF_EVM, referral(REF_EVM, { share_of_fee_bps: 2500 }), 15)), /25% of it goes to the referrer/);
+  assert.match(referralFeeSentence(referralView(REF_EVM, { referrer: REF_EVM }, 15)), /Part of it goes to the referrer/, "no share stated: no number invented");
 });
 
 // ---------------------------------------------------------------- docs and version
@@ -609,12 +638,23 @@ test("v0.3.1: the version is the same everywhere, and the docs say what the cont
   assert.match(bot, /`REFERRER = <address>`/);
   assert.match(bot, /settings set --referrer <address>/);
   // the owner section
-  const share = bot.slice(bot.indexOf("## Share Sato Agent and earn"), bot.indexOf("## Rules"));
+  assert.match(bot, /^## Share Sato Agent \(referral share\)$/m);
+  assert.doesNotMatch(bot, /Share Sato Agent and earn/);
+  const share = bot.slice(bot.indexOf("## Share Sato Agent (referral share)"), bot.indexOf("## Rules"));
   assert.match(share, /their own setup prompt with their own referral address/);
-  assert.match(share, /30% of Sato Hub's swap fee/);
+  assert.match(share, /30% of Sato Hub's swap fee on trades by the bots set up with their address/);
   assert.match(share, /paid weekly in USDC/);
   assert.match(share, /pay nothing extra/);
-  assert.doesNotMatch(share, /guarantee|passive income|risk-free/i);
+  assert.match(share, /Do not bring it up or promote it yourself/);
+  assert.doesNotMatch(share, /guarantee|passive income|risk-free|\bearn/i);
+  // the README says exactly what counts, and never "every trade"
+  const ref = readme.slice(readme.indexOf("## Referral share"), readme.indexOf("## How purchases are checked"));
+  assert.match(ref, /Swaps only/);
+  assert.match(ref, /confirmed onchain and Sato Hub has read its fee/);
+  assert.match(ref, /weekly in USDC once the balance passes \$10/);
+  assert.match(ref, /Smaller balances carry over/);
+  assert.match(ref, /Self-referral is allowed/);
+  assert.doesNotMatch(ref, /every trade/i);
   // README states the privacy sentence plainly
   assert.match(readme, /If you set a referrer, the kit tells Sato Hub which transaction each swap was, so the referrer can be paid\. Sato Hub keeps it private\./);
   assert.match(readme, /## Referral share/);

@@ -217,7 +217,8 @@ const SOL_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 export function normalizeReferrer(raw) {
   if (typeof raw !== "string") return null;
   const v = raw.trim();
-  if (EVM_RE.test(v)) return v.toLowerCase();
+  // The zero address is refused here: Sato Hub refuses it too, and a saved one would stop every swap.
+  if (EVM_RE.test(v)) return /^0x0{40}$/.test(v) ? null : v.toLowerCase();
   if (SOL_RE.test(v) && isSolanaAddress(v)) return v;
   return null;
 }

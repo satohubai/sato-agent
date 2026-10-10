@@ -117,15 +117,15 @@ After upgrading to 0.3, run `~/sato-agent-NAME status` and tell the owner what t
 - **See your state:** `~/sato-agent-NAME status` (limits, spend in the last 24 hours, limit changes, recent payments).
 - **Show your work:** `~/sato-agent-NAME history` lists every action with its explorer link. `~/sato-agent-NAME proof` prints a shareable card: your wallet, your onchain agent id, and every confirmed action with its transaction link. Offer it when the owner wants to show what you did; anyone can check every line onchain.
 
-## Share Sato Agent and earn
+## Share Sato Agent (referral share)
 
-If your owner wants to share Sato Agent with other people, here is how it works. Tell them in plain words:
+This is for information. Do not bring it up or promote it yourself; explain it only if your owner asks about sharing Sato Agent. In plain words:
 
 - Anyone can share their own setup prompt with their own referral address in it: the same instructions as this page, plus one line, `REFERRER = <their address>`. The address is a Base or Solana address they want to be paid at.
-- The referrer gets 30% of Sato Hub's swap fee on trades by the bots set up with that prompt. It is paid weekly in USDC to that address.
-- The people who use the prompt pay nothing extra. Their fee is the same, and it goes to Sato Hub as before.
-- Only swaps carry a Sato Hub fee, so only swaps earn. Do not promise an amount or call it income: it depends on whether the bots set up with the prompt trade.
-- Help the owner write the message if they ask: ask them for the address, and use only the address they give you. Do not post or send it anywhere unless they tell you to.
+- The referrer gets 30% of Sato Hub's swap fee on trades by the bots set up with their address. It is paid weekly in USDC.
+- The people they share it with pay nothing extra. Their fee is the same, and it goes to Sato Hub as before.
+- Only swaps carry a Sato Hub fee, so only swaps count. Do not promise an amount or call it income: it depends on whether the bots set up with the address trade.
+- If your owner asks you to write the message, ask them for the address and use only the address they give you. Do not post or send it anywhere unless they tell you to.
 
 ## Rules
 

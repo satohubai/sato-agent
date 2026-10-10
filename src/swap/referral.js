@@ -48,12 +48,12 @@ export function readReferral(answer) {
  * What the owner is shown about the referral on one swap: null when no referrer was sent. `sent` is the normalized referrer
  * in the request, `answer` the signed answer's `referral`. `recorded` is true only when the signed answer names the same
  * referrer (normalized); otherwise `warning` says so. Display only: nothing here can stop a swap.
- * `feeBps`: the quote's Sato fee. A quote with NO Sato fee (0 bps) has nothing to share, and Sato Hub answers `referral: null`
+ * `feeBps`: the quote's Sato fee. A quote with NO Sato fee (0, null or missing) has nothing to share, and Sato Hub answers `referral: null`
  * for it: that is not a failure, so the view is null (nothing printed, nothing reported) whatever the answer says.
  */
 export function referralView(sent, answer, feeBps) {
   if (!sent) return null;
-  if (feeBps === 0) return null;
+  if (!feeBps) return null; // 0, null or missing: no fee to share
   const got = readReferral(answer);
   const recorded = Boolean(got) && normalizeReferrer(got.referrer) === sent;
   return {

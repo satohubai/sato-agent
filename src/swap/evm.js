@@ -703,11 +703,16 @@ export function checkRouterCalldata(data, { intent, minOut, feeBps, feeSide = "i
  *   - `prevRandao` (the latest block's mixHash; on Base it is the L1 randomness) goes in the block overrides, so
  *     `block.prevrandao == 0` cannot tell a token that this is a simulation either;
  *   - `blockNumber` / `timestamp` (the latest block's) give the simulated blocks real, later numbers and times:
- *     the first block is the next one, the second two blocks on (Base makes a block every 2 s).
+ *     the first block is the next one, the second LATER_BLOCK[1] on (Base makes a block every 2 s). Gaps of minutes
+ *     were tried and dropped: some routes' quotes expire within them (refusing ordinary tokens) and anvil forks reject
+ *     them. A sale blocked by a longer time lock is not caught (the README says so).
  *   - `splitAt`: calls from that index on go in a SECOND simulated block (eth_simulateV1 carries state from one
  *     block to the next). The sell-back test uses it: the buy in one block, the approve and the sell in the next, so a
  *     token that refuses to be sold in the block it was bought in (a common honeypot trick) does not fail the test.
  */
+/** How far past the block that was read each simulated block sits: the buy in the next block, the sell-back in the one after. */
+export const LATER_BLOCK = Object.freeze([Object.freeze({ blocks: 1, seconds: 2 }), Object.freeze({ blocks: 2, seconds: 4 })]);
+
 export function buildSimulationRequest({ taker, calls, baseFeePerGas, maxPriorityFeePerGas, prevRandao, blockNumber, timestamp, splitAt }) {
   const realistic = typeof baseFeePerGas === "bigint" && baseFeePerGas > 0n;
   const tip = typeof maxPriorityFeePerGas === "bigint" && maxPriorityFeePerGas >= 0n ? maxPriorityFeePerGas : 0n;
@@ -718,17 +723,19 @@ export function buildSimulationRequest({ taker, calls, baseFeePerGas, maxPriorit
   const overrides = (k) => ({
     ...(realistic ? { baseFeePerGas: toHex(baseFeePerGas) } : {}),
     ...(randao ? { prevRandao: randao } : {}),
-    ...(timed ? { number: toHex(blockNumber + BigInt(k)), time: toHex(timestamp + BigInt(2 * k)) } : {}),
+    ...(timed ? { number: toHex(blockNumber + BigInt(LATER_BLOCK[k].blocks)), time: toHex(timestamp + BigInt(LATER_BLOCK[k].seconds)) } : {}),
   });
   const withOverrides = (k) => (Object.keys(overrides(k)).length ? { blockOverrides: overrides(k) } : {});
   const split = Number.isInteger(splitAt) && splitAt > 0 && splitAt < calls.length ? splitAt : null;
   const groups = split === null ? [calls] : [calls.slice(0, split), calls.slice(split)];
   return [
     {
-      blockStateCalls: groups.map((g, i) => ({ ...withOverrides(i + 1), calls: g.map(encode) })),
+      blockStateCalls: groups.map((g, i) => ({ ...withOverrides(i), calls: g.map(encode) })),
       traceTransfers: true,
       validation: false,
     },
+    // A load-balanced node that moved on between the read and this call rejects number = read+1 as out of order
+    // (-38020); defaultSimulate reads again and retries (a block tag of the read block is not accepted by every node).
     "latest",
   ];
 }
@@ -755,9 +762,21 @@ async function simulationFees(c) {
 }
 
 export async function defaultSimulate({ taker, calls, splitAt, c }) {
-  const fees = await simulationFees(c);
-  return c.pub.request({ method: "eth_simulateV1", params: buildSimulationRequest({ taker, calls, splitAt, ...fees }) });
+  // Up to SIMULATE_TRIES times, each on a fresh read: the node behind a public load balancer may have moved past the
+  // block that was read (Base makes one every 2 s), which fails the simulated block numbers as out of order. A last
+  // failure is the caller's simulation_unavailable.
+  let last;
+  for (let i = 0; i < SIMULATE_TRIES; i++) {
+    try {
+      const fees = await simulationFees(c);
+      return await c.pub.request({ method: "eth_simulateV1", params: buildSimulationRequest({ taker, calls, splitAt, ...fees }) });
+    } catch (err) {
+      last = err;
+    }
+  }
+  throw last;
 }
+const SIMULATE_TRIES = 3;
 
 function revertNote(call) {
   const msg = call?.error?.message ?? call?.error?.data ?? null;

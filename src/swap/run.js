@@ -779,7 +779,12 @@ export async function describeToken(input, { chain } = {}, deps = {}) {
   if (!raw) throw new Error("token needs an address, a mint or a link");
   if (chain !== undefined && !["base", "solana"].includes(chain)) throw new Error("--chain must be base or solana");
   const link = looksLikeLink(raw);
-  const hubRes = await (deps.resolveHub ?? resolveTokenViaHub)(raw, { chain });
+  const hubRes = await (deps.resolveHub ?? resolveTokenViaHub)(raw, { chain, ...(deps.verifySignature ? { verifySignature: deps.verifySignature } : {}) });
+  // A link decides WHICH address the card shows, and the owner trades the card's address: the same rule as swap, an
+  // answer that cannot be shown to come from Sato Hub is not followed.
+  if (link && hubRes.ok && hubRes.signature?.ok !== true) {
+    throw refuse("resolver_unsigned", `Sato Hub's answer for this link could not be shown to be signed by Sato Hub (${clean(hubRes.signature?.error ?? "no signature", 160)}); send the contract address instead`);
+  }
   let hub = hubRes.ok ? hubRes.token : null;
   if (link && !hub) {
     throw new Error(

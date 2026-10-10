@@ -583,7 +583,8 @@ test("each reason forces the owner's approval in auto mode (exit 5), says why, a
     const calm = await runSwap(BONK_SELL, { approve: first.approval.code }, solRig(bonkSellPlan({ impactBps: 100 })).deps);
     assert.deepEqual(calm.confirm, [], "no reason this time, so nothing to approve");
     const slippy = { ...BONK_SELL, slippageBps: 450 };
-    await assert.rejects(runSwap(slippy, { approve: first.approval.code }, solRig(bonkSellPlan({ impactBps: 900 })).deps), /different intent/, "another slippage is another swap");
+    const other = await needs(runSwap(slippy, { approve: first.approval.code }, solRig(bonkSellPlan({ impactBps: 900 })).deps));
+    assert.notEqual(other.approval.code, first.approval.code, "another slippage is another swap: the owner is asked again");
     await runSwap(BONK_SELL, { approve: first.approval.code }, solRig(bonkSellPlan({ impactBps: 900 })).deps); // still good for the swap it was given for
   }
   // approving the impact the owner saw never approves a worse one: 9% approved, the re-quote says 40%

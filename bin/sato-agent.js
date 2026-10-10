@@ -11,7 +11,8 @@ import { allowedChains, evaluate, isLegacySwapsOff, loadPolicy, purchasesAsk, se
 import { NeedsApproval, Pending, Refused } from "../src/errors.js";
 import { VALUE_KINDS, actions, read, recordCheckEvent, spentLast24h } from "../src/ledger.js";
 import { purchaseChain, purchaseGate } from "../src/purchase.js";
-import { SHIP_FIELDS, clearShipTo, scrubAddress, setShipTo, shipTo, shipToLines, shipToStatus } from "../src/settings.js";
+import { SHIP_FIELDS, clearShipTo, scrubAddress, setShipTo, shipFieldsFromJson, shipTo, shipToLines, shipToStatus } from "../src/settings.js";
+import { readFileSync } from "node:fs";
 import { assertBaseAgent, buyGiftcard, codesLine, invoiceStatus, saveCodes, savedCodes, searchProducts } from "../src/bitrefill.js";
 import { localOrders, orderStatus, placeOrder, statusLines } from "../src/commerce.js";
 import { BUY_ACCEPTS, classifyBuy, parseEip681, parseSolanaPay, prepareSolanaPayTransaction, prepareSolanaPayTransfer } from "../src/checkout.js";
@@ -41,25 +42,32 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
              [--swaps on|off] [--swap-slippage-bps <1-500>|none] [--max-trades-per-day <n|none>]
              [--purchases ask|auto]
                                          the owner's choices; nothing is spent until chains and both limits are set.
-                                         --purchases: gift cards, Amazon orders and checkouts ask the owner first (the
-                                         default) or buy within the limits (auto, logged as a raise)
-  settings show | settings set --ship-name <n> --ship-line1 <l> [--ship-line2 <l>] --ship-city <c> --ship-state <s>
-                               --ship-zip <z> --ship-country US --ship-email <e> | settings set --ship-clear
+                                         --purchases: gift cards, Amazon orders, checkouts and links paid through buy ask
+                                         the owner first unless BOTH --purchases and --approval are auto (auto is a raise)
+  settings show | settings set --stdin  (a JSON object of name, line1, line2, city, state, postalCode, country, email)
+               | settings set --ship-name <n> --ship-line1 <l> [--ship-line2 <l>] --ship-city <c> --ship-state <XX>
+                              --ship-zip <z> --ship-country US --ship-email <e> | settings set --ship-clear
                                          the shipping address for Amazon orders. It stays on this computer (mode 600) and
-                                         is sent only inside an order request to Sato Hub; never logged
+                                         is sent only inside an order request to Sato Hub; never logged. --stdin keeps it
+                                         out of the command line
   buy <request|link|ASIN> [--chain base|solana] [--approve <code>] [--dry-run]
-                                         reads what it is given and hands it to checkout, order or pay; changes nothing itself
+                                         reads what it is given and hands it to checkout, order or pay; changes nothing itself.
+                                         A link it pays (x402, a Coinbase checkout) is a purchase: price card, owner's yes
   giftcard search <words> [--country US] [--kind giftcard|esim|topup]
-  giftcard buy <product id> --value <n> [--refill <number>] [--approve <code>] [--dry-run]
+  giftcard buy <product id> --value <n> [--refill <number>] [--wait <0-240 s>] [--approve <code>] [--dry-run]
   giftcard status <invoice id>
                                          gift cards, eSIMs and top-ups from Bitrefill, paid in USDC on Base (x402). The price
-                                         card comes first; the code is shown once delivered, and kept in a private file
+                                         card comes first; the code is shown once delivered, and kept in a private file.
+                                         Paid but not delivered within --wait (default 240 s) exits 4: do not buy again.
+                                         search and buy (a dry run too) sign in to Bitrefill: a sign-in message, not a payment
   order <amazon.com link|ASIN> [--chain base|solana] [--approve <code>] [--dry-run]
   orders [order id]
                                          Amazon US, shipped to the owner's address, through Sato Hub (once it is switched on).
                                          Shows item, tax, shipping and total; the payment is decoded and simulated first
   checkout <solana:...|ethereum:...> [--approve <code>] [--dry-run]
-                                         pay a Solana Pay request (USDC or SOL) or a USDC-on-Base payment link (EIP-681)
+  checkout --to <address> --amount <usdc> --chain base|solana [--approve <code>] [--dry-run]
+                                         pay a Solana Pay request (USDC or SOL), a USDC-on-Base payment link (EIP-681), or an
+                                         exact amount to a deposit address (a Stripe crypto deposit address)
   swap --chain base|solana --from <asset> --to <asset> --amount <n|all> [--slippage-bps <n>] [--approve <code>] [--dry-run]
                                          swap with a major on one side: USDC, ETH or WETH on Base; USDC or SOL on Solana. The other
                                          side can be any token, by its 0x address (Base), its mint (Solana) or a link; Sato Hub's
@@ -92,7 +100,7 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
   history [--since 24h|7d|30d|all]       every action, one row each, with its explorer link
   proof                                  a shareable card: this agent's wallet, onchain id and every action with its tx link
 
-Add --dry-run to send, pay, swap, giftcard buy, order or checkout to run every check (and, for send, swap, order and checkout, the simulation; for pay and gift cards, the quoted price) without signing or spending.
+Add --dry-run to send, pay, swap, order or checkout to run every check (and, for send, swap, order and checkout, the simulation; for pay, the quoted price) without signing a payment or spending. A dry run asks the other side for a real quote: a swap quote is recorded by Sato Hub; an order dry run sends the shipping address to Sato Hub and creates a Crossmint quote. giftcard buy --dry-run signs in to Bitrefill (a sign-in message, not a payment) and creates an unpaid invoice; it pays and signs no payment.
 
 Add --json for machine-readable output. Files: ${home()} (SATO_AGENT_HOME to move).
 Exit codes: 3 refused (nothing signed) · 4 signed but not confirmed (do NOT retry) · 5 needs the owner's approval (nothing spent).
@@ -150,6 +158,8 @@ try {
       "ship-country": { type: "string" },
       "ship-email": { type: "string" },
       "ship-clear": { type: "boolean" },
+      stdin: { type: "boolean" },
+      wait: { type: "string" },
     },
   }));
 } catch (err) {
@@ -160,6 +170,7 @@ try {
 class UsageError extends Error {}
 
 const [cmd = "help"] = positionals;
+let viaBuy = false; // set by `buy` before it hands a link to `pay`
 const json = (obj) => JSON.stringify(obj, (_k, v) => (typeof v === "bigint" ? v.toString() : v), 2);
 const out = (human, obj) => console.log(flags.json ? json(obj) : human);
 const limitText = (v) => (v === null ? "no limit" : `$${v}`);
@@ -175,7 +186,7 @@ function policyText(p) {
     `recipients:      ${p.allow_recipients ? p.allow_recipients.join(", ") : "any"}`,
     `Sato Hub checks: ${p.check_gate && p.check_gate !== "off" ? `stop a spend on "${p.check_gate === "caution" ? "caution or no" : "no"}"${p.on_check_unavailable ? ` · if a check can't run: ${p.on_check_unavailable}` : ""}` : "inform only"}`,
     `approval:        ${p.approval === "ask" ? "ask the owner before every spend" : "act within the limits"}`,
-    `purchases:       ${purchasesAsk(p) ? `ask the owner first${p.purchase_approval ? "" : " (the default)"}` : "buy within the limits"} (gift cards, Amazon orders, checkouts)`,
+    `purchases:       ${purchasesAsk(p) ? `ask the owner first${p.purchase_approval === "auto" ? " (because approval is ask: purchases buy on their own only when both are auto)" : p.purchase_approval ? "" : " (the default)"}` : "buy within the limits"} (gift cards, Amazon orders, checkouts, and links paid through buy)`,
     `swaps:           ${!swapsEnabled(p) ? `off${isLegacySwapsOff(p) ? " (this policy is from before v0.3 and never had swaps on; \`policy set --swaps on\` turns them on)" : ""}` : `on · ${Number.isInteger(p.max_slippage_bps) ? `slippage up to ${p.max_slippage_bps} bps` : "slippage chosen per trade"} · ${Number.isInteger(p.max_trades_per_day) ? `${p.max_trades_per_day} per 24 hours` : "no trade cap"}`}`,
   ].join("\n");
 }
@@ -411,6 +422,15 @@ async function main(command = cmd, args = positionals.slice(1)) {
         expectKind: "x402",
         usd: chosen?.usd,
         to: chosen?.pay_to,
+        // Reached through `buy`, a paid link (an x402 resource, a Coinbase Business checkout) is a purchase: the purchase
+        // setting applies (ask unless both choices are auto), with a price card.
+        purchase: viaBuy,
+        card: viaBuy
+          ? [
+              `Pay a link: ${clean(url, 300)}`,
+              chosen ? `Price: ${chosen.usd} USDC on ${payChain === "base" ? "Base" : "Solana"}, paid to ${chosen.pay_to} (the price the server asked just now; a higher one at pay time is refused).` : `Price: not stated before the real request; the server can charge up to $${perTx} (the per-transaction limit), and the payee is not known yet.`,
+            ]
+          : [],
       });
       if (flags["dry-run"]) {
         if (!chosen) {
@@ -601,7 +621,10 @@ async function main(command = cmd, args = positionals.slice(1)) {
         }
         let s;
         try {
-          s = setShipTo(Object.fromEntries(SHIP_FIELDS.map(([key, flag]) => [key, flags[flag.slice(2)]])));
+          const fromFlags = Object.fromEntries(SHIP_FIELDS.map(([key, flag]) => [key, flags[flag.slice(2)]]).filter(([, v]) => v !== undefined));
+          if (flags.stdin && Object.keys(fromFlags).length) throw new Error("use either --stdin or the --ship-* flags, not both");
+          // --stdin: a JSON object on standard input, so the address is never in the command line (or a process list).
+          s = setShipTo(flags.stdin ? shipFieldsFromJson(readFileSync(0, "utf8")) : fromFlags);
         } catch (err) {
           throw new UsageError(err.message); // names the flag, never echoes a value
         }
@@ -618,11 +641,39 @@ async function main(command = cmd, args = positionals.slice(1)) {
       const c = classifyBuy(input);
       if (!c.route) throw new UsageError(`that is not something buy can pay for. ${accepts}`);
       say({ checkout: `Reading this as a payment request (${c.kind}).`, order: "Reading this as an Amazon product.", pay: "Reading this as an x402 link (a server that asks for payment in USDC)." }[c.route]);
+      if (c.route === "pay") viaBuy = true; // a link paid through buy is a purchase (see the pay case)
       return main(c.route, [input]);
     }
     case "checkout": {
       const input = rest[0];
-      if (!input || rest.length > 1) throw new UsageError("checkout <solana:...|ethereum:...> [--approve <code>] [--dry-run]");
+      if (!input && rest.length === 0 && (flags.to !== undefined || flags.amount !== undefined)) {
+        // An exact amount to a deposit address (a Stripe crypto deposit address): a purchase, with its card and the owner's yes.
+        if (!flags.to || !flags.amount || !flags.chain) throw new UsageError("checkout --to <address> --amount <usdc> --chain base|solana");
+        const chain = purchaseChain(flags.chain);
+        const usd = unitsToUsd(usdcUnits(flags.amount)); // refuses a malformed amount
+        const a = addresses();
+        const card = [`Deposit payment: pay exactly ${flags.amount} USDC on ${chain === "base" ? "Base" : "Solana"} to ${flags.to}. Only this exact amount, on this network, is matched to the order.`];
+        const check = await beforeSpend({
+          chain,
+          intent: { cmd: "checkout", kind: "deposit", chain, to: flags.to, amount: flags.amount },
+          checkArgs: { address: flags.to, chain: chain === "base" ? "Base" : "Solana", from: a[chain] },
+          expectKind: "address",
+          usd,
+          to: flags.to,
+          precheck: chain === "solana" ? () => solana.assertWalletRecipient(flags.to) : undefined,
+          purchase: true,
+          card,
+        });
+        const mod = chain === "base" ? baseChain : solana;
+        if (flags["dry-run"]) {
+          const d = await mod.dryRunSendUsdc({ to: flags.to, amount: flags.amount });
+          return out(`${card.join("\n")}\nDRY RUN: the checks and the simulation passed. Nothing was signed or sent, and nothing counts against the limits.`, { ...d, card, sato_hub_check: check });
+        }
+        say(card.join("\n"));
+        const r = await mod.sendUsdc({ to: flags.to, amount: flags.amount });
+        return out(`Paid ${r.usd} USDC on ${chain === "base" ? "Base" : "Solana"} to ${r.to}\n  ${r.explorer}`, { ...r, chain, kind: "deposit", sato_hub_check: check });
+      }
+      if (!input || rest.length > 1) throw new UsageError("checkout <solana:...|ethereum:...> | checkout --to <address> --amount <usdc> --chain base|solana  [--approve <code>] [--dry-run]");
       const { kind } = classifyBuy(input);
       if (kind === "eip681") {
         const req = parseEip681(input);
@@ -665,19 +716,28 @@ async function main(command = cmd, args = positionals.slice(1)) {
       }
       if (sub === "buy") {
         const product = rest[1];
-        if (!product || rest.length > 2 || !flags.value) throw new UsageError("giftcard buy <product id> --value <n> [--refill <number>] [--approve <code>] [--dry-run]");
-        const r = await buyGiftcard({ product, value: flags.value, refill: flags.refill, approve: flags.approve, dryRun: Boolean(flags["dry-run"]) });
-        if (r.dry_run) return out(`${r.card.join("\n")}\nDRY RUN: nothing was paid and no payment was signed. (Bitrefill holds an unpaid invoice for the price above; it expires on its own.)`, r);
+        if (!product || rest.length > 2 || !flags.value) throw new UsageError("giftcard buy <product id> --value <n> [--refill <number>] [--wait <seconds>] [--approve <code>] [--dry-run]");
+        let waitS;
+        if (flags.wait !== undefined) {
+          if (!/^\d+$/.test(flags.wait) || Number(flags.wait) > 240) throw new UsageError("--wait must be a whole number of seconds from 0 to 240");
+          waitS = Number(flags.wait);
+        }
+        const r = await buyGiftcard({ product, value: flags.value, refill: flags.refill, approve: flags.approve, dryRun: Boolean(flags["dry-run"]) }, waitS === undefined ? {} : { waitMs: waitS * 1000 });
+        if (r.dry_run) return out(`${r.card.join("\n")}\nDRY RUN: nothing was paid and no payment was signed (the kit did sign in to Bitrefill: a sign-in message, not a payment). Bitrefill holds an unpaid invoice for the price above; it expires on its own.`, r);
         const p = r.payment;
-        const paid = p.settled ? `Paid ${p.usd} USDC on Base to Bitrefill.\n  ${p.explorer}` : `Signed a payment of ${p.usd} USDC on Base to Bitrefill (HTTP ${p.status}), with no settlement receipt yet. It stays counted against the limits. Do NOT retry.${p.explorer ? `\n  Check: ${p.explorer}` : ""}`;
+        const paid = p.settled ? `Paid ${p.usd} USDC on Base to Bitrefill.\n  ${p.explorer}` : `Signed a payment of ${p.usd} USDC on Base to Bitrefill (HTTP ${p.status}), with no settlement receipt yet. It stays counted against the limits.${p.explorer ? `\n  Check: ${p.explorer}` : ""}`;
         const st = r.delivery;
-        const delivered = st?.state === "delivered" && st.codes.length;
-        if (!p.settled && !delivered) process.exitCode = 4;
+        const delivered = Boolean(st?.state === "delivered" && st.codes.length);
+        // Paid (or signed) but no code in hand: exit 4, so nothing retries the purchase and pays twice.
+        if (!delivered) process.exitCode = 4;
+        const notYet = `Paid, not delivered yet — do not buy again; check with \`giftcard status ${r.invoice_id}\`.`;
         const deliveryText = delivered
           ? `Delivered. The code is also saved in a private file on this computer (${r.codes_path}).`
           : st?.state === "failed"
-            ? `Bitrefill reports this order as ${st.delivery_status ?? st.invoice_status}. Bitrefill refunds a failed order to the paying wallet; check with \`giftcard status ${r.invoice_id}\`.`
-            : `Paid; Bitrefill has not delivered yet. Check with \`giftcard status ${r.invoice_id}\`.`;
+            ? `${notYet} Bitrefill reports this order as ${st.delivery_status ?? st.invoice_status}; Bitrefill refunds a failed order to the paying wallet.`
+            : st?.state === "delivered"
+              ? `${notYet} Bitrefill says it is delivered but sent no code yet.`
+              : notYet;
         if (flags.json) return out("", { invoice_id: r.invoice_id, product: r.product, value: r.value, price_usdc: r.price_usdc, payment: { ...p, body: undefined }, delivery: { state: st?.state, invoice_status: st?.invoice_status, delivery_status: st?.delivery_status }, codes_file: r.codes_path, ...(delivered ? { secret_codes: st.codes } : {}) });
         // The code is the last line of the output, and the only place it is printed.
         console.log([...r.card, paid, deliveryText, ...(delivered ? [codesLine(st.codes)] : [])].join("\n"));

@@ -31,8 +31,11 @@ export const UNAVAILABLE_MODES = ["allow", "refuse"]; // when the check cannot b
 // owner's yes; "auto" buys within the limits. x402 `pay` and `send` keep following `approval`.
 export const PURCHASE_MODES = ["ask", "auto"];
 
-/** True unless the owner chose `--purchases auto`: an unset choice asks. */
-export const purchasesAsk = (p) => p?.purchase_approval !== "auto";
+/**
+ * True unless BOTH choices are "auto": the stricter of `approval` and `purchase_approval` wins. An unset purchase choice
+ * asks, and an owner who chose "ask before every payment" is asked before every purchase too.
+ */
+export const purchasesAsk = (p) => p?.purchase_approval !== "auto" || p?.approval === "ask";
 
 /** Parse a limit: a plain positive decimal number of USD, or "none". */
 export function parseLimit(raw, flag) {

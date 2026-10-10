@@ -9,12 +9,34 @@
 // time the address changes, so an approval given for one address cannot be used for
 // another, and the ledger (where approval intents are written) never holds the address.
 
-import { randomBytes } from "node:crypto";
+import fs from "node:fs";
+import { createHmac, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { home, readJson, writePrivate } from "./store.js";
 
 export const SETTINGS_SCHEMA = "sato-agent.settings/v1";
 const file = () => join(home(), "settings.json");
+const hmacKeyFile = () => join(home(), "local-hmac.key");
+
+/**
+ * A random 32-byte key made once on this computer (mode 600, beside the settings) and never sent anywhere. It keys the
+ * HMAC that binds a private value (a top-up's phone number) into an approval intent, which is written to the ledger: a
+ * plain hash of a phone number could be reversed by trying every number; this one cannot without the key.
+ */
+function hmacKey() {
+  const p = hmacKeyFile();
+  try {
+    writePrivate(p, randomBytes(32).toString("hex") + "\n", { exclusive: true });
+  } catch (err) {
+    if (err.code !== "EEXIST") throw err;
+  }
+  const hex = fs.readFileSync(p, "utf8").trim();
+  if (!/^[0-9a-f]{64}$/.test(hex)) throw new Error(`${p} is not a 32-byte key; it was changed by hand. Move it aside to make a new one.`);
+  return Buffer.from(hex, "hex");
+}
+
+/** HMAC-SHA256 (hex) of `value` under this computer's local key. */
+export const localHmac = (value) => createHmac("sha256", hmacKey()).update(String(value), "utf8").digest("hex");
 
 /** The address fields, in the order they are shown, with the flag that sets each one. */
 export const SHIP_FIELDS = Object.freeze([
@@ -88,6 +110,29 @@ export function setShipTo(fields) {
   const settings = { ...(prev ?? {}), schema: SETTINGS_SCHEMA, ship_to: next, ship_to_id: randomBytes(8).toString("hex"), ship_to_set_at: new Date().toISOString() };
   writePrivate(file(), JSON.stringify(settings, null, 2) + "\n", { atomic: true });
   return next;
+}
+
+/**
+ * The address fields from a JSON object (`settings set --stdin`, so the address never sits in a command line or a
+ * process list): keys name, line1, line2, city, state, postalCode (or zip), country, email. Any other key is refused.
+ */
+export function shipFieldsFromJson(text) {
+  let o;
+  try {
+    o = JSON.parse(String(text));
+  } catch {
+    throw new Error("--stdin needs a JSON object, like {\"name\":\"...\",\"line1\":\"...\",\"city\":\"...\",\"state\":\"CA\",\"postalCode\":\"...\",\"country\":\"US\",\"email\":\"...\"}");
+  }
+  if (!o || typeof o !== "object" || Array.isArray(o)) throw new Error("--stdin needs a JSON object of the address fields");
+  const keys = SHIP_FIELDS.map(([k]) => k);
+  const out = {};
+  for (const [k, v] of Object.entries(o)) {
+    const key = k === "zip" ? "postalCode" : k;
+    if (!keys.includes(key)) throw new Error(`--stdin: "${String(k).slice(0, 30)}" is not an address field (use ${keys.join(", ")})`);
+    if (typeof v !== "string") throw new Error(`--stdin: ${key} must be a string`);
+    out[key] = v;
+  }
+  return out;
 }
 
 /** Remove the shipping address. */

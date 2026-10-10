@@ -334,9 +334,11 @@ export async function prepareSolanaPayTransaction(link, deps = {}) {
     `Solana Pay request from ${label ? `"${label}" at ` : ""}${host}`,
     ...(message ? [`Merchant's message: ${message}`] : []),
     `Simulated cost: ${cost} (about $${usd}), plus a network fee of ${sol(sim.network_fee)} SOL. The transaction was built by the merchant and checked by this kit (allowed programs only, simulated).`,
+    `Paid to: ${payees.length ? payees.join(", ") : "(no recipient seen in the simulation)"}.`,
   ];
-  // The owner approves this exact cost. A new request that costs anything else is a new approval.
-  const intent = { cmd: "checkout", kind: "solana-pay-transaction", chain: "solana", link, label, usdc_units: sim.usdc_out.toString(), lamports: sim.lamports_out.toString() };
+  // The owner approves this exact cost, paid to these payees. A new request that costs anything else, or pays someone
+  // else, is a new approval.
+  const intent = { cmd: "checkout", kind: "solana-pay-transaction", chain: "solana", link, label, usdc_units: sim.usdc_out.toString(), lamports: sim.lamports_out.toString(), payees: [...payees].sort() };
   return {
     usd,
     card,
@@ -394,6 +396,12 @@ export function parseEip681(uri) {
     params[k] = v;
   }
   if (!params.address || !isEvmAddress(params.address, { strict: false })) throw new Error("the link names no valid recipient address");
+  // A mixed-case address carries an EIP-55 checksum, and it must be right: a typo in it is caught, not paid.
+  // All lower-case and all upper-case carry no checksum and are taken as written.
+  const hex = params.address.slice(2);
+  if (hex !== hex.toLowerCase() && hex !== hex.toUpperCase() && getAddress(params.address) !== params.address) {
+    throw refuse("checkout_checksum", "the link's recipient address has a wrong checksum (mixed upper and lower case that does not match): it may have been mistyped or altered; nothing was paid");
+  }
   const units = params.uint256 === undefined ? null : uintOf(params.uint256);
   if (units === null || units <= 0n || units > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("the link's amount (uint256) is not a positive whole number of USDC units");
   const whole = units / 1_000_000n;

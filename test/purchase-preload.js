@@ -8,6 +8,7 @@
 //                          simLogs the logs eth_simulateV1 returns for the payment, on the Base RPC
 //                                  at SATO_AGENT_BASE_RPC (https://base-rpc.test)
 
+import { encodePaymentRequiredHeader, encodePaymentResponseHeader, decodePaymentSignatureHeader } from "@x402/core/http";
 import { bitrefillWorld } from "./bitrefill-world.js";
 
 const world = bitrefillWorld(JSON.parse(process.env.SATO_TEST_BITREFILL || "{}"));
@@ -32,5 +33,13 @@ globalThis.fetch = async (input, init) => {
   if (url.pathname.startsWith("/api/commerce/order") && hub.order) return json(hub.order.json, hub.order.status ?? 200);
   if (url.href === "https://satohub.ai/.well-known/jwks.json" && hub.jwks) return json(hub.jwks);
   if (url.host === "base-rpc.test") return rpc(input instanceof Request ? await input.text() : init.body);
+  // A plain x402 seller (an API, or a Coinbase Business checkout's x402_url): $0.50 in USDC on Base.
+  if (url.host === "x402.test") {
+    const headers = input instanceof Request ? input.headers : new Headers(init?.headers ?? {});
+    const accepts = [{ scheme: "exact", network: "eip155:8453", amount: "500000", asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", payTo: "0x4444444444444444444444444444444444444444", maxTimeoutSeconds: 60, extra: { name: "USD Coin", version: "2" } }];
+    if (!headers.get("payment-signature")) return new Response("{}", { status: 402, headers: { "PAYMENT-REQUIRED": encodePaymentRequiredHeader({ x402Version: 2, resource: { url: url.href }, accepts }) } });
+    const payload = decodePaymentSignatureHeader(headers.get("payment-signature"));
+    return new Response(JSON.stringify({ data: "paid" }), { status: 200, headers: { "PAYMENT-RESPONSE": encodePaymentResponseHeader({ success: true, transaction: `0x${"ef".repeat(32)}`, network: "eip155:8453", payer: payload.payload.authorization.from }) } });
+  }
   throw new Error(`offline test: no network to ${url.origin}`);
 };

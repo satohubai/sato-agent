@@ -31,7 +31,8 @@ const PERMIT2_TOPICS = [
   toEventSelector("Approval(address,address,address,uint160,uint48)"),
   toEventSelector("Permit(address,address,address,uint160,uint48,uint48)"),
 ];
-const SIM_GAS = 1_500_000n;
+/** The gas the payment gets in the kit's simulation, and the most it is ever signed with. */
+export const SIM_GAS = 1_500_000n;
 
 const r = (rule, message, limit = null, observed = null) => ({ rule, limit, observed, message });
 const lc = (s) => String(s).toLowerCase();
@@ -141,8 +142,15 @@ export async function simulateBasePurchase({ agent, to, data, maxUsdcUnits }, de
     if (problems.length) throw new Refused(problems);
   }
 
+  let gasUsed = null;
+  try {
+    gasUsed = got[0].gasUsed === undefined || got[0].gasUsed === null ? null : BigInt(got[0].gasUsed);
+  } catch {
+    gasUsed = null;
+  }
   return {
     usdc_out: usdcOut,
+    gas_used: gasUsed,
     payees,
     contract_call: lc(to) !== usdc,
     approvals_checked: approvals.length,

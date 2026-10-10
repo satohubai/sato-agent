@@ -31,7 +31,7 @@ import { clean } from "./text.js";
 import { USER_AGENT } from "./version.js";
 import { loadSettings, scrubAddress } from "./settings.js";
 import { checkLimits, purchaseChain, purchaseGate, refuse } from "./purchase.js";
-import { decodeBaseTx, simulateBasePurchase } from "./purchase-evm.js";
+import { SIM_GAS, decodeBaseTx, simulateBasePurchase } from "./purchase-evm.js";
 import { TOKEN_ACCOUNT_RENT, blockhashValid, decodeWire, inspectPurchaseTx, signWithAgent, simulatePurchaseTx } from "./purchase-solana.js";
 import { broadcastAndConfirm, rpc as solanaRpc } from "./solana.js";
 import { clients as baseClients, signAndSend } from "./base.js";
@@ -168,6 +168,10 @@ export async function verifyOrderQuote(body, ctx) {
   if (!samePayer(chain, body.payer, payer)) bad("it is for a different payer than this wallet");
   if (body.sato_fee_usd !== 0) bad(`it carries a Sato Hub fee (${clean(JSON.stringify(body.sato_fee_usd) ?? "none", 30)}); Amazon orders have none`);
   if (body.merchant !== "crossmint") bad("its merchant is not Crossmint");
+  // The item must be the one asked for: a quote for another product is not this order.
+  if (ctx.asin !== undefined && (typeof body.item?.asin !== "string" || body.item.asin.toUpperCase() !== String(ctx.asin).toUpperCase())) {
+    bad(`it is for ${typeof body.item?.asin === "string" ? `ASIN ${clean(body.item.asin, 20)}` : "an item with no ASIN"}, not the ASIN asked for (${clean(ctx.asin, 20)})`);
+  }
   // Sato Hub's test lane (env "staging") pays in a test token on test networks: never something this wallet signs.
   if (body.env !== undefined && body.env !== "production") bad(`it is a ${clean(String(body.env), 20)} quote, not a real order`);
   if (body.quote_status !== "valid") bad(`its quote is ${clean(body.quote_status ?? "missing", 40)}, not valid`);
@@ -240,6 +244,19 @@ export async function checkOrderPayment(quote, { payer, ...deps }) {
   return { ...sim, contract_call: false, prepared: { chain: "solana", tx, blockhash: facts.blockhash } };
 }
 
+/** A Base order's gas limit: the simulated gas used x 1.3, at most SIM_GAS (the simulation's own cap). */
+export function orderGasLimit(gasUsed) {
+  let g = 0n;
+  try {
+    g = BigInt(gasUsed ?? 0);
+  } catch {
+    g = 0n;
+  }
+  if (g <= 0n) return SIM_GAS;
+  const limit = (g * 13n + 9n) / 10n;
+  return limit > SIM_GAS ? SIM_GAS : limit;
+}
+
 /** Sign and send a checked order payment under the ledger contract. Returns { tx, explorer }. */
 export async function executeOrder(quote, check, { usd, payer, ...deps }) {
   if (Date.parse(quote.expires_at) - Date.now() < MIN_TIME_LEFT_MS) throw refuse("quote_expired", "the order quote expired before it could be paid; run the order again for a new quote (nothing was signed)");
@@ -257,7 +274,9 @@ export async function executeOrder(quote, check, { usd, payer, ...deps }) {
     const c = deps.c ?? baseClients();
     let receipt;
     try {
-      receipt = await (deps.signAndSend ?? signAndSend)(c, { to: check.prepared.to, data: check.prepared.data }, (hash) => record({ id: entry.id, status: "signed", tx: hash }));
+      // The gas limit is the kit's own simulation's, plus 30%, never more than the simulation's cap: no estimateGas call
+      // on a contract someone else chose.
+      receipt = await (deps.signAndSend ?? signAndSend)(c, { to: check.prepared.to, data: check.prepared.data, gas: orderGasLimit(check.gas_used) }, (hash) => record({ id: entry.id, status: "signed", tx: hash }));
     } catch (err) {
       if (!(err instanceof Pending)) release(entry, err instanceof Rejected ? "rejected; never landed" : "failed before broadcast", { error: clean(err.shortMessage || err.message, 300) });
       throw err;
@@ -294,7 +313,7 @@ export async function placeOrder({ input, chain: requested, approve, dryRun = fa
   const policy = loadPolicy();
   const chain = purchaseChain(requested, ["base", "solana"], policy);
   checkLimits({ usd: undefined, chain }, policy);
-  const { product } = amazonProduct(input);
+  const { product, asin } = amazonProduct(input);
   const settings = loadSettings();
   const ship = settings?.ship_to ?? null;
   if (!ship) throw refuse("ship_to_not_set", "no shipping address is set on this bot. The owner sets it once with `settings set --ship-name ... --ship-line1 ... --ship-city ... --ship-state ... --ship-zip ... --ship-country US --ship-email ...`; it stays on this computer.");
@@ -303,7 +322,7 @@ export async function placeOrder({ input, chain: requested, approve, dryRun = fa
   const payer = addresses()[chain];
 
   const body = await requestOrder({ product, chain, payer, recipient }, deps);
-  const quote = await verifyOrderQuote(body, { chain, payer, recipient, now: deps.now?.(), verifySignature: deps.verifySignature, jwks: deps.jwks });
+  const quote = await verifyOrderQuote(body, { chain, payer, recipient, asin, now: deps.now?.(), verifySignature: deps.verifySignature, jwks: deps.jwks });
   const usd = Number(quote.price.total_base_units) / 1e6;
   checkLimits({ usd, chain }, policy); // before the transaction is even read
   const check = await checkOrderPayment(quote, { payer, ...deps });
@@ -315,10 +334,14 @@ export async function placeOrder({ input, chain: requested, approve, dryRun = fa
     `Item ${usd2(p.item_usd)} · tax ${usd2(p.tax_usd)} · shipping ${usd2(p.shipping_usd)} · total ${usd} USDC on ${chain === "base" ? "Base" : "Solana"}. No Sato Hub fee.`,
     `Ships to: ${clean(ship.name, 80)}, ${quote.ships_to.city}, ${quote.ships_to.state} ${quote.ships_to.postalCode}`,
     `Sold and shipped through Crossmint. Quote valid until ${String(quote.expires_at).replace(/\.\d+Z$/, "Z")}.`,
-    `Checked before signing: the payment moves only USDC from this wallet, at most ${usd}, plus network fees (simulated).`,
+    `Paid to: ${check.payees.length ? check.payees.join(", ") : "(no direct USDC recipient seen in the simulation)"}.`,
+    chain === "base"
+      ? `Checked before signing: the payment moves only USDC from this wallet, at most ${usd}, plus network fees (simulated).`
+      : `Checked before signing: the payment moves only USDC from this wallet, at most ${usd}, plus network fees and, if the merchant's USDC account must be created, about 0.002 SOL of rent (simulated).`,
   ];
-  // Bound to the product, total and address (by its local id: the ledger, where intents are written, never holds the address).
-  const intent = { cmd: "order", chain, product, title: quote.title.slice(0, 120), total_base_units: quote.price.total_base_units.toString(), ship_to_id: settings.ship_to_id ?? null };
+  // Bound to the product, total, payees and address (the address by its local id: the ledger, where intents are written,
+  // never holds it). A new quote that pays someone else is a new approval.
+  const intent = { cmd: "order", chain, product, title: quote.title.slice(0, 120), total_base_units: quote.price.total_base_units.toString(), payees: [...check.payees].map((x) => (chain === "base" ? x.toLowerCase() : x)).sort(), ship_to_id: settings.ship_to_id ?? null };
   const summary = { order_id: quote.order_id, chain, title: quote.title, asin: quote.asin, price: { ...p, total_base_units: p.total_base_units.toString() }, expires_at: quote.expires_at, simulated: check.simulated, contract_call: Boolean(check.contract_call) };
   if (dryRun) return { dry_run: true, card, ...summary };
   await purchaseGate(intent, { approve, card }, policy);
@@ -350,9 +373,10 @@ export async function orderStatus(orderId, { chain, payer }, deps = {}) {
     chain,
     phase: PHASES.includes(s.phase) ? s.phase : clean(s.phase ?? "unknown", 30),
     payment_status: clean(s.payment_status ?? "unknown", 60),
-    delivery: (Array.isArray(s.delivery) ? s.delivery : []).slice(0, 20).map((x) => ({ title: clean(x?.title ?? "item", 120), status: clean(x?.status ?? "unknown", 40) })),
+    // Crossmint's text is outside text and could echo the address: scrubbed before anything prints it.
+    delivery: (Array.isArray(s.delivery) ? s.delivery : []).slice(0, 20).map((x) => ({ title: clean(scrubAddress(x?.title ?? "item"), 120), status: clean(x?.status ?? "unknown", 40) })),
     refunded,
-    failure: s.failure ? clean(typeof s.failure === "object" ? `${s.failure.code ?? ""} ${s.failure.message ?? ""}` : s.failure, 200) : null,
+    failure: s.failure ? clean(scrubAddress(typeof s.failure === "object" ? `${s.failure.code ?? ""} ${s.failure.message ?? ""}` : s.failure), 200) : null,
     at: s.at ? clean(s.at, 40) : null,
   };
 }

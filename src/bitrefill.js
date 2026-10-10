@@ -24,8 +24,8 @@
 // commission instead (BITREFILL_REF below).
 
 import fs from "node:fs";
-import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { localHmac } from "./settings.js";
 import { parseSiweMessage } from "viem/siwe";
 import { getAddress } from "viem";
 import { loadPolicy } from "./policy.js";
@@ -71,6 +71,8 @@ function defaults(deps = {}) {
     base: deps.base ?? BITREFILL_API,
     now: deps.now ?? Date.now,
     sleep: deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+    // Shared by reference across every call one command makes (each helper re-applies defaults to the same object).
+    session: deps.session ?? { resigned: false },
   };
 }
 
@@ -243,15 +245,22 @@ export async function signIn(deps = {}, { fresh = false } = {}) {
   return token;
 }
 
-/** An authenticated request; a token Bitrefill no longer takes is replaced by one fresh sign-in, once. */
+/**
+ * An authenticated request. A token Bitrefill no longer takes is replaced by a fresh sign-in, at most ONCE per command
+ * (`d.session` is shared by every call one command makes), so a server that keeps refusing cannot make the kit sign again
+ * and again.
+ */
 async function authed(d, method, path, opts = {}) {
   let token = await signIn(d);
   let r = await request(d, method, path, { ...opts, token });
   if (r.status === 401 || r.status === 402 || r.status === 403) {
+    if (d.session.resigned) throw new Error(`Bitrefill refused the sign-in token again (HTTP ${r.status}); the kit signs in at most once more per command, so it stopped. Nothing more was signed`);
+    d.session.resigned = true;
     clearSession();
     token = await signIn(d, { fresh: true });
     r = await request(d, method, path, { ...opts, token });
   }
+  if (r.status === 401 || r.status === 403) throw new Error(`Bitrefill refused a fresh sign-in token (HTTP ${r.status}); the kit signs in at most once more per command, so it stopped. Nothing more was signed`);
   if (r.status === 402) throw new Error(`Bitrefill asked to be paid for ${path.split("?")[0]} even after signing in; nothing was paid`);
   return { ...r, token };
 }
@@ -314,6 +323,7 @@ export async function createInvoice({ product, value, refill }, deps = {}) {
   return {
     invoice_id: j.invoice_id,
     price_usdc: price,
+    units,
     usd: unitsToUsd(units),
     price_usd: typeof j.price_usd === "number" || typeof j.price_usd === "string" ? clean(j.price_usd, 30) : null,
     expires_at: new Date(d.now() + (Number.isFinite(minutes) && minutes > 0 ? Math.min(minutes, 60) : 15) * 60_000).toISOString(),
@@ -386,12 +396,20 @@ export async function invoiceStatus(invoiceId, deps = {}) {
   return { state: "pending", invoice_status: inv, delivery_status: del, codes };
 }
 
-/** Poll until delivered or failed (or `maxPolls` reads). */
+/** The longest a purchase waits for delivery before it reports "paid, not delivered yet". */
+export const DELIVERY_DEADLINE_MS = 4 * 60 * 1000;
+
+/** Poll until delivered or failed, within an overall deadline (`waitMs`, at most DELIVERY_DEADLINE_MS; 0 = one read). */
 export async function waitForDelivery(invoiceId, deps = {}) {
   const d = defaults(deps);
+  const pollMs = d.pollMs ?? 3000;
+  const deadline = d.now() + Math.min(Math.max(0, d.waitMs ?? DELIVERY_DEADLINE_MS), DELIVERY_DEADLINE_MS);
   let last = null;
-  for (let i = 0; i < (d.maxPolls ?? 60); i++) {
-    if (i > 0) await d.sleep(d.pollMs ?? 3000);
+  for (let i = 0; i < (d.maxPolls ?? Infinity); i++) {
+    if (i > 0) {
+      if (d.now() + pollMs > deadline) break;
+      await d.sleep(pollMs);
+    }
     last = await invoiceStatus(invoiceId, d);
     if (last.state !== "pending") return last;
   }
@@ -407,7 +425,6 @@ export function assertBaseAgent(policy = loadPolicy()) {
   }
 }
 
-const sha16 = (s) => createHash("sha256").update(String(s)).digest("hex").slice(0, 16);
 
 /**
  * Buy one package of one product. Returns the outcome; the caller prints it (and the codes, on one line, last).
@@ -438,8 +455,10 @@ export async function buyGiftcard({ product, value, refill, approve, dryRun = fa
     `Price held until ${inv.expires_at.replace(/\.\d+Z$/, "Z")} (invoice ${inv.invoice_id}).`,
     "The code is shown to you once Bitrefill delivers it, and kept in a private file on this computer.",
   ];
-  // The owner approves this product, value and price, paid to this payee. A new run that gets another price asks again.
-  const intent = { cmd: "giftcard", chain: "base", product: detail.id, value: pkg.value, price_usdc: inv.price_usdc, pay_to: BITREFILL_PAY_TO, ...(refill ? { refill_sha256: sha16(refill) } : {}) };
+  // The owner approves this product, value and price, paid to this payee. The price is bound in USDC base units, so "25.5"
+  // and "25.50" are the same price; a new run that gets another price asks again. A top-up's number is bound by a keyed
+  // hash (src/settings.js localHmac): the intent is written to the ledger, and a plain hash of a phone number is guessable.
+  const intent = { cmd: "giftcard", chain: "base", product: detail.id, value: pkg.value, price_units: inv.units.toString(), pay_to: BITREFILL_PAY_TO, ...(refill ? { refill_hmac: localHmac(refill) } : {}) };
   if (dryRun) return { dry_run: true, card, invoice_id: inv.invoice_id, price_usdc: inv.price_usdc, usd: inv.usd, expires_at: inv.expires_at, product: detail.id, value: pkg.value };
   await purchaseGate(intent, { approve, card }, policy);
 

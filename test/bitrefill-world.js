@@ -52,7 +52,7 @@ export function bitrefillWorld(opts = {}) {
       if (!h) return json(402, { x402Version: 2, error: "Sign-in required", extensions: { "sign-in-with-x": { info: siwxInfo(Date.now(), opts.info), supportedChains: opts.supportedChains ?? [{ chainId: "eip155:8453", type: "eip191" }, { chainId: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp", type: "ed25519" }] } } });
       return json(200, { token: TOKEN, token_header: "X-Access-Token", expires_in: 7200 });
     }
-    if (r.headers.get("x-access-token") !== TOKEN) return json(402, { x402Version: 2, error: "Payment required", accepts: [] });
+    if (r.headers.get("x-access-token") !== TOKEN || opts.rejectToken) return json(opts.rejectToken ? 401 : 402, { x402Version: 2, error: "Payment required", accepts: [] });
     if (path === "/x402/gift-cards/search") return json(200, { products: [{ slug: "amazon-us", name: "Amazon", country: "US", recipient_type: "none", in_stock: true }, { slug: "steam-usa", name: "Steam\u001b[31m", country: "US", in_stock: false }] });
     if (path === "/x402/products/detail") {
       if (r.url.searchParams.get("slug") !== "amazon-us") return json(404, { error: "PRODUCT_NOT_FOUND" });
@@ -61,7 +61,7 @@ export function bitrefillWorld(opts = {}) {
     if (path === "/x402/invoice/create" && r.method === "POST") {
       const items = JSON.parse(r.body).items;
       if (items?.[0]?.package_value !== "25" && items?.[0]?.package_value !== "50") return json(500, { error: "INTERNAL" });
-      return json(200, { invoice_id: INVOICE, price_usdc: (Number(priceUnits) / 1e6).toString(), price_usd: Number(priceUnits) / 1e6, expires_in_minutes: 15, next_step: { url: "/x402/invoice/pay" } });
+      return json(200, { invoice_id: INVOICE, price_usdc: opts.priceText ?? (Number(priceUnits) / 1e6).toString(), price_usd: Number(priceUnits) / 1e6, expires_in_minutes: 15, next_step: { url: "/x402/invoice/pay" } });
     }
     if (path === "/x402/invoice/pay" && r.method === "POST") {
       const sig = r.headers.get("payment-signature");

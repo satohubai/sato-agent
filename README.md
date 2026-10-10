@@ -263,3 +263,5 @@ SATO_AGENT_FORK=1 node --test test/fork.test.js   # real Base contracts on a loc
 ## License
 
 MIT. Not affiliated with xAI or Cursor. Grok Bot is their product.
+
+"Sato Hub™" and "Sato Agent™" are trademarks of Prime Signal Labs, LLC. The MIT license covers the code, not the names: a modified version you distribute needs its own name (see [TRADEMARKS.md](TRADEMARKS.md)).

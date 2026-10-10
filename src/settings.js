@@ -1,4 +1,8 @@
-// The bot's local settings: today, only the shipping address for Amazon orders.
+// The bot's local settings: the shipping address for Amazon orders, and (v0.3.1) the referral address.
+//
+// The referral address (`referrer`) is a PUBLIC payout address, not a secret and not a policy choice: it never changes what
+// the owner pays or where Sato Hub's fee goes. It is sent to Sato Hub with each swap request (and, after a confirmed swap,
+// the transaction is reported so the referrer can be paid). Changing it is logged in the ledger.
 //
 // The address lives ONLY here, in settings.json (mode 600) beside the policy. It is
 // sent in the body of a Sato Hub order request and nowhere else: never to the
@@ -12,7 +16,9 @@
 import fs from "node:fs";
 import { createHmac, randomBytes } from "node:crypto";
 import { join } from "node:path";
+import { isAddress as isSolanaAddress } from "@solana/kit";
 import { home, readJson, writePrivate } from "./store.js";
+import { record } from "./ledger.js";
 
 export const SETTINGS_SCHEMA = "sato-agent.settings/v1";
 const file = () => join(home(), "settings.json");
@@ -144,6 +150,23 @@ export function shipFieldsFromJson(text) {
   return out;
 }
 
+/**
+ * `settings set --stdin`: the address fields as before, and/or a `referrer` key (an address, or "none"). Returns
+ * { ship: <fields, possibly empty>, referrer: <string | undefined> }. Any other key is refused.
+ */
+export function settingsFromJson(text) {
+  let o;
+  try {
+    o = JSON.parse(String(text));
+  } catch {
+    return { ship: shipFieldsFromJson(text), referrer: undefined }; // throws the usual message
+  }
+  if (!o || typeof o !== "object" || Array.isArray(o) || !("referrer" in o)) return { ship: shipFieldsFromJson(text), referrer: undefined };
+  const { referrer: ref, ...rest } = o;
+  if (typeof ref !== "string") throw new Error("--stdin: referrer must be a string (an address, or none)");
+  return { ship: Object.keys(rest).length ? shipFieldsFromJson(JSON.stringify(rest)) : {}, referrer: ref };
+}
+
 /** Remove the shipping address. */
 export function clearShipTo() {
   const prev = loadSettings();
@@ -180,4 +203,61 @@ export function scrubAddress(text, s) {
     out = out.replace(new RegExp(`(?<![\\p{L}\\p{N}])${v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\p{N}])`, "giu"), "[address]");
   }
   return out;
+}
+
+// ---------------------------------------------------------------- the referral address (v0.3.1)
+
+const EVM_RE = /^0x[0-9a-fA-F]{40}$/;
+const SOL_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+/**
+ * A referral address in the form Sato Hub stores it: a Base address (0x + 40 hex) lower-cased, or a Solana public key
+ * (base58, exact case). Returns the normalized string, or null when it is neither. The same rules Sato Hub applies.
+ */
+export function normalizeReferrer(raw) {
+  if (typeof raw !== "string") return null;
+  const v = raw.trim();
+  if (EVM_RE.test(v)) return v.toLowerCase();
+  if (SOL_RE.test(v) && isSolanaAddress(v)) return v;
+  return null;
+}
+
+/** "0x1234…abcd" / "DezX…B263": the short form shown to the owner. */
+export const shortReferrer = (a) => `${String(a).slice(0, a?.startsWith?.("0x") ? 6 : 4)}…${String(a).slice(-4)}`;
+
+/** The saved referral address (normalized), or null. A hand-edited value that is not an address reads as none. */
+export function referrer() {
+  return normalizeReferrer(loadSettings()?.referrer);
+}
+
+/** `--referrer` / the "referrer" key: { clear: true } for none, { referrer } for an address; a plain Error otherwise. Writes nothing. */
+export function parseReferrerInput(value) {
+  if (typeof value !== "string") throw new Error("--referrer needs an address, or none");
+  if (/^(none|off|clear)$/i.test(value.trim())) return { clear: true };
+  const referrer = normalizeReferrer(value);
+  if (!referrer) throw new Error("--referrer must be a Base address (0x followed by 40 hex characters) or a Solana address, or none");
+  return { referrer };
+}
+
+/**
+ * Save the referral address (`value` an address), or clear it (`value` "none"). Validated locally; the change is logged in the
+ * ledger (kind "settings"). Returns { referrer, changed }. Throws a plain Error naming the flag.
+ */
+export function setReferrer(value) {
+  const parsed = parseReferrerInput(value);
+  const prev = loadSettings();
+  const was = normalizeReferrer(prev?.referrer);
+  if (parsed.clear) {
+    if (prev && "referrer" in prev) {
+      const { referrer: _r, referrer_set_at: _t, ...rest } = prev;
+      writePrivate(file(), JSON.stringify({ ...rest, schema: SETTINGS_SCHEMA }, null, 2) + "\n", { atomic: true });
+    }
+    if (was) record({ kind: "settings", status: "referrer_cleared", from: was, to: null });
+    return { referrer: null, changed: Boolean(was) };
+  }
+  const next = parsed.referrer;
+  if (next === was) return { referrer: next, changed: false };
+  writePrivate(file(), JSON.stringify({ ...(prev ?? {}), schema: SETTINGS_SCHEMA, referrer: next, referrer_set_at: new Date().toISOString() }, null, 2) + "\n", { atomic: true });
+  record({ kind: "settings", status: "referrer_set", from: was, to: next });
+  return { referrer: next, changed: true };
 }

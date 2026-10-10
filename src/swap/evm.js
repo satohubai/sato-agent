@@ -64,6 +64,7 @@ import { callTool as satoCallTool } from "../satohub.js";
 import { unitsToUsd } from "../amount.js";
 import { USER_AGENT } from "../version.js";
 import { FEE_CEILING_BPS, feePercent, feeTierRefusals, pairTier } from "./fee-tier.js";
+import { readReferral, referralView, referrerRefusalMessage } from "./referral.js";
 
 // ---------------------------------------------------------------- pinned values
 
@@ -431,6 +432,7 @@ export async function planBaseSwap({ from, to, amount, slippageBps }, deps = {})
   // The USD value the caller already knows. For a USDC sale it is the amount itself.
   const known = intent.tokenIn.symbol === "USDC" ? unitsToUsd(intent.amountIn) : deps.usdNotional;
   intent.usd_hint = Number.isFinite(known) && known > 0 ? known : null;
+  const referrer = typeof deps.referrer === "string" && deps.referrer ? deps.referrer : null;
 
   const args = {
     mode: "build-tx",
@@ -447,8 +449,11 @@ export async function planBaseSwap({ from, to, amount, slippageBps }, deps = {})
     venue: VENUE,
     response_format: "json",
     ...(intent.usd_hint !== null ? { usd_notional: intent.usd_hint } : {}),
+    // The referral address (v0.3.1), only when the owner has one. It never changes the trade, the fee or where the fee goes.
+    ...(referrer ? { referrer } : {}),
     // No `recipient`: Sato only gate-checks it and no venue honours it. The output goes to the taker.
   };
+  intent.referrer = referrer;
   const call = deps.callTool ?? satoCallTool;
   const r = await call("onchain_agent_swap", args);
   let response = r.structured;
@@ -459,6 +464,9 @@ export async function planBaseSwap({ from, to, amount, slippageBps }, deps = {})
       response = null;
     }
   }
+  // Sato Hub refused the referral address: say so in plain words and stop (nothing signed); the owner decides what to do.
+  const badReferrer = referrer ? referrerRefusalMessage(response, r) : null;
+  if (badReferrer) throw new Refused([refusal("referrer_invalid", badReferrer)]);
   if (r.isError || !response || typeof response !== "object") {
     throw new Error(`Sato Hub did not return a swap quote${r.text ? `: ${String(r.text).slice(0, 300)}` : ""}`);
   }
@@ -1224,6 +1232,9 @@ export async function verifyBaseSwapPlan(response, intent, deps = {}) {
     venue: VENUE,
     route_id: response.route_id ?? null,
     receipt_url: response.receipt_url ?? null,
+    /** The referrer the request carried (display and the settlement report only), and what the signed answer says about it. */
+    referrer_sent: intent.referrer ?? null,
+    referral: readReferral(response.referral),
     gate: response.gate?.verdict ?? null,
     from: intent.from,
     to: intent.to,
@@ -1290,6 +1301,8 @@ export function summarizeBaseSwapPlan(plan) {
     approval: plan.approval.needed ? { token: plan.from, address: plan.approval.token, spender: plan.approval.spender, amount: d(plan.approval.amount, plan.token_in), exact: true } : null,
     // `side`: where the fee is taken, "in" (from what is sold) or "out" (from what is received). Always the USDC / ETH side.
     sato_fee: { bps: plan.fee.bps, tier: plan.fee.tier ?? null, percent: feePercent(plan.fee.bps), recipient: plan.fee.recipient, disclosure: plan.fee.disclosure, side: plan.fee.side ?? "in", asset: (plan.fee.side ?? "in") === "out" ? plan.to : plan.from },
+    // null when no referrer was sent; otherwise whether Sato Hub's signed answer recorded it (display only).
+    referral: referralView(plan.referrer_sent ?? null, plan.referral ?? null),
     long_tail: plan.long_tail ? { side: plan.long_tail, role: plan.long_tail === "out" ? "buying" : "selling", asset: plan.long_tail === "out" ? plan.to : plan.from, address: (plan.long_tail === "out" ? plan.token_out : plan.token_in).address } : null,
     market: plan.market ?? null,
     sell_back: plan.sell_back

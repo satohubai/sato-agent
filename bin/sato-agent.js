@@ -11,7 +11,8 @@ import { allowedChains, evaluate, isLegacySwapsOff, loadPolicy, purchasesAsk, se
 import { NeedsApproval, Pending, Refused } from "../src/errors.js";
 import { VALUE_KINDS, actions, read, recordCheckEvent, spentLast24h } from "../src/ledger.js";
 import { purchaseChain, purchaseGate } from "../src/purchase.js";
-import { SHIP_FIELDS, clearShipTo, scrubAddress, setShipTo, shipFieldsFromJson, shipTo, shipToLines, shipToStatus } from "../src/settings.js";
+import { SHIP_FIELDS, clearShipTo, parseReferrerInput, referrer as savedReferrer, scrubAddress, setReferrer, setShipTo, settingsFromJson, shipTo, shipToLines, shipToStatus } from "../src/settings.js";
+import { reportSettlement, settlementLine } from "../src/swap/referral.js";
 import { readFileSync } from "node:fs";
 import { assertBaseAgent, buyGiftcard, codesLine, invoiceStatus, productDetail, saveCodes, savedCodes, searchProducts } from "../src/bitrefill.js";
 import { localOrders, orderStatus, ordersAvailable, placeOrder, statusLines } from "../src/commerce.js";
@@ -47,9 +48,15 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
   settings show | settings set --stdin  (a JSON object of name, line1, line2, city, state, postalCode, country, email)
                | settings set --ship-name <n> --ship-line1 <l> [--ship-line2 <l>] --ship-city <c> --ship-state <XX>
                               --ship-zip <z> --ship-country US --ship-email <e> | settings set --ship-clear
+               | settings set --referrer <address|none>     (or a "referrer" key with --stdin)
                                          the shipping address for Amazon orders. It stays on this computer (mode 600) and
                                          is sent only inside an order request to Sato Hub; never logged. --stdin keeps it
-                                         out of the command line
+                                         out of the command line.
+                                         --referrer: the payout address of whoever shared this kit with the owner (a Base or
+                                         Solana address). Sato Hub pays it 30% of its swap fee on this agent's swaps, weekly
+                                         in USDC. It does not change what the owner pays. With one set, each swap request
+                                         carries it, and after a confirmed swap the kit reports the transaction to Sato Hub
+                                         (once, never retried; Sato Hub keeps it private). "none" clears it
   buy <request|link|ASIN> [--chain base|solana] [--approve <code>] [--dry-run]
                                          reads what it is given and hands it to checkout, order or pay; changes nothing itself.
                                          A link it pays (x402, a Coinbase checkout) is a purchase: price card, owner's yes
@@ -70,7 +77,8 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
   checkout --to <address> --amount <usdc> --chain base|solana [--approve <code>] [--dry-run]
                                          pay a Solana Pay request (USDC or SOL), a USDC-on-Base payment link (EIP-681), or an
                                          exact amount to a deposit address (a Stripe crypto deposit address)
-  swap --chain base|solana --from <asset> --to <asset> --amount <n|all> [--slippage-bps <n>] [--approve <code>] [--dry-run]
+  swap --chain base|solana --from <asset> --to <asset> --amount <n|all> [--slippage-bps <n>] [--no-referrer] [--approve <code>] [--dry-run]
+                                         (--no-referrer: leave the saved referral address out of this one swap)
                                          swap with a major on one side: USDC, ETH or WETH on Base; USDC or SOL on Solana. The other
                                          side can be any token, by its 0x address (Base), its mint (Solana) or a link; Sato Hub's
                                          resolver reads a link and the chain is re-read for decimals and program. USDC <-> ETH and
@@ -160,6 +168,8 @@ try {
       "ship-country": { type: "string" },
       "ship-email": { type: "string" },
       "ship-clear": { type: "boolean" },
+      referrer: { type: "string" },
+      "no-referrer": { type: "boolean" },
       stdin: { type: "boolean" },
       available: { type: "boolean" },
       wait: { type: "string" },
@@ -472,7 +482,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
       // Sized and checked against the owner's choices and an independent price (where one exists); the owner's approval where it is due
       // (before the quote in ask mode, and for a reason known up front; after the quote for a reason only the quote shows); then the
       // quote, the chain module's verification and its simulation. Nothing is signed in here. (src/swap/run.js has the order.)
-      const { prepared } = await runSwap(req, { approve: flags.approve, dryRun: Boolean(flags["dry-run"]), skipCheck: Boolean(flags["skip-check"]) });
+      const { prepared } = await runSwap(req, { approve: flags.approve, dryRun: Boolean(flags["dry-run"]), skipCheck: Boolean(flags["skip-check"]) }, flags["no-referrer"] ? { referrer: null } : {});
       const d = prepared.display;
       // Route labels (Jupiter), token names and the fee sentence (Sato Hub) are outside text: one cleaned line each.
       const shown = swapLines(d).map((l) => clean(l, 1000)).join("\n");
@@ -483,7 +493,11 @@ async function main(command = cmd, args = positionals.slice(1)) {
       say(shown);
       const r = await prepared.execute();
       const rebuilt = r.rebuilt ? `\nNote: ${r.rebuilt.note}. New quote: about ${r.rebuilt.quoted} ${d.buy.asset}, at least ${r.rebuilt.minimum}.` : "";
-      return out(`Swapped. ${r.explorer}${rebuilt}${r.received ? `\nReceived ${r.received.amount} ${r.received.asset}.` : r.amount_out ? `\nReceived ${r.amount_out} base units of ${d.buy.asset}.` : ""}${r.warnings?.length ? `\nNote: ${r.warnings.join("; ")}` : ""}`, { ...r, plan: d });
+      // The swap is confirmed. If it carried a referrer, tell Sato Hub which transaction it was: one attempt, a short timeout,
+      // never retried, and nothing here can change the result or the exit code. With no referrer nothing is sent at all.
+      const settlement = await reportSettlement(d, r);
+      const settleNote = settlement ? `\n${settlementLine(settlement)}` : "";
+      return out(`Swapped. ${r.explorer}${rebuilt}${r.received ? `\nReceived ${r.received.amount} ${r.received.asset}.` : r.amount_out ? `\nReceived ${r.amount_out} base units of ${d.buy.asset}.` : ""}${r.warnings?.length ? `\nNote: ${r.warnings.join("; ")}` : ""}${settleNote}`, { ...r, plan: d, ...(settlement ? { referral_settlement: settlement } : {}) });
     }
     case "token": {
       const input = rest[0];
@@ -611,38 +625,61 @@ async function main(command = cmd, args = positionals.slice(1)) {
           p ? policyText(p) : "choices: NOT SET",
           // Only when one is set: an agent with no address says nothing about Amazon (it is off until Sato Hub turns it on).
           shipToStatus() === "set" ? "shipping address: set (for Amazon orders; `settings show` prints it)" : null,
+          // Only when one is set: the public payout address of whoever shared this kit (30% of Sato Hub's swap fee, weekly in USDC).
+          savedReferrer() ? `referral address: ${savedReferrer()} (30% of Sato Hub's swap fee goes to it; it does not change what you pay)` : null,
           `spent in the last 24 hours: $${roundUsd(spent.usd)}`,
           spent.unreadable.length ? `⚠ ledger lines ${spent.unreadable.join(", ")} are unreadable; spending is stopped until the owner looks` : null,
           `changes (latest 5):\n${changes.map((e) => `  ${c(e.ts, 40)} ${c(e.status, 40)}${e.raises?.length ? ` (${c(e.raises.join("; "), 300)})` : ""}`).join("\n") || "  (none)"}`,
           checks.length ? `checks skipped or unavailable (latest 5):\n${checks.map((e) => `  ${c(e.ts, 40)} ${c(e.status, 40)} ${c(e.intent?.cmd, 20)}`).join("\n")}` : null,
           `recent spends:\n${recent.map(fmt).join("\n") || "  (none)"}`,
         ].filter(Boolean).join("\n"),
-        { policy: p, purchases: purchasesAsk(p) ? "ask" : "auto", shipping_address: shipToStatus(), spent_24h_usd: roundUsd(spent.usd), unreadable_lines: spent.unreadable, changes, checks, recent },
+        { policy: p, purchases: purchasesAsk(p) ? "ask" : "auto", shipping_address: shipToStatus(), referrer: savedReferrer(), spent_24h_usd: roundUsd(spent.usd), unreadable_lines: spent.unreadable, changes, checks, recent },
       );
     }
     case "settings": {
       if (rest[0] === "set") {
-        if (flags["ship-clear"] && (flags.stdin || SHIP_FIELDS.some(([, flag]) => flags[flag.slice(2)] !== undefined))) {
-          throw new UsageError("--ship-clear removes the address; it cannot be combined with --stdin or the --ship-* flags");
+        if (flags["ship-clear"] && (flags.stdin || flags.referrer !== undefined || SHIP_FIELDS.some(([, flag]) => flags[flag.slice(2)] !== undefined))) {
+          throw new UsageError("--ship-clear removes the address; it cannot be combined with --stdin, --referrer or the --ship-* flags");
         }
         if (flags["ship-clear"]) {
           const removed = clearShipTo();
           return out(removed ? "Shipping address removed from this computer." : "No shipping address was set.", { ship_to: null, removed });
         }
-        let s;
+        let s = null;
+        let ref;
         try {
           const fromFlags = Object.fromEntries(SHIP_FIELDS.map(([key, flag]) => [key, flags[flag.slice(2)]]).filter(([, v]) => v !== undefined));
           if (flags.stdin && Object.keys(fromFlags).length) throw new Error("use either --stdin or the --ship-* flags, not both");
           // --stdin: a JSON object on standard input, so the address is never in the command line (or a process list).
-          s = setShipTo(flags.stdin ? shipFieldsFromJson(readFileSync(0, "utf8")) : fromFlags);
+          const fromStdin = flags.stdin ? settingsFromJson(readFileSync(0, "utf8")) : null;
+          const ship = fromStdin ? fromStdin.ship : fromFlags;
+          if (flags.referrer !== undefined && fromStdin?.referrer !== undefined) throw new Error("use either --referrer or a referrer key on --stdin, not both");
+          const refRaw = flags.referrer ?? fromStdin?.referrer;
+          if (!Object.keys(ship).length && refRaw === undefined) {
+            throw new Error(`settings set needs at least one of: ${SHIP_FIELDS.map(([, f]) => f).join(", ")}, --referrer`);
+          }
+          if (refRaw !== undefined) parseReferrerInput(refRaw); // refused before anything is written
+          if (Object.keys(ship).length) s = setShipTo(ship);
+          if (refRaw !== undefined) ref = setReferrer(refRaw);
         } catch (err) {
           throw new UsageError(err.message); // names the flag, never echoes a value
         }
-        return out(`Shipping address saved on this computer only (mode 600). It is sent only inside an Amazon order request to Sato Hub, and never written to the spend log.\n${shipToLines(s).map((l) => `  ${l}`).join("\n")}\nRead it back to the owner to confirm it.`, { ship_to: s });
+        const shipText = s ? `Shipping address saved on this computer only (mode 600). It is sent only inside an Amazon order request to Sato Hub, and never written to the spend log.\n${shipToLines(s).map((l) => `  ${l}`).join("\n")}\nRead it back to the owner to confirm it.` : null;
+        const refText = ref
+          ? ref.referrer
+            ? `Referral address ${ref.changed ? "saved" : "unchanged"}: ${ref.referrer}\nSato Hub pays it 30% of its swap fee on this agent's swaps, weekly in USDC. It does not change what the owner pays or where the fee goes. After each confirmed swap the kit tells Sato Hub which transaction it was (once; Sato Hub keeps it private).`
+            : ref.changed
+              ? "Referral address removed. Swaps no longer carry one, and nothing is reported to Sato Hub after a swap."
+              : "No referral address was set."
+          : null;
+        return out([shipText, refText].filter(Boolean).join("\n"), { ...(s ? { ship_to: s } : {}), ...(ref ? { referrer: ref.referrer, referrer_changed: ref.changed } : {}) });
       }
-      if (rest[0] !== undefined && rest[0] !== "show") throw new UsageError("settings show | settings set --ship-name <n> --ship-line1 <l> [--ship-line2 <l>] --ship-city <c> --ship-state <s> --ship-zip <z> --ship-country US --ship-email <e> | settings set --ship-clear");
+      if (rest[0] !== undefined && rest[0] !== "show") throw new UsageError("settings show | settings set --ship-name <n> --ship-line1 <l> [--ship-line2 <l>] --ship-city <c> --ship-state <s> --ship-zip <z> --ship-country US --ship-email <e> | settings set --ship-clear | settings set --referrer <address|none>");
       const s = shipTo();
-      return out(s ? `Shipping address (kept on this computer only):\n${shipToLines(s).map((l) => `  ${l}`).join("\n")}` : "No shipping address set. Amazon orders need one: `settings set --stdin` with a JSON object of name, line1, line2, city, state, postalCode, country, email on standard input.", { ship_to: s });
+      const ref = savedReferrer();
+      const shipText = s ? `Shipping address (kept on this computer only):\n${shipToLines(s).map((l) => `  ${l}`).join("\n")}` : "No shipping address set. Amazon orders need one: `settings set --stdin` with a JSON object of name, line1, line2, city, state, postalCode, country, email on standard input.";
+      const refText = ref ? `Referral address: ${ref} (Sato Hub pays it 30% of its swap fee on this agent's swaps, weekly in USDC; \`settings set --referrer none\` removes it)` : "No referral address set (`settings set --referrer <address>` if someone shared this kit with you).";
+      return out(`${shipText}\n${refText}`, { ship_to: s, referrer: ref });
     }
     case "buy": {
       const input = rest[0];

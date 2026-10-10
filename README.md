@@ -10,7 +10,7 @@ Tell your Bot:
 
 > Read https://github.com/satohubai/sato-agent/blob/main/BOT.md and follow the setup. NAME = base, CHAIN = base.
 
-It installs the kit, creates its wallet, asks you for your limits, and asks you to fund it. You fund it with what you are willing to let it spend.
+It installs the kit, creates its wallet, asks you for your limits, and asks you to fund it. You fund it with what you are willing to let it spend. If someone shared this kit with you, add their line `REFERRER = <their address>` to that message (or paste the address when the Bot asks): it gets 30% of Sato Hub's swap fee on your agent's swaps, at no cost to you. See "Referral share" below.
 
 Two Bots, one kit:
 
@@ -24,7 +24,7 @@ Each Bot keeps its own wallet, limits and ledger, even on the same Grok Bot comp
 ## Quickstart (any machine)
 
 ```sh
-npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.3.0
+npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.3.1
 alias sato-agent=~/.sato-agent-cli/node_modules/.bin/sato-agent
 # npm may print "ERESOLVE overriding peer dependency" three times (the Solana x402
 # library's helpers ask for an older @solana/kit). That is expected; the tests run on these versions.
@@ -54,12 +54,13 @@ sato-agent buy "solana:<recipient>?amount=5&spl-token=EPjFWdd5AufqSSqeM2qN1xzyba
 | `policy set [--allow <addrs>\|any] [--approval ask\|auto] [--check-gate off\|no\|caution] [--on-check-unavailable allow\|refuse]` | Optional choices: a recipient allowlist; ask the owner before every spend; let a Sato Hub `no` (or `caution`) stop a spend; what to do when the check can't run. **Anything that loosens a choice is logged as a raise.** |
 | `pay <url> [--chain base\|solana] [--method --data --header]` | Pays an x402 resource in USDC on Base or on Solana mainnet, after the kit asks the server's price (one unpaid request) and Sato Hub reads its payment terms. Any other token or chain is refused before an approval is asked for. A server that does not ask for payment is not paid. `--dry-run` shows the quoted price, chain and payee. The chain is the owner's: an agent set to one chain pays there (`--chain` may be left out), an agent set to both must say `--chain`, and a `--chain` the owner did not choose is refused before anything is reserved. A JSON `--data` gets a JSON content-type |
 | `token <address\|mint\|link> [--chain base\|solana]` | A token card: what the token is (read from the chain), its price and liquidity with source and date, and Sato Hub's evidence about it. Links from DexScreener, GeckoTerminal, Birdeye, pump.fun, gmgn, Basescan, Solscan, jup.ag, Uniswap, Aerodrome, Zora and Clanker are resolved by Sato Hub, then re-read from the chain. |
-| `swap --chain base\|solana --from <asset> --to <asset> --amount <n\|all> [--slippage-bps <n>] [--dry-run]` | Buy or sell any token, with USDC, ETH or WETH (Base) or USDC or SOL (Solana) on one side. An asset is a symbol for those majors, or a token's address, mint or link. `--amount all` sells a token's whole balance. On once the spending limits are set; `policy set --swaps off` turns it off. See "How swaps are checked" below. |
+| `swap --chain base\|solana --from <asset> --to <asset> --amount <n\|all> [--slippage-bps <n>] [--no-referrer] [--dry-run]` | Buy or sell any token, with USDC, ETH or WETH (Base) or USDC or SOL (Solana) on one side. An asset is a symbol for those majors, or a token's address, mint or link. `--amount all` sells a token's whole balance. On once the spending limits are set; `policy set --swaps off` turns it off. See "How swaps are checked" below. |
 | `buy <request\|link\|ASIN>` | Reads what it is given and hands it on, changing nothing itself: a `solana:` or `ethereum:` request to `checkout`, an Amazon link or ASIN to `order`, any other https link to `pay` (x402, including a Coinbase Business checkout's `x402_url`). A link paid through `buy` is a purchase: price card, and the owner's yes unless both choices are auto. Anything else gets a list of what it accepts. |
 | `giftcard search <words> [--country] [--kind giftcard\|esim\|topup]` / `giftcard detail <product id>` / `giftcard buy <product id> --value <n> [--refill <number>]` / `giftcard status <invoice>` | Gift cards, eSIMs and phone top-ups from Bitrefill, paid in USDC on Base over x402 with no Bitrefill account. The price card comes first; the code is printed once, on the last line, and kept in a 0600 file. Paid but not delivered within `--wait` (default and most 240 s) exits **4**: do not buy again, check with `giftcard status`. `search` and `buy` (a dry run too) sign in to Bitrefill (a sign-in message, not a payment); a dry run creates an unpaid invoice. Base only (a Solana-only agent is told so). See "How purchases are checked". |
 | `order --available` / `order <amazon.com link\|ASIN> [--chain base\|solana]` / `orders [id]` | Amazon US, shipped to the owner's address, through Sato Hub (Crossmint), when Sato Hub has switched it on. `order --available` asks Sato Hub (`GET /api/commerce/order`, advisory and unsigned) and prints `Amazon orders: on` or `off (not switched on yet)`; it exits 0 either way and 1 if Sato Hub does not answer; anything but exactly `"on"` counts as off. BOT.md has the bot mention Amazon only when it is on. An order is refused with exit 3 until it is. `orders` shows status, delivery and refunds. An order `--dry-run` sends the shipping address to Sato Hub and creates a Crossmint quote (it expires unpaid). |
 | `checkout <solana:...\|ethereum:...>` / `checkout --to <address> --amount <usdc> --chain base\|solana` | Pays a Solana Pay request (a transfer request in USDC or SOL, or a transaction request link), an EIP-681 USDC-on-Base payment link, or an exact amount to a deposit address. Use the last for a **Stripe deposit address**: Stripe matches only the exact amount, on the right network. |
 | `settings set --stdin` / `settings set --ship-name --ship-line1 [--ship-line2] --ship-city --ship-state <XX> --ship-zip --ship-country --ship-email` / `settings show` / `settings set --ship-clear` | The shipping address for Amazon orders, kept only in `settings.json` (mode 600) on this computer. `--stdin` reads it as a JSON object (`name, line1, line2, city, state, postalCode, country, email`) so it never sits in a command line. |
+| `settings set --referrer <address\|none>` | The referral address of whoever shared this kit with the owner (a Base or Solana address), or `none` to remove it. `--stdin` also accepts a `referrer` key. See "Referral share" below. `settings show`, `status` and `help` show it. |
 | `policy set --purchases ask\|auto` | Purchases (gift cards, Amazon orders, checkouts, links paid through `buy`) ask the owner first unless BOTH `--purchases` and `--approval` are on auto. Unset means ask; ask → auto is logged as a raise. `pay` and `send` keep following `--approval`. |
 | `send --chain base\|solana --to <addr> --amount <usdc>` | Sends USDC, after Sato Hub checks the recipient |
 | `register --name --description [--image] [--service name=endpoint] [--x402-support]` | Registers in the ERC-8004 IdentityRegistry on Base (`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`), with the registration file stored onchain |
@@ -199,6 +200,16 @@ Nothing is signed until all of these pass:
 - **What a token check can't tell you:** whether a token is a good buy, whether its team is honest, or whether its price will hold. The kit never suggests what to buy or sell.
 - **Sato Hub keeps a public record of every swap quote it gives:** the venue, the pair, the amounts and the fee, never the wallet address. A `--dry-run` asks for a quote too, so it is recorded the same way.
 
+## Referral share
+
+Anyone can share this kit with their own referral address, and earn a share of Sato Hub's swap fee on the swaps of the agents set up with it.
+
+- **What the referrer earns.** 30% of Sato Hub's swap fee on every trade by an agent set up with the referrer's address (0.225% of a 0.75% token trade, 0.045% of a 0.15% ETH/SOL trade, 0.009% of a 0.03% stablecoin trade), paid weekly in USDC to the referrer's address. A swap counts once Sato Hub has read the fee payment onchain. Swaps only: x402 payments, sends and purchases carry no Sato Hub fee, so they carry no referral. An owner may refer themselves.
+- **What it costs the owner: nothing.** The owner pays the same fee, to the same pinned Sato Hub address, on the same side. The referral is a share of Sato Hub's fee; it is not added to the trade. The kit's fee checks (address, side, tier and ceiling) are the same with or without one, and it never changes an approval, a limit or an exit code.
+- **How to set it.** `sato-agent settings set --referrer <address>` (a Base address, `0x` and 40 hex characters, or a Solana address), or a `referrer` key with `settings set --stdin`. `--referrer none` removes it. The address is checked for its format on this computer, and a change is written to the ledger. A setup prompt for a Grok Bot can carry the line `REFERRER = <address>` (see BOT.md).
+- **What is sent.** With a referrer set, each swap request to Sato Hub carries `referrer`, and the quote shows "30% of it goes to the referrer 0x1234…abcd" when Sato Hub's signed answer records it. If the answer does not name the referrer that was sent, the kit warns ("Sato Hub didn't record your referrer on this swap") and carries on: the referral is the referrer's money, not the owner's. If Sato Hub refuses the address as invalid, nothing is signed and the kit says so; `--no-referrer` runs that one swap without it.
+- **What is reported.** If you set a referrer, the kit tells Sato Hub which transaction each swap was, so the referrer can be paid. Sato Hub keeps it private. After a swap that carried a referrer is confirmed, the kit sends one request, `POST /api/route/settle` on the same host as `SATO_AGENT_MCP_URL`, with `{ route_id, chain, tx }` and nothing else (no wallet address, no amount). It has a short timeout and is never retried. If it fails the kit says so in one line; the swap, its result and its exit code do not change. With no referrer set, nothing is sent.
+
 ## How purchases are checked
 
 A purchase is a spend: it counts against the same per-transaction and 24-hour USD limits, is reserved under the same lock before anything is signed, and goes to the ledger like any other. On top of that:
@@ -235,15 +246,16 @@ A purchase is a spend: it counts against the same per-transaction and 24-hour US
 
 - `wallet.json` (mode 600): the keys. Never printed, never sent anywhere.
 - `policy.json`: the owner's choices. `ledger.jsonl`: every spend, limit change, skipped check and approval. `approvals.json`: pending approval codes.
-- `settings.json` (mode 600): the shipping address for Amazon orders. `bitrefill-session.json` (mode 600): Bitrefill's sign-in token and its expiry. `giftcards/` (mode 700, files 600): delivered gift card codes. `local-hmac.key` (mode 600): a random key made once, used to bind a top-up's number into an approval without writing it down.
+- `settings.json` (mode 600): the shipping address for Amazon orders, and the referral address if one is set. `bitrefill-session.json` (mode 600): Bitrefill's sign-in token and its expiry. `giftcards/` (mode 700, files 600): delivered gift card codes. `local-hmac.key` (mode 600): a random key made once, used to bind a top-up's number into an approval without writing it down.
 - They live in `~/.sato-agent/` by default. With the Grok Bot launchers from BOT.md, each Bot's files live in `~/.sato-agent/<NAME>/`.
 - `SATO_AGENT_HOME` gives each agent its own folder. Two Bots on one computer should each use their own, so they get separate wallets and limits.
 - Network calls:
   - Base and Solana RPCs (`SATO_AGENT_BASE_RPC`, `SATO_AGENT_SOLANA_RPC` to override; public endpoints by default);
   - `https://registry.npmjs.org/` for `check` (package versions and tarballs; only the package names you ask about);
   - the x402 resources you pay;
-  - `https://satohub.ai/api/mcp` for checks (it receives the URL, recipient or install command being checked, never a key), and for swap quotes and fee disclosures (it receives the pair, the amount and the agent's address; its public route record shows the pair and amounts, never the address);
+  - `https://satohub.ai/api/mcp` for checks (it receives the URL, recipient or install command being checked, never a key), and for swap quotes and fee disclosures (it receives the pair, the amount, the agent's address and, if one is set, the referral address; its public route record shows the pair and amounts, never the address);
   - for Solana swaps, Jupiter (`api.jup.ag`), which builds the transaction for the agent's address;
+  - only if a referral address is set: after a confirmed swap, `POST /api/route/settle` on the same host as `SATO_AGENT_MCP_URL` (`https://satohub.ai/api/route/settle` by default; it receives the route id, the chain and the transaction hash or signature, and nothing else);
   - for gift cards, `https://api.bitrefill.com` (the agent's Base address, the product, value and invoice; a top-up's number);
   - for Amazon orders, Sato Hub's order endpoint on the same host as `SATO_AGENT_MCP_URL` (`https://satohub.ai/api/commerce/order` by default; it receives the product, the chain, the agent's address and the shipping address, and passes them to Crossmint);
   - for a Solana Pay transaction request, the merchant's https link (it receives the agent's Solana address).

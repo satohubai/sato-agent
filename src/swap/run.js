@@ -48,6 +48,7 @@ import * as evm from "./evm.js";
 import * as sol from "./solana.js";
 import { rpc as solanaRpc } from "../solana.js";
 import { approvalFeeCeiling, approvalFeeLine, feePercent, feeText, feeTierRefusals, pairTier } from "./fee-tier.js";
+import { referralFeeSentence, referralView, referrerFor, referrerRefusalMessage } from "./referral.js";
 
 const refuse = (rule, message, limit = null, observed = null) => new Refused([{ rule, limit, observed, message }]);
 /** The kit's own fee tier for a sized swap: from which side is a major (its symbol) and which a long-tail token. */
@@ -431,6 +432,8 @@ async function satoSolanaDisclosure(sized, deps) {
   const tokenIn = sized.fromAsset.id;
   const tokenOut = sized.toAsset.id;
   const amountIn = solUnits(sized.fromAsset, sized.amount).toString();
+  // The referral address (v0.3.1), only when the owner has one. It never changes the trade, the fee or where the fee goes.
+  const referrer = referrerFor(deps);
   const r = await (deps.callTool ?? callTool)("onchain_agent_swap", {
     mode: "recommend",
     chain_in: "Solana",
@@ -445,8 +448,12 @@ async function satoSolanaDisclosure(sized, deps) {
     // Jupiter only: the kit builds through Jupiter, so the fee disclosure must be Jupiter's.
     venue: "jupiter-aggregator",
     response_format: "json",
+    ...(referrer ? { referrer } : {}),
   });
   const body = r.structured;
+  // Sato Hub refused the referral address: say so in plain words and stop (nothing signed); the owner decides what to do.
+  const badReferrer = referrer ? referrerRefusalMessage(body, r) : null;
+  if (badReferrer) throw refuse("referrer_invalid", badReferrer);
   if (r.isError || !body) throw refuse("sato_quote_unavailable", "Sato Hub did not return a quote for this swap; nothing was signed");
   try {
     // Same two-minute window as Base: a disclosure is for this swap, now.
@@ -478,7 +485,7 @@ async function satoSolanaDisclosure(sized, deps) {
   if (typeof body.sato_fee_token === "string" && body.sato_fee_token !== majorAsset.id && body.sato_fee_token.toUpperCase() !== majorAsset.symbol) {
     throw refuse("fee_side_mismatch", `Sato Hub's signed quote takes its fee in ${clean(body.sato_fee_token, 60)}; the kit only accepts it in ${majorAsset.symbol}; nothing was signed`);
   }
-  return { feeBps: body.sato_fee_bps, tier: tierOfSized(sized), disclosure: body.disclosure ?? null, route_id: body.route_id ?? null, receipt_url: body.receipt_url ?? null, side: body.sato_fee_side ?? null };
+  return { feeBps: body.sato_fee_bps, tier: tierOfSized(sized), disclosure: body.disclosure ?? null, route_id: body.route_id ?? null, receipt_url: body.receipt_url ?? null, side: body.sato_fee_side ?? null, referral: referralView(referrer, body.referral) };
 }
 
 // ---------------------------------------------------------------- prepare
@@ -523,7 +530,7 @@ async function prepareBase(sized, deps) {
   const plan = await (deps.planAndVerifyBaseSwap ?? evm.planAndVerifyBaseSwap)(
     { from: sized.fromAsset.arg, to: sized.toAsset.arg, amount: sized.amount, slippageBps: sized.slippageBps },
     // A token sale has no USD figure before the quote; nothing made up is sent to Sato Hub.
-    { ...(sized.usd !== null ? { usdNotional: sized.usd } : { usdFromQuote: true }), ...baseDeps },
+    { ...(sized.usd !== null ? { usdNotional: sized.usd } : { usdFromQuote: true }), referrer: referrerFor(deps), ...baseDeps },
   );
   const s = evm.summarizeBaseSwapPlan(plan);
 
@@ -616,6 +623,7 @@ async function prepareSolana(sized, deps) {
     usd_held_to_limits: held,
     usd_basis: basis,
     sato_fee: { bps: fee.feeBps, tier: fee.tier, percent: feePercent(fee.feeBps), disclosure: fee.disclosure, route_id: fee.route_id, receipt_url: fee.receipt_url, side: fee.side ?? (plan.fee?.leg === "output" ? "out" : "in"), asset: plan.fee?.symbol ?? null },
+    referral: fee.referral,
     disclosure: plan.disclosure,
     simulation: verification.simulated,
     oracle: oracleDisplay(sized, deviation),
@@ -773,7 +781,9 @@ export function swapLines(d) {
   if (d.sell_back) lines.push(`Sell-back test (simulated only, nothing sent): buying and selling straight back returns ${d.sell_back.returned} ${d.sell_back.asset} for ${d.sell_back.asset === d.sell.asset ? d.sell.amount : "the amount sold"}, a loss of ${d.sell_back.loss_bps / 100}% (the kit allows up to ${d.sell_back.allowed_loss_bps / 100}%).`);
   const basis = { usdc_amount: "the USDC amount", oracle: "the Chainlink price of what you sell", usdc_received: "the USDC the quote returns for the token", oracle_on_received: "the Chainlink price of the ETH or SOL the quote returns" }[d.usd_basis];
   lines.push(`Held to your limits as $${d.usd_held_to_limits}${basis ? ` (from ${basis})` : ""}.`);
-  lines.push(`Sato Hub fee: ${feeText(d.sato_fee.bps, d.sato_fee.tier)}${d.sato_fee.asset ? `, taken in ${d.sato_fee.asset}` : ""}, never in the token. ${d.sato_fee.disclosure ?? ""}`.trim());
+  lines.push(`Sato Hub fee: ${feeText(d.sato_fee.bps, d.sato_fee.tier)}${d.sato_fee.asset ? `, taken in ${d.sato_fee.asset}` : ""}, never in the token. ${d.sato_fee.disclosure ?? ""}${referralFeeSentence(d.referral)}`.trim());
+  // A referrer was sent but Sato Hub's signed answer does not name it: a warning for the owner, never a block.
+  if (d.referral && !d.referral.recorded) lines.push(`Note: ${d.referral.warning}`);
   if (d.approval) lines.push(`Approval first: exactly ${d.approval.amount} ${d.approval.token} to the pinned router ${d.approval.spender} (never unlimited).`);
   if (Array.isArray(d.disclosure)) lines.push(...d.disclosure);
   for (const n of d.notes ?? []) lines.push(n);

@@ -118,11 +118,13 @@ export async function signAndSend(c, { to, data, value = 0n, gas, nonce }, onSig
 }
 
 /** Send USDC on Base. Throws Refused when the limits say no; nothing is signed then. */
-export async function sendUsdc({ to, amount }, c = clients()) {
+export async function sendUsdc({ to, amount, checkout }, c = clients()) {
   if (!isAddress(to)) throw new Error(`not a Base address: ${to}`);
   const units = usdcUnits(amount); // never rounded: more than 6 decimals is refused
   const usd = unitsToUsd(units);
-  const entry = await reserve(loadPolicy(), { kind: "send", chain: "base", asset: "USDC", usd, to });
+  // A checkout (a payment link or a deposit address) is the same transfer, recorded as what it is: kind "checkout" with
+  // its subtype, so `status` and `history` show a purchase, not a send. It counts against the limits the same way.
+  const entry = await reserve(loadPolicy(), { kind: checkout ? "checkout" : "send", ...(checkout ? { checkout } : {}), chain: "base", asset: "USDC", usd, to });
 
   const data = encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [to, units] });
   try {

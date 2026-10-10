@@ -37,6 +37,7 @@ import { usdcUnits, unitsToUsd } from "./amount.js";
 import { clean } from "./text.js";
 import { USER_AGENT } from "./version.js";
 import { pay } from "./x402.js";
+import { USDC_BASE } from "./base.js";
 import { checkLimits, purchaseGate, refuse } from "./purchase.js";
 
 export const BITREFILL_API = "https://api.bitrefill.com";
@@ -312,23 +313,97 @@ export async function createInvoice({ product, value, refill }, deps = {}) {
   const j = r.json ?? {};
   if (r.status !== 200 && r.status !== 201) throw new Error(`Bitrefill could not create the invoice (HTTP ${r.status}${reasonOf(r)}); nothing was paid`);
   if (typeof j.invoice_id !== "string" || !/^[A-Za-z0-9_-]{6,100}$/.test(j.invoice_id)) throw new Error("Bitrefill's invoice has no usable id; nothing was paid");
-  const price = String(j.price_usdc ?? "");
-  let units;
-  try {
-    units = usdcUnits(price);
-  } catch {
-    throw new Error(`Bitrefill's invoice price "${clean(price, 30)}" is not a USDC amount; nothing was paid`);
-  }
+  // The price, read in explicit units. The x402 terms Bitrefill will charge (an unpaid ask: nothing is signed) are the
+  // authority, in USDC base units; the invoice's own fields must agree with them. Live 2026-10-10: `price_usdc` came as
+  // base units ("5250000" for a $5.25 card), and reading it as dollars made the limits see $5,250,000.
+  const terms = await invoiceTerms(j.invoice_id, r.token, d);
+  const price = invoicePrice(j, terms?.units ?? null);
   const minutes = Number(j.expires_in_minutes);
   return {
     invoice_id: j.invoice_id,
-    price_usdc: price,
-    units,
-    usd: unitsToUsd(units),
+    units: price.units, // USDC base units (6 decimals): what is signed
+    usd: price.usd, // the same amount in dollars: what the limits, the card and the payment cap use
+    price_usdc: price.text, // the same amount as a decimal string, for display
+    price_form: price.form,
+    terms_pay_to: terms?.pay_to ?? null,
     price_usd: typeof j.price_usd === "number" || typeof j.price_usd === "string" ? clean(j.price_usd, 30) : null,
     expires_at: new Date(d.now() + (Number.isFinite(minutes) && minutes > 0 ? Math.min(minutes, 60) : 15) * 60_000).toISOString(),
     token: r.token,
   };
+}
+
+const USDC_DECIMALS = 1_000_000n;
+const unitsText = (u) => {
+  const frac = (u % USDC_DECIMALS).toString().padStart(6, "0").replace(/0+$/, "");
+  return frac ? `${u / USDC_DECIMALS}.${frac}` : (u / USDC_DECIMALS).toString();
+};
+
+/**
+ * Bitrefill's invoice price as { units (USDC base units, bigint), usd (dollars, number), text (decimal string), form }.
+ * `price_usdc` has been seen as base units ("5250000") and is documented as an amount; a decimal ("5.25") is read as
+ * dollars, a whole number is ambiguous and is settled by `termsUnits` (the x402 amount, base units, the authority) or,
+ * without terms, by `price_usd`. Anything that cannot be settled, or that disagrees, is refused: nothing is guessed.
+ */
+export function invoicePrice(j, termsUnits = null) {
+  const raw = j?.price_usdc;
+  const usdHint = Number(j?.price_usd);
+  const hint = Number.isFinite(usdHint) && usdHint > 0 ? usdHint : null;
+  const s = typeof raw === "number" && Number.isFinite(raw) ? (Number.isInteger(raw) ? String(raw) : raw.toFixed(6)) : typeof raw === "string" ? raw.trim() : "";
+  const cands = [];
+  if (/^\d+\.\d+$/.test(s)) {
+    try {
+      cands.push({ units: usdcUnits(s.replace(/(\.\d{6})\d+$/, "$1")), form: "usdc_decimal" });
+    } catch {
+      /* not a USDC amount */
+    }
+  } else if (/^[1-9]\d{0,15}$/.test(s)) {
+    cands.push({ units: BigInt(s), form: "usdc_base_units" }, { units: BigInt(s) * USDC_DECIMALS, form: "usdc_whole" });
+  }
+  const near = (c, usd, pct) => Math.abs(unitsToUsd(c.units) - usd) <= usd * pct;
+  let pick = null;
+  if (termsUnits !== null && termsUnits !== undefined) {
+    pick = cands.find((c) => c.units === termsUnits) ?? null;
+    // The invoice may round; within 1% of the terms it is the same price, and the terms (what is signed) win.
+    if (!pick && cands.some((c) => near(c, unitsToUsd(termsUnits), 0.01))) pick = { units: termsUnits, form: "x402_terms" };
+    if (!pick && !cands.length && hint !== null && Math.abs(unitsToUsd(termsUnits) - hint) <= hint * 0.05) pick = { units: termsUnits, form: "x402_terms" };
+    if (!pick) throw refuse("giftcard_price_unclear", `Bitrefill's invoice price (${clean(String(raw ?? "none"), 30)}) does not match the ${unitsText(termsUnits)} USDC its payment terms ask; nothing was paid`);
+    pick = { ...pick, units: termsUnits };
+  } else if (cands.length === 1 && (hint === null || near(cands[0], hint, 0.05))) {
+    pick = cands[0];
+  } else if (hint !== null) {
+    pick = cands.find((c) => near(c, hint, 0.05)) ?? null;
+  }
+  if (!pick) throw refuse("giftcard_price_unclear", `Bitrefill's invoice price (${clean(String(raw ?? "none"), 30)}${hint !== null ? `, $${hint}` : ""}) cannot be read as one USDC amount; nothing was paid`);
+  if (!(pick.units > 0n)) throw refuse("giftcard_price_unclear", "Bitrefill's invoice price is zero; nothing was paid");
+  // A price that disagrees with Bitrefill's own USD figure by more than 5% is not trusted either.
+  if (hint !== null && !near(pick, hint, 0.05)) throw refuse("giftcard_price_unclear", `Bitrefill's invoice says ${unitsText(pick.units)} USDC and $${hint}; they disagree, so nothing was paid`);
+  return { units: pick.units, usd: unitsToUsd(pick.units), text: unitsText(pick.units), form: pick.form };
+}
+
+/**
+ * What Bitrefill's x402 terms for this invoice ask, read with one UNPAID request (no payment header: nothing is signed,
+ * nothing is reserved). Returns { units (USDC base units on Base), pay_to } or null when the terms cannot be read.
+ */
+export async function invoiceTerms(invoiceId, token, d) {
+  let r;
+  try {
+    r = await request(d, "POST", "/x402/invoice/pay", { body: { invoice_id: invoiceId }, token });
+  } catch {
+    return null;
+  }
+  if (r.status !== 402) return null;
+  let req = null;
+  try {
+    const h = r.headers.get("payment-required");
+    req = h ? JSON.parse(Buffer.from(h, "base64").toString("utf8")) : r.json;
+  } catch {
+    req = r.json;
+  }
+  const offers = Array.isArray(req?.accepts) ? req.accepts : [];
+  const base = offers.find((o) => o && o.scheme === "exact" && (o.network === "eip155:8453" || o.network === "base") && String(o.asset).toLowerCase() === USDC_BASE.toLowerCase());
+  const amount = String(base?.amount ?? base?.maxAmountRequired ?? "");
+  if (!/^[1-9]\d{0,15}$/.test(amount)) return null;
+  return { units: BigInt(amount), pay_to: typeof base.payTo === "string" ? base.payTo : null };
 }
 
 // ---------------------------------------------------------------- delivery and codes
@@ -447,6 +522,10 @@ export async function buyGiftcard({ product, value, refill, approve, dryRun = fa
   if (detail.recipient_required && !refill) throw new Error(`${detail.name} needs the phone number or account it goes to: add --refill <it>`);
 
   const inv = await createInvoice({ product: detail.id, value: pkg.value, refill: detail.recipient_required ? refill : undefined }, d);
+  if (inv.terms_pay_to && inv.terms_pay_to.toLowerCase() !== BITREFILL_PAY_TO.toLowerCase()) {
+    throw refuse("payee_changed", `Bitrefill's payment terms name ${clean(inv.terms_pay_to, 60)}, not its known payee ${BITREFILL_PAY_TO}; nothing was paid`, BITREFILL_PAY_TO, clean(inv.terms_pay_to, 60));
+  }
+  // Dollars, never base units: inv.usd is what the limits see.
   checkLimits({ usd: inv.usd, chain: "base", to: BITREFILL_PAY_TO }, policy);
   const currency = pkg.currency ?? detail.currency ?? "";
   const card = [

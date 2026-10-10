@@ -12,8 +12,8 @@ Your owner's first message gives you a NAME and a CHAIN. If it doesn't, ask for 
 
 | CHAIN | What the owner funds | What you can do today (v0.3) |
 |---|---|---|
-| `base` | USDC on Base, plus a little ETH on Base for gas | Buy or sell any Base token against USDC or ETH; buy gift cards, eSIMs and phone top-ups; order from Amazon US (once Sato Hub switches it on); pay payment links in USDC on Base; pay for APIs with x402 (USDC on Base); send USDC on Base; register onchain (ERC-8004); Sato Hub checks |
-| `solana` | USDC on Solana, plus a little SOL for fees | Buy or sell any Solana token against USDC or SOL (through Jupiter); order from Amazon US (once Sato Hub switches it on); pay Solana Pay requests in USDC or SOL; pay for APIs with x402 (USDC on Solana); send USDC on Solana; Sato Hub checks. Gift cards are on Base only for now. |
+| `base` | USDC on Base, plus a little ETH on Base for gas | Buy or sell any Base token against USDC or ETH; buy gift cards, eSIMs and phone top-ups; pay payment links in USDC on Base; pay for APIs with x402 (USDC on Base); send USDC on Base; register onchain (ERC-8004); Sato Hub checks |
+| `solana` | USDC on Solana, plus a little SOL for fees | Buy or sell any Solana token against USDC or SOL (through Jupiter); pay Solana Pay requests in USDC or SOL; pay for APIs with x402 (USDC on Solana); send USDC on Solana; Sato Hub checks. Gift cards are on Base only for now. |
 
 The kit creates both a Base and a Solana address, so you always have one of each. Only ask the owner to fund the one for your CHAIN.
 
@@ -44,7 +44,8 @@ The kit creates both a Base and a Solana address, so you always have one of each
    - In `ask` mode, approving a `pay` approves the URL, the request and the price and payee the server quoted (shown in the intent). A higher price at pay time is refused. Show the owner that price when you ask. If the intent says the price was "not stated before the real request" (some services only quote after the real request), tell the owner plainly: the price and payee are NOT bound by this approval, and the server can charge up to their per-transaction limit.
    - Then tell the owner (do not ask anything more): "I can also buy or sell any token for you on CHAIN: send me its contract address or a link (DexScreener, pump.fun, Birdeye, Basescan, Solscan, …) and an amount. Your limits cover every trade. I'll show you what the token is first, and I'll ask you before a trade with unusually high slippage or price impact, or a token whose issuer can move or block it."
      Slippage is picked per trade (owners can name one: "use 2%"). Optional caps exist if the owner ever asks: `--swap-slippage-bps <1-500>`, `--max-trades-per-day <n>`, or `--swaps off`.
-   - Then tell the owner (again, do not ask anything): "I can also buy things for you with this wallet: gift cards, eSIMs and phone top-ups (Base), Amazon US orders shipped to you (once Sato Hub switches them on), and payment requests a shop gives you (Solana Pay, or a USDC payment link on Base). Your limits cover every purchase. I'll always show you the price first and wait for your yes. If you'd rather I buy within your limits without asking each time, just say so."
+   - First run `~/sato-agent-NAME order --available`. Then tell the owner (again, do not ask anything): "I can also buy things for you with this wallet: gift cards, eSIMs and phone top-ups (Base), and payment requests a shop gives you (Solana Pay, or a USDC payment link on Base). Your limits cover every purchase. I'll always show you the price first and wait for your yes. If you'd rather I buy within your limits without asking each time, just say so."
+     Only if it printed "Amazon orders: on", also say: "I can order from Amazon US too, shipped to you." If it printed "off" (or did not answer), say nothing about Amazon. If the owner asks about Amazon, say it is coming and not switched on yet.
      Only if the owner says so: `policy set --purchases auto`. That lets you do more, so it is logged as a raise. `policy set --purchases ask` goes back to asking. Purchases ask first unless BOTH `--purchases` and `--approval` are on auto: an owner who chose "ask before every payment" is asked before every purchase too.
 5. **Ask the owner to fund the wallet for your CHAIN** (see the table above): only what they are willing to let you spend.
    - Check with `~/sato-agent-NAME balance`.
@@ -68,7 +69,7 @@ if command -v flock >/dev/null; then flock ~/.sato-agent-install.lock npm instal
 ```
 Never run `init` again: your wallet, limits and history stay in `~/.sato-agent/NAME` and are kept as they are.
 
-After upgrading to 0.3, run `~/sato-agent-NAME status` and tell the owner what the `swaps:` line says. Version 0.3 can trade any token. If swaps show as off (they stay off for an owner who had turned them off), tell the owner they can turn them on with `policy set --swaps on`, and only do that if they ask. Version 0.3 can also buy things: tell the owner what you can now buy, exactly as in step 4, including that purchases ask them first.
+After upgrading to 0.3, run `~/sato-agent-NAME status` and tell the owner what the `swaps:` line says. Version 0.3 can trade any token. If swaps show as off (they stay off for an owner who had turned them off), tell the owner they can turn them on with `policy set --swaps on`, and only do that if they ask. Version 0.3 can also buy things: run `order --available`, then tell the owner what you can now buy, exactly as in step 4 (Amazon only if it said "on"), including that purchases ask them first.
 
 ## What you can do
 
@@ -78,6 +79,7 @@ After upgrading to 0.3, run `~/sato-agent-NAME status` and tell the owner what t
   2. Ask the amount if they didn't give one. Never suggest what to buy or sell, or how much.
   3. Buy: `~/sato-agent-NAME swap --chain <CHAIN> --from USDC --to <address or mint from the card> --amount 20 --dry-run`, show the result (the token's address, quote, minimum, price impact, Sato Hub's fee and on which side, and on Base the sell-back test), then run it without `--dry-run`. Pay with ETH or SOL instead of USDC if the owner says so.
   4. Sell: `--from <address or mint> --to USDC --amount <n|all>` (`all` = the whole balance of that token).
+  - Both legs of a round trip count toward the 24-hour limit: buying $20 of a token and selling it back the same day uses about $40 of it. Say so if the owner plans to buy and sell quickly.
   - One side is always USDC, ETH/WETH (Base) or USDC/SOL (Solana). Token-for-token isn't available yet; say so.
   - Exit code 5 on a trade means it needs the owner's yes, even if they chose that you act on your own: unusually high slippage or price impact, no USD figures to check the price impact against, a bad sell-back test, a large transfer fee, or a token whose issuer can move, freeze, pause or block it. Show the reasons it printed, word for word, and wait.
   - Swaps between USDC and ETH/SOL are also checked against an independent Chainlink price. A token has no independent price: its value comes from the quote, and your limits still apply.
@@ -90,8 +92,8 @@ After upgrading to 0.3, run `~/sato-agent-NAME status` and tell the owner what t
     - **Exit code 4 on a gift card means "paid, not delivered yet".** Never buy it again: tell the owner it is paid and on its way, and check later with `giftcard status <invoice id>`. If it failed, tell the owner Bitrefill refunds a failed order to this wallet.
     - `giftcard search` and `giftcard buy` (even with `--dry-run`) sign in to Bitrefill with the wallet: a sign-in message, not a payment.
     - Gift cards are paid on Base. On Solana, tell the owner they are on Base only for now.
-  - **Amazon US:** `~/sato-agent-NAME order <amazon.com link or ASIN>`. The card shows the item, tax, shipping, the total and where it ships. Follow the order with `~/sato-agent-NAME orders <order id>` (status, delivery, refunds). If the kit says orders are not switched on yet, tell the owner plainly and stop. Only amazon.com, shipped to a US address. A short link (a.co, amzn.to) doesn't work: ask the owner for the full product link or its ASIN.
-    - **The shipping address.** The first time the owner wants an order, ask for the name, street, apartment (if any), city, state, ZIP and email for the delivery, then pass it on standard input, never on the command line:
+  - **Amazon US (only when it is on).** Run `~/sato-agent-NAME order --available` first. If it says "off", Amazon is not available yet: tell the owner it is coming and not switched on yet, do not try an order, and do not ask for a shipping address. When it says "on": `~/sato-agent-NAME order <amazon.com link or ASIN>`. The card shows the item, tax, shipping, the total and where it ships. Follow the order with `~/sato-agent-NAME orders <order id>` (status, delivery, refunds). If the kit says orders are not switched on yet, tell the owner plainly and stop. Only amazon.com, shipped to a US address. A short link (a.co, amzn.to) doesn't work: ask the owner for the full product link or its ASIN.
+    - **The shipping address.** Only when orders are on, the first time the owner wants an order, ask for the name, street, apartment (if any), city, state, ZIP and email for the delivery, then pass it on standard input, never on the command line:
       ```
       ~/sato-agent-NAME settings set --stdin <<'JSON'
       {"name":"<name>","line1":"<street>","line2":"<apt, or leave this key out>","city":"<city>","state":"<two letters, like CA>","postalCode":"<zip>","country":"US","email":"<email>"}

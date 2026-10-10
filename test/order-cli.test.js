@@ -130,7 +130,7 @@ test("checkout: a link for another token is refused (exit 3); a Solana Pay reque
 
 test("settings set --ship-clear removes the address", () => {
   assert.equal(run(["settings", "set", "--ship-clear"]).status, 0);
-  assert.match(run(["status"]).stdout, /shipping address: not set/);
+  assert.doesNotMatch(run(["status"]).stdout, /shipping address/, "with no address set, status says nothing about it");
   const r = run(["order", "B0TESTASIN"]);
   assert.equal(r.status, 3);
   assert.match(r.stderr, /ship_to_not_set/);

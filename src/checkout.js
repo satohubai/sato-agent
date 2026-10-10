@@ -268,7 +268,7 @@ export async function prepareSolanaPayTransfer(req, deps = {}) {
       return { dry_run: true, chain: "solana", usd, to: req.recipient, simulated: true };
     },
     execute: async () => {
-      const entry = await reserve(deps.policy ?? loadPolicy(), { kind: "checkout", chain: "solana", asset: req.token, usd, to: req.recipient, amount: req.amount, references: req.references, checkout: "solana-pay-transfer" });
+      const entry = await reserve(deps.policy ?? loadPolicy(), { kind: "checkout", chain: "solana", asset: req.token, usd, to: req.recipient, amount: req.amount, references: req.references, checkout: "solana_pay", request: "transfer" });
       let built;
       try {
         built = await buildAndSimulate();
@@ -347,7 +347,7 @@ export async function prepareSolanaPayTransaction(link, deps = {}) {
     checkArgs: null,
     dryRun: async () => ({ dry_run: true, chain: "solana", usd, label, link, simulated: sim.simulated }),
     execute: async () => {
-      const entry = await reserve(d.policy ?? loadPolicy(), { kind: "checkout", chain: "solana", asset: sim.usdc_out > 0n ? "USDC" : "SOL", usd, to: payees[0] ?? host, checkout: "solana-pay-transaction", merchant: host });
+      const entry = await reserve(d.policy ?? loadPolicy(), { kind: "checkout", chain: "solana", asset: sim.usdc_out > 0n ? "USDC" : "SOL", usd, to: payees[0] ?? host, checkout: "solana_pay", request: "transaction", merchant: host });
       let built;
       try {
         if (!(await blockhashValid(facts.blockhash, r))) throw refuse("checkout_expired", "the merchant's transaction expired before it was signed; ask for the payment again (nothing was signed)");

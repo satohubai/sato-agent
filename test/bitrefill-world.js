@@ -12,6 +12,11 @@ export const TOKEN = "eyJ0ZXN0Ijp0cnVlfQ.test-access-token.sig";
 export const CODE = "AMZN-SECRET-CODE-9876-XYZ";
 export const PIN = "4321-PIN-SECRET";
 export const INVOICE = "inv_test_123456";
+/** The catalogue the stand-in sells. amazon_com-usa has the values Bitrefill listed live on 2026-10-10. */
+export const PRODUCTS = {
+  "amazon-us": { id: "amazon-us", name: "Amazon", values: ["25", "50"] },
+  "amazon_com-usa": { id: "amazon_com-usa", name: "Amazon.com USA", values: ["1000", "500", "200", "100", "50", "20", "10", "5"] },
+};
 
 /** The sign-in challenge's info, relative to `now`. `over` replaces fields (a test of what the kit refuses). */
 export function siwxInfo(now = Date.now(), over = {}) {
@@ -55,13 +60,19 @@ export function bitrefillWorld(opts = {}) {
     if (r.headers.get("x-access-token") !== TOKEN || opts.rejectToken) return json(opts.rejectToken ? 401 : 402, { x402Version: 2, error: "Payment required", accepts: [] });
     if (path === "/x402/gift-cards/search") return json(200, { products: [{ slug: "amazon-us", name: "Amazon", country: "US", recipient_type: "none", in_stock: true }, { slug: "steam-usa", name: "Steam\u001b[31m", country: "US", in_stock: false }] });
     if (path === "/x402/products/detail") {
-      if (r.url.searchParams.get("slug") !== "amazon-us") return json(404, { error: "PRODUCT_NOT_FOUND" });
-      return json(200, { id: "amazon-us", name: "Amazon", recipient_type: "none", recipient_required: false, in_stock: true, packages: [{ package_value: "25", package_currency: "USD" }, { package_value: "50", package_currency: "USD" }] });
+      const p = PRODUCTS[r.url.searchParams.get("slug")];
+      if (!p) return json(404, { error: "PRODUCT_NOT_FOUND" });
+      return json(200, { id: p.id, name: p.name, recipient_type: "none", recipient_required: false, in_stock: true, packages: p.values.map((v) => ({ package_value: v, package_currency: "USD" })) });
     }
     if (path === "/x402/invoice/create" && r.method === "POST") {
-      const items = JSON.parse(r.body).items;
-      if (items?.[0]?.package_value !== "25" && items?.[0]?.package_value !== "50") return json(500, { error: "INTERNAL" });
-      return json(200, { invoice_id: INVOICE, price_usdc: opts.priceText ?? (Number(priceUnits) / 1e6).toString(), price_usd: Number(priceUnits) / 1e6, expires_in_minutes: 15, next_step: { url: "/x402/invoice/pay" } });
+      const item = JSON.parse(r.body).items?.[0];
+      if (!PRODUCTS[item?.product_id]?.values.includes(item?.package_value)) return json(500, { error: "INTERNAL" });
+      // price_usdc shapes: "decimal" ("25.5", the default), "units" ("5250000": base units, as seen live 2026-10-10),
+      // "units_number" (5250000), "whole" ("5": whole dollars). priceText overrides it outright.
+      const shapes = { decimal: (Number(priceUnits) / 1e6).toString(), units: priceUnits, units_number: Number(priceUnits), whole: String(Number(priceUnits) / 1e6) };
+      const body = { invoice_id: INVOICE, price_usdc: opts.priceText ?? shapes[opts.priceShape ?? "decimal"], expires_in_minutes: 15, next_step: { url: "/x402/invoice/pay" } };
+      if (!opts.noPriceUsd) body.price_usd = Number(priceUnits) / 1e6;
+      return json(200, body);
     }
     if (path === "/x402/invoice/pay" && r.method === "POST") {
       const sig = r.headers.get("payment-signature");

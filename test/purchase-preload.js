@@ -30,6 +30,12 @@ function rpc(body) {
 globalThis.fetch = async (input, init) => {
   const url = new URL(input instanceof Request ? input.url : String(input));
   if (url.origin === "https://api.bitrefill.com") return world.fetch(input, init);
+  const method = (input instanceof Request ? input.method : init?.method ?? "GET").toUpperCase();
+  // GET /api/commerce/order: whether orders are on. hub.available = { status, json } or "down" (no answer).
+  if (url.pathname === "/api/commerce/order" && method === "GET" && hub.available) {
+    if (hub.available === "down") throw new TypeError("fetch failed");
+    return new Response(typeof hub.available.json === "string" ? hub.available.json : JSON.stringify(hub.available.json), { status: hub.available.status ?? 200 });
+  }
   if (url.pathname.startsWith("/api/commerce/order") && hub.order) return json(hub.order.json, hub.order.status ?? 200);
   if (url.href === "https://satohub.ai/.well-known/jwks.json" && hub.jwks) return json(hub.jwks);
   if (url.host === "base-rpc.test") return rpc(input instanceof Request ? await input.text() : init.body);

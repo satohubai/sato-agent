@@ -135,6 +135,29 @@ const NOT_ENABLED = () => refuse("orders_not_enabled", "Amazon orders through Sa
 /** Sato Hub's short error code, cleaned and with any piece of the address taken out. */
 const hubReason = (h, ship) => (typeof h.json?.error === "string" ? `: ${clean(scrubAddress(h.json.error, ship), 120)}` : "");
 
+/**
+ * Has Sato Hub switched Amazon orders on? GET <origin>/api/commerce/order answers { orders: "on" | "off" }, unsigned:
+ * it is advisory (it decides what the bot tells its owner, never what is signed). Anything but exactly "on" is off,
+ * including an older Sato Hub without the route (404). Throws only when Sato Hub does not answer (or answers 5xx).
+ */
+export async function ordersAvailable(deps = {}) {
+  const d = { fetchImpl: globalThis.fetch, ...deps };
+  let res;
+  try {
+    res = await d.fetchImpl(`${d.origin ?? commerceOrigin()}${ORDER_PATH}`, { method: "GET", headers: { "user-agent": USER_AGENT, accept: "application/json", "cache-control": "no-cache" }, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
+  } catch (err) {
+    throw new Error(`Sato Hub did not answer (${err.name === "TimeoutError" ? `timed out after ${HTTP_TIMEOUT_MS / 1000} s` : clean(err.message, 120)}); whether Amazon orders are on is unknown`);
+  }
+  if (res.status >= 500 && res.status !== 503) throw new Error(`Sato Hub answered HTTP ${res.status}; whether Amazon orders are on is unknown`);
+  let json = null;
+  try {
+    json = JSON.parse(await res.text());
+  } catch {
+    json = null;
+  }
+  return { on: res.status === 200 && json?.orders === "on" };
+}
+
 /** Ask Sato Hub for an order quote. Returns the raw (still unverified) answer. */
 export async function requestOrder({ product, chain, payer, recipient }, deps = {}) {
   const d = { fetchImpl: globalThis.fetch, ...deps };
@@ -316,7 +339,7 @@ export async function placeOrder({ input, chain: requested, approve, dryRun = fa
   const { product, asin } = amazonProduct(input);
   const settings = loadSettings();
   const ship = settings?.ship_to ?? null;
-  if (!ship) throw refuse("ship_to_not_set", "no shipping address is set on this bot. The owner sets it once with `settings set --ship-name ... --ship-line1 ... --ship-city ... --ship-state ... --ship-zip ... --ship-country US --ship-email ...`; it stays on this computer.");
+  if (!ship) throw refuse("ship_to_not_set", "no shipping address is set on this bot. The owner gives it once, and it is saved with `settings set --stdin` (a JSON object of name, line1, line2, city, state, postalCode, country, email on standard input, so it is never on a command line); it stays on this computer.");
   if (ship.country !== "US") throw refuse("amazon_us_only", "Amazon orders ship to US addresses only, and this bot's shipping address is outside the US");
   const recipient = recipientOf(ship);
   const payer = addresses()[chain];

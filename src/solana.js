@@ -123,11 +123,12 @@ export async function dryRunSendUsdc({ to, amount }, r = rpc()) {
 }
 
 /** Send USDC on Solana. Throws Refused when the limits say no; nothing is signed then. */
-export async function sendUsdc({ to, amount }, r = rpc()) {
+export async function sendUsdc({ to, amount, checkout }, r = rpc()) {
   const units = toUnits(amount);
   const usd = Number(units) / 1e6;
   await assertWalletRecipient(to, r);
-  const entry = await reserve(loadPolicy(), { kind: "send", chain: "solana", asset: "USDC", usd, to });
+  // A deposit-address checkout is recorded as kind "checkout" (subtype in `checkout`), not as a send.
+  const entry = await reserve(loadPolicy(), { kind: checkout ? "checkout" : "send", ...(checkout ? { checkout } : {}), chain: "solana", asset: "USDC", usd, to });
 
   let built;
   try {

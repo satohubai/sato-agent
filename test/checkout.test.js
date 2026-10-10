@@ -107,7 +107,8 @@ test("Solana Pay transfer request: a token account as recipient is refused; a go
   assert.match(r.explorer, /solscan/);
   const row = entries().filter((e) => e.kind === "checkout").at(-1);
   assert.equal(row.usd, 3);
-  assert.equal(row.checkout, "solana-pay-transfer");
+  assert.equal(row.checkout, "solana_pay");
+  assert.equal(row.request, "transfer");
   // Over the per-transaction limit: refused before anything is built.
   await assert.rejects(prepareSolanaPayTransfer(parseSolanaPay(`solana:${merchant}?amount=60&spl-token=${USDC_MINT}`), { rpc }), refused("max_usd_per_tx"));
 });

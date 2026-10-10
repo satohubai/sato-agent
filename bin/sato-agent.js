@@ -13,8 +13,8 @@ import { VALUE_KINDS, actions, read, recordCheckEvent, spentLast24h } from "../s
 import { purchaseChain, purchaseGate } from "../src/purchase.js";
 import { SHIP_FIELDS, clearShipTo, scrubAddress, setShipTo, shipFieldsFromJson, shipTo, shipToLines, shipToStatus } from "../src/settings.js";
 import { readFileSync } from "node:fs";
-import { assertBaseAgent, buyGiftcard, codesLine, invoiceStatus, saveCodes, savedCodes, searchProducts } from "../src/bitrefill.js";
-import { localOrders, orderStatus, placeOrder, statusLines } from "../src/commerce.js";
+import { assertBaseAgent, buyGiftcard, codesLine, invoiceStatus, productDetail, saveCodes, savedCodes, searchProducts } from "../src/bitrefill.js";
+import { localOrders, orderStatus, ordersAvailable, placeOrder, statusLines } from "../src/commerce.js";
 import { BUY_ACCEPTS, classifyBuy, parseEip681, parseSolanaPay, prepareSolanaPayTransaction, prepareSolanaPayTransfer } from "../src/checkout.js";
 import { consumeApproval, requestApproval } from "../src/approvals.js";
 import { roundUsd } from "../src/amount.js";
@@ -53,17 +53,19 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
   buy <request|link|ASIN> [--chain base|solana] [--approve <code>] [--dry-run]
                                          reads what it is given and hands it to checkout, order or pay; changes nothing itself.
                                          A link it pays (x402, a Coinbase checkout) is a purchase: price card, owner's yes
-  giftcard search <words> [--country US] [--kind giftcard|esim|topup]
+  giftcard search <words> [--country US] [--kind giftcard|esim|topup]   (shows the values on offer)
+  giftcard detail <product id>           the exact values a product can be bought for
   giftcard buy <product id> --value <n> [--refill <number>] [--wait <0-240 s>] [--approve <code>] [--dry-run]
   giftcard status <invoice id>
                                          gift cards, eSIMs and top-ups from Bitrefill, paid in USDC on Base (x402). The price
                                          card comes first; the code is shown once delivered, and kept in a private file.
                                          Paid but not delivered within --wait (default 240 s) exits 4: do not buy again.
                                          search and buy (a dry run too) sign in to Bitrefill: a sign-in message, not a payment
+  order --available                      whether Sato Hub has switched Amazon orders on ("on" or "off")
   order <amazon.com link|ASIN> [--chain base|solana] [--approve <code>] [--dry-run]
   orders [order id]
-                                         Amazon US, shipped to the owner's address, through Sato Hub (once it is switched on).
-                                         Shows item, tax, shipping and total; the payment is decoded and simulated first
+                                         Amazon US, shipped to the owner's address, through Sato Hub (when Sato Hub has switched
+                                         it on). Shows item, tax, shipping and total; the payment is decoded and simulated first
   checkout <solana:...|ethereum:...> [--approve <code>] [--dry-run]
   checkout --to <address> --amount <usdc> --chain base|solana [--approve <code>] [--dry-run]
                                          pay a Solana Pay request (USDC or SOL), a USDC-on-Base payment link (EIP-681), or an
@@ -159,6 +161,7 @@ try {
       "ship-email": { type: "string" },
       "ship-clear": { type: "boolean" },
       stdin: { type: "boolean" },
+      available: { type: "boolean" },
       wait: { type: "string" },
     },
   }));
@@ -171,6 +174,9 @@ class UsageError extends Error {}
 
 const [cmd = "help"] = positionals;
 let viaBuy = false; // set by `buy` before it hands a link to `pay`
+
+/** How a ledger row is named on screen: a checkout with its subtype (eip681, solana_pay, deposit), a gift card payment as such. */
+const kindLabel = (a) => (a.kind === "checkout" && a.checkout ? `checkout:${clean(a.checkout, 20)}` : a.kind === "x402" && a.purchase ? `x402:${clean(a.purchase, 20)}` : String(a.kind));
 const json = (obj) => JSON.stringify(obj, (_k, v) => (typeof v === "bigint" ? v.toString() : v), 2);
 const out = (human, obj) => console.log(flags.json ? json(obj) : human);
 const limitText = (v) => (v === null ? "no limit" : `$${v}`);
@@ -186,7 +192,7 @@ function policyText(p) {
     `recipients:      ${p.allow_recipients ? p.allow_recipients.join(", ") : "any"}`,
     `Sato Hub checks: ${p.check_gate && p.check_gate !== "off" ? `stop a spend on "${p.check_gate === "caution" ? "caution or no" : "no"}"${p.on_check_unavailable ? ` · if a check can't run: ${p.on_check_unavailable}` : ""}` : "inform only"}`,
     `approval:        ${p.approval === "ask" ? "ask the owner before every spend" : "act within the limits"}`,
-    `purchases:       ${purchasesAsk(p) ? `ask the owner first${p.purchase_approval === "auto" ? " (because approval is ask: purchases buy on their own only when both are auto)" : p.purchase_approval ? "" : " (the default)"}` : "buy within the limits"} (gift cards, Amazon orders, checkouts, and links paid through buy)`,
+    `purchases:       ${purchasesAsk(p) ? `ask the owner first${p.purchase_approval === "auto" ? " (because approval is ask: purchases buy on their own only when both are auto)" : p.purchase_approval ? "" : " (the default)"}` : "buy within the limits"} (gift cards, checkouts, and links paid through buy)`,
     `swaps:           ${!swapsEnabled(p) ? `off${isLegacySwapsOff(p) ? " (this policy is from before v0.3 and never had swaps on; \`policy set --swaps on\` turns them on)" : ""}` : `on · ${Number.isInteger(p.max_slippage_bps) ? `slippage up to ${p.max_slippage_bps} bps` : "slippage chosen per trade"} · ${Number.isInteger(p.max_trades_per_day) ? `${p.max_trades_per_day} per 24 hours` : "no trade cap"}`}`,
   ].join("\n");
 }
@@ -558,7 +564,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
       const cutoff = Date.now() - windows[since];
       const list = actions().filter((a) => Date.parse(a.first_ts) >= cutoff);
       const line = (a) =>
-        `${a.first_ts}  ${String(a.kind).padEnd(8)} ${String(a.status).padEnd(16)} ${(a.chain ?? "").padEnd(6)} ${a.kind === "register" || a.kind === "register_uri" ? `agent ${a.agent_id}` : `$${roundUsd(Number(a.usd) || 0)}`} ${a.to ?? a.url ?? ""}${a.explorer ? `\n    ${a.explorer}` : ""}`;
+        `${a.first_ts}  ${kindLabel(a).padEnd(8)} ${String(a.status).padEnd(16)} ${(a.chain ?? "").padEnd(6)} ${a.kind === "register" || a.kind === "register_uri" ? `agent ${a.agent_id}` : `$${roundUsd(Number(a.usd) || 0)}`} ${a.to ?? a.url ?? ""}${a.explorer ? `\n    ${a.explorer}` : ""}`;
       return out(list.map(line).join("\n") || "(no actions yet)", { since, actions: list });
     }
     case "proof": {
@@ -577,7 +583,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
         agentId ? `ERC-8004 agent: ${agentId} on Base (registry 0x8004A169FB4a3325136EB29fA0ceB6D2e539a432)` : "ERC-8004 agent: not registered",
         `confirmed onchain actions: ${onchain.length} · value moved (sends, payments, swaps and purchases, in USD): $${roundUsd(spent)}`,
         "",
-        ...onchain.slice(-15).map((x) => `${x.first_ts.slice(0, 16).replace("T", " ")}Z  ${x.kind}  ${x.kind.startsWith("register") ? `agent ${x.agent_id}` : `$${roundUsd(Number(x.usd) || 0)}`}  ${x.explorer}`),
+        ...onchain.slice(-15).map((x) => `${x.first_ts.slice(0, 16).replace("T", " ")}Z  ${kindLabel(x)}  ${x.kind.startsWith("register") ? `agent ${x.agent_id}` : `$${roundUsd(Number(x.usd) || 0)}`}  ${x.explorer}`),
         "",
         "Every line links to the chain. Check it yourself. Built with Sato Hub: https://github.com/satohubai/sato-agent",
       ].join("\n");
@@ -599,11 +605,12 @@ async function main(command = cmd, args = positionals.slice(1)) {
       const checks = ledger.rows.filter((e) => e.kind === "check").slice(-5);
       // Ledger fields can hold server text (a payee, a receipt id, a reason): printed cleaned, one line each.
       const c = (v, max = 120) => (v === null || v === undefined ? "" : clean(v, max));
-      const fmt = (e) => `  ${c(e.ts, 40)} ${c(e.status, 40)} ${c(e.kind, 20)} ${c(e.chain, 20)} $${roundUsd(Number(e.usd) || 0)} ${c(e.to)} ${c(e.tx)}`.trimEnd();
+      const fmt = (e) => `  ${c(e.ts, 40)} ${c(e.status, 40)} ${c(kindLabel(e), 30)} ${c(e.chain, 20)} $${roundUsd(Number(e.usd) || 0)} ${c(e.to)} ${c(e.tx)}`.trimEnd();
       return out(
         [
           p ? policyText(p) : "choices: NOT SET",
-          `shipping address: ${shipToStatus()} (for Amazon orders; \`settings show\` prints it)`,
+          // Only when one is set: an agent with no address says nothing about Amazon (it is off until Sato Hub turns it on).
+          shipToStatus() === "set" ? "shipping address: set (for Amazon orders; `settings show` prints it)" : null,
           `spent in the last 24 hours: $${roundUsd(spent.usd)}`,
           spent.unreadable.length ? `⚠ ledger lines ${spent.unreadable.join(", ")} are unreadable; spending is stopped until the owner looks` : null,
           `changes (latest 5):\n${changes.map((e) => `  ${c(e.ts, 40)} ${c(e.status, 40)}${e.raises?.length ? ` (${c(e.raises.join("; "), 300)})` : ""}`).join("\n") || "  (none)"}`,
@@ -635,11 +642,11 @@ async function main(command = cmd, args = positionals.slice(1)) {
       }
       if (rest[0] !== undefined && rest[0] !== "show") throw new UsageError("settings show | settings set --ship-name <n> --ship-line1 <l> [--ship-line2 <l>] --ship-city <c> --ship-state <s> --ship-zip <z> --ship-country US --ship-email <e> | settings set --ship-clear");
       const s = shipTo();
-      return out(s ? `Shipping address (kept on this computer only):\n${shipToLines(s).map((l) => `  ${l}`).join("\n")}` : "No shipping address set. Amazon orders need one: `settings set --ship-name ... --ship-line1 ... --ship-city ... --ship-state ... --ship-zip ... --ship-country US --ship-email ...`.", { ship_to: s });
+      return out(s ? `Shipping address (kept on this computer only):\n${shipToLines(s).map((l) => `  ${l}`).join("\n")}` : "No shipping address set. Amazon orders need one: `settings set --stdin` with a JSON object of name, line1, line2, city, state, postalCode, country, email on standard input.", { ship_to: s });
     }
     case "buy": {
       const input = rest[0];
-      const accepts = `buy takes one of:\n${BUY_ACCEPTS.map((a) => `  - ${a}`).join("\n")}\nGift cards, eSIMs and top-ups are bought by name: \`giftcard search <words>\`, then \`giftcard buy <product id> --value <n>\`.`;
+      const accepts = `buy takes one of:\n${BUY_ACCEPTS.map((a) => `  - ${a}`).join("\n")}\nGift cards, eSIMs and top-ups are bought by name: \`giftcard search <words>\`, then \`giftcard buy <product id> --value <one of its values>\`.`;
       if (!input || rest.length > 1) throw new UsageError(accepts);
       const c = classifyBuy(input);
       if (!c.route) throw new UsageError(`that is not something buy can pay for. ${accepts}`);
@@ -673,7 +680,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
           return out(`${card.join("\n")}\nDRY RUN: the checks and the simulation passed. Nothing was signed or sent, and nothing counts against the limits.`, { ...d, card, sato_hub_check: check });
         }
         say(card.join("\n"));
-        const r = await mod.sendUsdc({ to: flags.to, amount: flags.amount });
+        const r = await mod.sendUsdc({ to: flags.to, amount: flags.amount, checkout: "deposit" });
         return out(`Paid ${r.usd} USDC on ${chain === "base" ? "Base" : "Solana"} to ${r.to}\n  ${r.explorer}`, { ...r, chain, kind: "deposit", sato_hub_check: check });
       }
       if (!input || rest.length > 1) throw new UsageError("checkout <solana:...|ethereum:...> | checkout --to <address> --amount <usdc> --chain base|solana  [--approve <code>] [--dry-run]");
@@ -689,7 +696,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
           return out(`${card.join("\n")}\nDRY RUN: the checks and the simulation passed. Nothing was signed or sent, and nothing counts against the limits.`, { ...d, card, sato_hub_check: check });
         }
         say(card.join("\n"));
-        const r = await baseChain.sendUsdc({ to: req.to, amount: req.amount });
+        const r = await baseChain.sendUsdc({ to: req.to, amount: req.amount, checkout: "eip681" });
         return out(`Paid ${r.usd} USDC on Base to ${r.to}\n  ${r.explorer}`, { ...r, chain: "base", kind, sato_hub_check: check });
       }
       if (kind === "solana-pay-transfer" || kind === "solana-pay-transaction") {
@@ -714,8 +721,27 @@ async function main(command = cmd, args = positionals.slice(1)) {
         if (!q) throw new UsageError("giftcard search <words> [--country US] [--kind giftcard|esim|topup]");
         assertBaseAgent();
         const list = await searchProducts(q, { country: flags.country, kind: flags.kind ?? "giftcard" });
-        const line = (p) => `  ${p.slug.padEnd(28)} ${p.name}${p.country ? ` (${p.country})` : ""}${p.in_stock ? "" : " (out of stock)"}`;
-        return out(list.length ? `Bitrefill (paid in USDC on Base; product id, then name):\n${list.map(line).join("\n")}\nNext: \`giftcard buy <product id> --value <n>\` (the price is shown before anything is paid).` : "Bitrefill found nothing for that.", { products: list });
+        // The values on offer for the first few in-stock results, so the next step picks a value that exists.
+        let looked = 0;
+        for (const p of list) {
+          if (!p.in_stock || looked >= 3) continue;
+          looked++;
+          try {
+            p.values = (await productDetail(p.slug)).packages.map((x) => x.value);
+          } catch {
+            p.values = null;
+          }
+        }
+        const line = (p) => `  ${p.slug.padEnd(28)} ${p.name}${p.country ? ` (${p.country})` : ""}${p.in_stock ? "" : " (out of stock)"}${p.values?.length ? `\n${" ".repeat(31)}values: ${p.values.join(", ")}` : ""}`;
+        return out(list.length ? `Bitrefill (paid in USDC on Base; product id, then name):\n${list.map(line).join("\n")}\nNext: \`giftcard buy <product id> --value <one of its values>\` (\`giftcard detail <product id>\` lists the values; the price is shown before anything is paid).` : "Bitrefill found nothing for that.", { products: list });
+      }
+      if (sub === "detail") {
+        const product = rest[1];
+        if (!product || rest.length > 2) throw new UsageError("giftcard detail <product id>");
+        assertBaseAgent();
+        const d = await productDetail(product);
+        const lines = [`${d.name} (${d.id})${d.in_stock ? "" : " (out of stock)"}`, `values: ${d.packages.map((p) => `${p.value}${p.currency ? ` ${p.currency}` : ""}`).join(", ") || "none right now"}`, ...(d.recipient_required ? ["needs --refill <the number or account it goes to>"] : []), `Next: \`giftcard buy ${d.id} --value <one of the values>\` (the price is shown before anything is paid).`];
+        return out(lines.join("\n"), d);
       }
       if (sub === "buy") {
         const product = rest[1];
@@ -776,8 +802,14 @@ async function main(command = cmd, args = positionals.slice(1)) {
       throw new UsageError("giftcard search <words> | giftcard buy <product id> --value <n> | giftcard status <invoice id>");
     }
     case "order": {
+      if (flags.available) {
+        if (rest.length) throw new UsageError("order --available takes nothing else");
+        // Advisory only (unsigned): it decides what the bot tells its owner, never what is signed or paid.
+        const a = await ordersAvailable();
+        return out(a.on ? "Amazon orders: on" : "Amazon orders: off (not switched on yet)", { orders: a.on ? "on" : "off" });
+      }
       const input = rest[0];
-      if (!input || rest.length > 1) throw new UsageError("order <amazon.com link|ASIN> [--chain base|solana] [--approve <code>] [--dry-run]");
+      if (!input || rest.length > 1) throw new UsageError("order <amazon.com link|ASIN> [--chain base|solana] [--approve <code>] [--dry-run] | order --available");
       const r = await placeOrder({ input, chain: flags.chain, approve: flags.approve, dryRun: Boolean(flags["dry-run"]) });
       if (r.dry_run) return out(`${r.card.join("\n")}\nDRY RUN: the quote, the address match and the payment simulation passed. Nothing was signed or paid, and nothing counts against the limits. (Crossmint holds an unpaid quote; it expires on its own.)`, r);
       return out(`${r.card.join("\n")}\nPaid ${Number(r.price.total_base_units) / 1e6} USDC on ${r.chain === "base" ? "Base" : "Solana"} for order ${r.order_id}.\n  ${r.explorer}\nFollow it with \`orders ${r.order_id}\`.`, r);

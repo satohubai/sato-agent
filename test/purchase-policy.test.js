@@ -126,7 +126,9 @@ test("CLI: --purchases is shown, flagged as a raise, and status says whether an 
   assert.match(run("policy", "set", "--purchases", "ask").stdout, /purchases: +ask the owner first/);
   assert.equal(run("policy", "set", "--purchases", "maybe").status, 1);
   const st = run("status");
-  assert.match(st.stdout, /shipping address: not set/);
+  assert.doesNotMatch(st.stdout, /shipping address/, "no address set: no address line (Amazon is off until Sato Hub turns it on)");
+  assert.match(st.stdout, /\(gift cards, checkouts, and links paid through buy\)/);
+  assert.doesNotMatch(st.stdout, /Amazon/);
   const sj = JSON.parse(run("status", "--json").stdout);
   assert.equal(sj.purchases, "ask");
   assert.equal(sj.shipping_address, "not set");

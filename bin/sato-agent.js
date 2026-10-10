@@ -615,6 +615,9 @@ async function main(command = cmd, args = positionals.slice(1)) {
     }
     case "settings": {
       if (rest[0] === "set") {
+        if (flags["ship-clear"] && (flags.stdin || SHIP_FIELDS.some(([, flag]) => flags[flag.slice(2)] !== undefined))) {
+          throw new UsageError("--ship-clear removes the address; it cannot be combined with --stdin or the --ship-* flags");
+        }
         if (flags["ship-clear"]) {
           const removed = clearShipTo();
           return out(removed ? "Shipping address removed from this computer." : "No shipping address was set.", { ship_to: null, removed });
@@ -724,23 +727,31 @@ async function main(command = cmd, args = positionals.slice(1)) {
         }
         const r = await buyGiftcard({ product, value: flags.value, refill: flags.refill, approve: flags.approve, dryRun: Boolean(flags["dry-run"]) }, waitS === undefined ? {} : { waitMs: waitS * 1000 });
         if (r.dry_run) return out(`${r.card.join("\n")}\nDRY RUN: nothing was paid and no payment was signed (the kit did sign in to Bitrefill: a sign-in message, not a payment). Bitrefill holds an unpaid invoice for the price above; it expires on its own.`, r);
-        const p = r.payment;
-        const paid = p.settled ? `Paid ${p.usd} USDC on Base to Bitrefill.\n  ${p.explorer}` : `Signed a payment of ${p.usd} USDC on Base to Bitrefill (HTTP ${p.status}), with no settlement receipt yet. It stays counted against the limits.${p.explorer ? `\n  Check: ${p.explorer}` : ""}`;
-        const st = r.delivery;
-        const delivered = Boolean(st?.state === "delivered" && st.codes.length);
-        // Paid (or signed) but no code in hand: exit 4, so nothing retries the purchase and pays twice.
-        if (!delivered) process.exitCode = 4;
+        // A payment is signed from here on: whatever happens below ends as exit 4 ("do not buy again"), never exit 1.
         const notYet = `Paid, not delivered yet — do not buy again; check with \`giftcard status ${r.invoice_id}\`.`;
-        const deliveryText = delivered
-          ? `Delivered. The code is also saved in a private file on this computer (${r.codes_path}).`
-          : st?.state === "failed"
-            ? `${notYet} Bitrefill reports this order as ${st.delivery_status ?? st.invoice_status}; Bitrefill refunds a failed order to the paying wallet.`
-            : st?.state === "delivered"
-              ? `${notYet} Bitrefill says it is delivered but sent no code yet.`
-              : notYet;
-        if (flags.json) return out("", { invoice_id: r.invoice_id, product: r.product, value: r.value, price_usdc: r.price_usdc, payment: { ...p, body: undefined }, delivery: { state: st?.state, invoice_status: st?.invoice_status, delivery_status: st?.delivery_status }, codes_file: r.codes_path, ...(delivered ? { secret_codes: st.codes } : {}) });
-        // The code is the last line of the output, and the only place it is printed.
-        console.log([...r.card, paid, deliveryText, ...(delivered ? [codesLine(st.codes)] : [])].join("\n"));
+        try {
+          const p = r.payment;
+          const paid = p.settled ? `Paid ${p.usd} USDC on Base to Bitrefill.\n  ${p.explorer}` : `Signed a payment of ${p.usd} USDC on Base to Bitrefill (HTTP ${p.status}), with no settlement receipt yet. It stays counted against the limits.${p.explorer ? `\n  Check: ${p.explorer}` : ""}`;
+          const st = r.delivery;
+          const delivered = Boolean(st?.state === "delivered" && st.codes?.length);
+          // No code in hand, or a code that could not be kept: exit 4, so nothing retries the purchase and pays twice.
+          if (!delivered || !r.codes_path) process.exitCode = 4;
+          const deliveryText = delivered
+            ? r.codes_path
+              ? `Delivered. The code is also saved in a private file on this computer (${r.codes_path}).`
+              : `Delivered, but the code could NOT be saved to a file on this computer (${r.codes_save_error ?? "write failed"}). Keep it from the line below; do not buy again. \`giftcard status ${r.invoice_id}\` asks Bitrefill for it again.`
+            : st?.state === "failed"
+              ? `${notYet} Bitrefill reports this order as ${st.delivery_status ?? st.invoice_status}; Bitrefill refunds a failed order to the paying wallet.`
+              : st?.state === "delivered"
+                ? `${notYet} Bitrefill says it is delivered but sent no code yet.`
+                : notYet;
+          if (flags.json) return out("", { invoice_id: r.invoice_id, product: r.product, value: r.value, price_usdc: r.price_usdc, payment: { ...p, body: undefined }, delivery: { state: st?.state, invoice_status: st?.invoice_status, delivery_status: st?.delivery_status }, codes_file: r.codes_path, ...(r.codes_save_error ? { codes_save_error: r.codes_save_error } : {}), ...(delivered ? { secret_codes: st.codes } : {}) });
+          // The code is the last line of the output, and the only place it is printed.
+          console.log([...r.card, paid, deliveryText, ...(delivered ? [codesLine(st.codes)] : [])].join("\n"));
+        } catch (err) {
+          process.exitCode = 4;
+          errLine(`${notYet} (${clean(err.message, 200)})`);
+        }
         return;
       }
       if (sub === "status") {
@@ -749,7 +760,13 @@ async function main(command = cmd, args = positionals.slice(1)) {
         assertBaseAgent();
         const st = await invoiceStatus(invoice);
         let codes = st.state === "delivered" && st.codes.length ? st.codes : null;
-        if (codes && !savedCodes(invoice)) saveCodes(invoice, null, codes);
+        if (codes && !savedCodes(invoice)) {
+          try {
+            saveCodes(invoice, null, codes);
+          } catch {
+            /* the code is still printed below; a missing private copy never hides it */
+          }
+        }
         codes = codes ?? savedCodes(invoice);
         const head = `Invoice ${invoice}: ${st.state}${st.invoice_status ? ` (invoice ${st.invoice_status}` : ""}${st.delivery_status ? `, delivery ${st.delivery_status})` : st.invoice_status ? ")" : ""}${st.reason ? `. ${st.reason}` : ""}`;
         if (flags.json) return out("", { invoice_id: invoice, state: st.state, invoice_status: st.invoice_status, delivery_status: st.delivery_status, ...(codes ? { secret_codes: codes } : {}) });

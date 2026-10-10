@@ -25,10 +25,19 @@ const hmacKeyFile = () => join(home(), "local-hmac.key");
  */
 function hmacKey() {
   const p = hmacKeyFile();
-  try {
-    writePrivate(p, randomBytes(32).toString("hex") + "\n", { exclusive: true });
-  } catch (err) {
-    if (err.code !== "EEXIST") throw err;
+  if (!fs.existsSync(p)) {
+    // Atomic first creation: the whole key is written to a temp file, then hard-linked into place. link() fails if the
+    // key already exists, so two processes creating it at once can never see an empty or half-written file: the loser
+    // just reads the winner's key.
+    const tmp = `${p}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+    writePrivate(tmp, randomBytes(32).toString("hex") + "\n", { exclusive: true });
+    try {
+      fs.linkSync(tmp, p);
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+    } finally {
+      fs.rmSync(tmp, { force: true });
+    }
   }
   const hex = fs.readFileSync(p, "utf8").trim();
   if (!/^[0-9a-f]{64}$/.test(hex)) throw new Error(`${p} is not a 32-byte key; it was changed by hand. Move it aside to make a new one.`);

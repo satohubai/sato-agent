@@ -477,13 +477,31 @@ export async function buyGiftcard({ product, value, refill, approve, dryRun = fa
   });
   if (!r.signed) throw new Error(`Bitrefill did not ask for payment of invoice ${inv.invoice_id} (HTTP ${r.status}); nothing was paid`);
 
-  const st = await waitForDelivery(inv.invoice_id, d);
-  let codesPath = null;
-  if (st.state === "delivered" && st.codes.length) {
-    codesPath = saveCodes(inv.invoice_id, detail.id, st.codes);
-    record({ kind: "giftcard", status: "delivered", invoice_id: inv.invoice_id, product: detail.id, codes_saved: true });
-  } else if (st.state === "failed") {
-    record({ kind: "giftcard", status: "failed", invoice_id: inv.invoice_id, product: detail.id, invoice_status: st.invoice_status, delivery_status: st.delivery_status });
+  // From here on a payment is signed. Nothing below may throw: an error here would end the command as a plain failure
+  // (exit 1), and a bot could buy the card again. Every problem is reported in the result instead (the CLI exits 4
+  // unless the code is in hand).
+  let st;
+  try {
+    st = await waitForDelivery(inv.invoice_id, d);
+  } catch (err) {
+    st = { state: "pending", invoice_status: null, delivery_status: null, codes: [], reason: clean(err.message, 200) };
   }
-  return { card, invoice_id: inv.invoice_id, product: detail.id, value: pkg.value, price_usdc: inv.price_usdc, payment: r, delivery: st, codes_path: codesPath };
+  st = st ?? { state: "pending", invoice_status: null, delivery_status: null, codes: [] };
+  let codesPath = null;
+  let saveError = null;
+  if (st.state === "delivered" && st.codes.length) {
+    try {
+      codesPath = saveCodes(inv.invoice_id, detail.id, st.codes);
+    } catch (err) {
+      // The code is still printed to the owner; only the private copy is missing. The message never holds the code.
+      saveError = clean(err.code ?? err.message, 120);
+    }
+  }
+  try {
+    if (st.state === "delivered") record({ kind: "giftcard", status: "delivered", invoice_id: inv.invoice_id, product: detail.id, codes_saved: Boolean(codesPath) });
+    else if (st.state === "failed") record({ kind: "giftcard", status: "failed", invoice_id: inv.invoice_id, product: detail.id, invoice_status: st.invoice_status, delivery_status: st.delivery_status });
+  } catch {
+    /* the payment itself is already in the ledger; a lost note about delivery must not end the command */
+  }
+  return { card, invoice_id: inv.invoice_id, product: detail.id, value: pkg.value, price_usdc: inv.price_usdc, payment: r, delivery: st, codes_path: codesPath, codes_save_error: saveError };
 }

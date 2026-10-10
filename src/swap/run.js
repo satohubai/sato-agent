@@ -485,7 +485,7 @@ async function satoSolanaDisclosure(sized, deps) {
   if (typeof body.sato_fee_token === "string" && body.sato_fee_token !== majorAsset.id && body.sato_fee_token.toUpperCase() !== majorAsset.symbol) {
     throw refuse("fee_side_mismatch", `Sato Hub's signed quote takes its fee in ${clean(body.sato_fee_token, 60)}; the kit only accepts it in ${majorAsset.symbol}; nothing was signed`);
   }
-  return { feeBps: body.sato_fee_bps, tier: tierOfSized(sized), disclosure: body.disclosure ?? null, route_id: body.route_id ?? null, receipt_url: body.receipt_url ?? null, side: body.sato_fee_side ?? null, referral: referralView(referrer, body.referral) };
+  return { feeBps: body.sato_fee_bps, tier: tierOfSized(sized), disclosure: body.disclosure ?? null, route_id: body.route_id ?? null, receipt_url: body.receipt_url ?? null, side: body.sato_fee_side ?? null, referral: referralView(referrer, body.referral, body.sato_fee_bps) };
 }
 
 // ---------------------------------------------------------------- prepare

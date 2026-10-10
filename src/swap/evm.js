@@ -1302,7 +1302,7 @@ export function summarizeBaseSwapPlan(plan) {
     // `side`: where the fee is taken, "in" (from what is sold) or "out" (from what is received). Always the USDC / ETH side.
     sato_fee: { bps: plan.fee.bps, tier: plan.fee.tier ?? null, percent: feePercent(plan.fee.bps), recipient: plan.fee.recipient, disclosure: plan.fee.disclosure, side: plan.fee.side ?? "in", asset: (plan.fee.side ?? "in") === "out" ? plan.to : plan.from },
     // null when no referrer was sent; otherwise whether Sato Hub's signed answer recorded it (display only).
-    referral: referralView(plan.referrer_sent ?? null, plan.referral ?? null),
+    referral: referralView(plan.referrer_sent ?? null, plan.referral ?? null, plan.fee.bps),
     long_tail: plan.long_tail ? { side: plan.long_tail, role: plan.long_tail === "out" ? "buying" : "selling", asset: plan.long_tail === "out" ? plan.to : plan.from, address: (plan.long_tail === "out" ? plan.token_out : plan.token_in).address } : null,
     market: plan.market ?? null,
     sell_back: plan.sell_back

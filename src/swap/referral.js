@@ -48,9 +48,12 @@ export function readReferral(answer) {
  * What the owner is shown about the referral on one swap: null when no referrer was sent. `sent` is the normalized referrer
  * in the request, `answer` the signed answer's `referral`. `recorded` is true only when the signed answer names the same
  * referrer (normalized); otherwise `warning` says so. Display only: nothing here can stop a swap.
+ * `feeBps`: the quote's Sato fee. A quote with NO Sato fee (0 bps) has nothing to share, and Sato Hub answers `referral: null`
+ * for it: that is not a failure, so the view is null (nothing printed, nothing reported) whatever the answer says.
  */
-export function referralView(sent, answer) {
+export function referralView(sent, answer, feeBps) {
   if (!sent) return null;
+  if (feeBps === 0) return null;
   const got = readReferral(answer);
   const recorded = Boolean(got) && normalizeReferrer(got.referrer) === sent;
   return {
@@ -71,12 +74,14 @@ export function referralFeeSentence(view) {
 
 /**
  * Tell Sato Hub which transaction a confirmed swap was, so the referrer can be paid. POST <origin>/api/route/settle with
- * { route_id, chain, tx }. ONE attempt, a short timeout, never throws. Returns { attempted, ok, status?, error? }.
+ * { route_id, chain, tx }. ONE attempt, a short timeout, never throws. Returns { attempted, ok, recorded, status?, code? }:
+ * ok only for 200 { ok: true, recorded: true }; any other answer (400 bad_request, 404, 409 different_tx / tx_already_used /
+ * chain_mismatch / tx_mismatch, 429, 503, a timeout) is a `code` for the one line the owner sees, never a retry.
  * Called only for a swap that carried a referrer (the caller checks); with none, nothing is sent at all.
  * deps: fetchImpl, origin.
  */
 export async function settleReferral({ routeId, chain, tx }, deps = {}) {
-  if (!routeId || !tx) return { attempted: false, ok: false, error: "the swap has no route id to report" };
+  if (!routeId || !tx) return { attempted: false, ok: false, recorded: false, code: "no_route_id", error: "no_route_id" };
   try {
     const origin = deps.origin ?? new URL(MCP_URL).origin;
     const res = await (deps.fetchImpl ?? fetch)(`${origin}${SETTLE_PATH}`, {
@@ -85,12 +90,26 @@ export async function settleReferral({ routeId, chain, tx }, deps = {}) {
       body: JSON.stringify({ route_id: String(routeId), chain, tx: String(tx) }),
       signal: AbortSignal.timeout(deps.timeoutMs ?? SETTLE_TIMEOUT_MS),
     });
-    // Read nothing from the body but the status: the answer is not used for anything.
-    return res.ok ? { attempted: true, ok: true, status: res.status } : { attempted: true, ok: false, status: res.status, error: `HTTP ${res.status}` };
+    // Only the status and, for a refusal, Sato Hub's short error code are read. 200 { ok: true, recorded: true } is the one success.
+    let body = null;
+    try {
+      body = JSON.parse(await res.text());
+    } catch {
+      body = null;
+    }
+    if (res.status === 200 && body?.ok === true && body?.recorded === true) return { attempted: true, ok: true, recorded: true, status: 200 };
+    return failed(res.status, res.status === 200 ? "not_confirmed" : errorCode(body) ?? `http_${res.status}`);
   } catch (err) {
-    return { attempted: true, ok: false, error: clean(err?.message ?? "request failed", 120) };
+    return failed(null, err?.name === "TimeoutError" || err?.name === "AbortError" ? "timeout" : "no_answer");
   }
 }
+
+const failed = (status, code) => ({ attempted: true, ok: false, recorded: false, ...(status ? { status } : {}), code, error: code });
+/** Sato Hub's short error code from a refusal body ({ error } or { code }), or null. Only a plain token is shown to the owner. */
+const errorCode = (body) => {
+  const c = body && typeof body === "object" ? (typeof body.error === "string" ? body.error : typeof body.code === "string" ? body.code : null) : null;
+  return c && /^[A-Za-z0-9_.-]{1,40}$/.test(c) ? c : null;
+};
 
 /**
  * After a confirmed swap: report it if (and only if) the swap carried a referrer. `display` is the swap's display, `result`
@@ -102,13 +121,13 @@ export async function reportSettlement(display, result, deps = {}) {
     if (!display?.referral?.sent) return null;
     return await settleReferral({ routeId: result?.route_id ?? display.route_id ?? display.sato_fee?.route_id ?? null, chain: display.chain, tx: result?.tx }, deps);
   } catch (err) {
-    return { attempted: true, ok: false, error: clean(err?.message ?? "failed", 120) };
+    return failed(null, "no_answer");
   }
 }
 
-/** The line that tells the owner what happened to the report: one sentence, never an alarm. */
+/** The one line that says what happened to the report. Never an alarm: the swap is done and was not affected. */
 export function settlementLine(outcome) {
   if (!outcome) return null;
-  if (outcome.ok) return "Told Sato Hub which transaction this swap was, so the referrer can be paid (Sato Hub keeps it private).";
-  return `Note: could not tell Sato Hub which transaction this swap was (${outcome.error ?? "no answer"}), so the referrer's share for it may be delayed. The swap itself is done and unaffected. It was not retried.`;
+  if (outcome.ok) return "Referral recorded.";
+  return `Note: the referral for this swap could not be recorded (${clean(outcome.code ?? outcome.error ?? "no_answer", 40)}). The swap itself is unaffected.`;
 }

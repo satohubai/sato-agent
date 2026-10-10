@@ -20,11 +20,18 @@ export function satoResponse(name, opts = {}) {
   return satoResponseFrom(load(`${name}-route`), load(`${name}-build`), opts);
 }
 
-/** The same shape from a KyberSwap `routes` body and a `route/build` body (recorded, or fetched live by the fork test). */
-export function satoResponseFrom(routeBody, buildBody, { signedAt = new Date().toISOString(), tokenIn, tokenOut } = {}) {
+/**
+ * The same shape from a KyberSwap `routes` body and a `route/build` body (recorded, or fetched live by the fork test).
+ * `feeSide`: "in" | "out" sets `sato_fee_side` (as the updated Sato Hub app does); left undefined the field is absent (an
+ * answer from before the app disclosed it). `market`: carry the route summary's USD figures and priceImpact, if it has them.
+ */
+export function satoResponseFrom(routeBody, buildBody, { signedAt = new Date().toISOString(), tokenIn, tokenOut, feeSide, market = false } = {}) {
   const route = routeBody.data.routeSummary;
   const build = buildBody.data;
+  const by = route.extraFee?.chargeFeeBy ?? "currency_in";
   return {
+    ...(feeSide !== undefined ? { sato_fee_side: feeSide } : {}),
+    ...(market ? { route_summary: { amountInUsd: route.amountInUsd, amountOutUsd: route.amountOutUsd, priceImpact: route.priceImpact } } : {}),
     mode: "build-tx",
     route_id: "rt_fixture00001",
     venue: "kyberswap",
@@ -35,8 +42,7 @@ export function satoResponseFrom(routeBody, buildBody, { signedAt = new Date().t
     amount_out: route.amountOut,
     sato_fee_bps: 15,
     sato_fee_recipient: "0xcEE53Eb001d4d1743EF9df333Dcf45bC38622bE9",
-    disclosure:
-      "On KyberSwap the fee is the feeAmount/feeReceiver parameter on the route itself (chargeFeeBy=currency_in, in bps), taken by the KyberSwap router on the input token; the quoted amountOut already reflects it.",
+    disclosure: `On KyberSwap the fee is the feeAmount/feeReceiver parameter on the route itself (chargeFeeBy=${by}, in bps), taken by the KyberSwap router on the ${by === "currency_out" ? "output" : "input"} token; the quoted amountOut already reflects it.`,
     chosen_by: [],
     alternatives: [],
     preflight: null,

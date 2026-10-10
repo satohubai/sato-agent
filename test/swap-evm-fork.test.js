@@ -49,11 +49,18 @@ async function giveUsdc(addr, units) {
   throw new Error("could not find the USDC balance slot");
 }
 
-/** A live KyberSwap route + build for the fork wallet, wrapped the way Sato Hub answers. Same fee parameters Sato sends. */
+const MAJORS = new Set([USDC_BASE, TOKENS.WETH.address, TOKENS.ETH.address].map((a) => a.toLowerCase()));
+const DEGEN = "0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed";
+
+/**
+ * A live KyberSwap route + build for the fork wallet, wrapped the way Sato Hub answers. Same fee parameters Sato sends:
+ * the fee on the input, except when a long-tail token is SOLD, where it is on the output (and the answer says so).
+ */
 async function liveSatoResponse({ tokenIn, tokenOut, units, slippageBps }) {
   const host = "https://aggregator-api.kyberswap.com/base/api/v1";
   const headers = { "user-agent": "SatoHub-swap-dev/1.0", "x-client-id": "satohub", accept: "application/json" };
-  const q = new URLSearchParams({ tokenIn, tokenOut, amountIn: units.toString(), feeAmount: "15", chargeFeeBy: "currency_in", isInBps: "true", feeReceiver: SATO_FEE_RECIPIENT });
+  const sellsLongTail = !MAJORS.has(tokenIn.toLowerCase());
+  const q = new URLSearchParams({ tokenIn, tokenOut, amountIn: units.toString(), feeAmount: "15", chargeFeeBy: sellsLongTail ? "currency_out" : "currency_in", isInBps: "true", feeReceiver: SATO_FEE_RECIPIENT });
   const route = await (await fetch(`${host}/routes?${q}`, { headers, signal: AbortSignal.timeout(30_000) })).json();
   assert.equal(route.code, 0, `kyber routes: ${route.message}`);
   await sleep(1500);
@@ -67,7 +74,7 @@ async function liveSatoResponse({ tokenIn, tokenOut, units, slippageBps }) {
   ).json();
   assert.equal(build.code, 0, `kyber build: ${build.message}`);
   await sleep(1500);
-  return satoResponseFrom(route, build);
+  return satoResponseFrom(route, build, { feeSide: sellsLongTail ? "out" : "in", market: true });
 }
 
 const gasPaid = async (hash) => {
@@ -248,4 +255,158 @@ test("fork: the kit's simulation runs with the chain's real base fee, so BASEFEE
   assert.equal(plain, 0n, "eth_simulateV1's default block has a zero base fee: exactly what a hostile pool could look for");
   const real = await call(evm.buildSimulationRequest({ taker: me, calls: [{ to: probe, data: "0x" }], baseFeePerGas: latest.baseFeePerGas, maxPriorityFeePerGas: 1_000_000n }));
   assert.equal(real, latest.baseFeePerGas);
+});
+
+// ---------------------------------------------------------------- any ERC-20: DEGEN against USDC and ETH, live routes, real simulation
+
+const tokenBal = (token, owner) => pub.readContract({ address: token, abi: erc20Abi, functionName: "balanceOf", args: [owner] });
+const degenAllowance = () => pub.readContract({ address: DEGEN, abi: erc20Abi, functionName: "allowance", args: [me, KYBER_ROUTER_BASE] });
+
+test("fork: BUY DEGEN with USDC: fee in USDC, the sell-back is simulated against a live route and never sent, balances move within min_out", { skip: !enabled }, async () => {
+  const usdc0 = await usdcOf(me);
+  const degen0 = await tokenBal(DEGEN, me);
+  const feeUsdc0 = await usdcOf(SATO_FEE_RECIPIENT);
+  const feeDegen0 = await tokenBal(DEGEN, SATO_FEE_RECIPIENT);
+  const nonce0 = await pub.getTransactionCount({ address: me });
+
+  const { verify, sent, response, intent } = await planLive({ from: "USDC", to: DEGEN, amount: "20" });
+  assert.equal(sent.token_out, DEGEN);
+  assert.equal(intent.tokenOut.decimals, 18, "read from the chain");
+  assert.equal(intent.tokenOut.symbol, "DEGEN");
+  assert.equal(response.sato_fee_side, "in");
+  const plan = await verify(); // the DEFAULT sell-back builder: KyberSwap's live API
+  assert.equal(plan.fee.side, "in");
+  assert.equal(plan.long_tail, "out");
+  assert.equal(plan.sell_back.checked, true);
+  assert.equal(plan.sell_back.sold_units, plan.simulation.out_delta, "everything the buy delivers");
+  assert.ok(plan.sell_back.loss_bps < plan.sell_back.allowed_loss_bps, `round trip lost ${plan.sell_back.loss_bps} bps`);
+  assert.equal(plan.simulation.fee_seen, 30_000n, "15 bps of 20 USDC reached the fee address");
+  assert.ok(plan.market && plan.market.amount_in_usd > 0 && plan.market.amount_out_usd > 0, "the route's USD figures are carried");
+  assert.equal(await usdcOf(me), usdc0, "verifying moves nothing");
+
+  const out = await executeBaseSwap(plan, { usdNotional: plan.usd });
+  assert.equal(await pub.getTransactionCount({ address: me }), nonce0 + 2, "approve + swap: the sell-back leg was never sent");
+  assert.equal(await usdcOf(me), usdc0 - 20_000_000n, "exactly the amount left");
+  const degen1 = await tokenBal(DEGEN, me);
+  assert.ok(degen1 - degen0 >= plan.min_out, `received ${degen1 - degen0} >= min_out ${plan.min_out}`);
+  assert.equal(out.received.amount, evm.unitsToDecimal(degen1 - degen0, 18));
+  assert.equal(out.received.basis, "receipt_logs");
+  assert.equal((await usdcOf(SATO_FEE_RECIPIENT)) - feeUsdc0, 30_000n, "the fee landed in USDC, not in DEGEN");
+  assert.equal((await tokenBal(DEGEN, SATO_FEE_RECIPIENT)) - feeDegen0, 0n);
+  assert.equal(await allowanceOf(me), 0n);
+  assert.deepEqual(out.warnings, []);
+  assert.deepEqual(out.sato_fee, { bps: 15, recipient: SATO_FEE_RECIPIENT, side: "in" });
+  assert.equal(actions().filter((x) => x.kind === "swap").at(-1).token_out, DEGEN);
+});
+
+test("fork: the router checks its minimum against the NET output of a sale (what the agent receives), not the output before the fee", { skip: !enabled }, async () => {
+  const have = await tokenBal(DEGEN, me);
+  assert.ok(have > 0n, "the previous test bought DEGEN");
+  const { response, intent } = await planLive({ from: DEGEN, to: "USDC", amount: evm.unitsToDecimal(have, 18) });
+  const plan = await verifyBaseSwapPlan(response, intent, { verifySignature: passes });
+  const net = plan.simulation.out_delta;
+  const gross = net + plan.simulation.fee_seen;
+  assert.ok(gross > net);
+  // the same transaction with its minimum set to exactly what the simulation delivers: it passes. One unit more: it reverts,
+  // although the output BEFORE the fee is far above that. So the compared amount is the net.
+  const ex = decodeFunctionData({ abi: evm.KYBER_ROUTER_ABI, data: response.tx.data }).args[0];
+  const withMin = (min) => {
+    const copy = JSON.parse(JSON.stringify(ex, (_k, v) => (typeof v === "bigint" ? `${v}n` : v)), (_k, v) => (typeof v === "string" && /^\d+n$/.test(v) ? BigInt(v.slice(0, -1)) : v));
+    copy.desc.minReturnAmount = min;
+    return encodeFunctionData({ abi: evm.KYBER_ROUTER_ABI, functionName: "swap", args: [copy] });
+  };
+  const latest = await pub.getBlock({ blockTag: "latest" });
+  const run = async (min) => {
+    const calls = [
+      { to: DEGEN, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [KYBER_ROUTER_BASE, have] }), gas: 100_000n },
+      { to: KYBER_ROUTER_BASE, data: withMin(min), gas: 2_000_000n },
+    ];
+    const [blk] = await rpc("eth_simulateV1", evm.buildSimulationRequest({ taker: me, calls, baseFeePerGas: latest.baseFeePerGas, maxPriorityFeePerGas: 1_000_000n }));
+    return blk.calls[1];
+  };
+  const atNet = await run(net);
+  assert.equal(atNet.status, "0x1", "a minimum equal to the net output passes");
+  const above = await run(net + 1n);
+  assert.equal(above.status, "0x0", `a minimum one unit above the net output reverts, though ${gross} was produced before the fee`);
+  assert.match(JSON.stringify(above), /Return amount is not enough/i);
+});
+
+test("fork: SELL DEGEN for USDC: the fee comes off the USDC received (FEE_ON_DST), balances and the fee address check out", { skip: !enabled }, async () => {
+  const degen0 = await tokenBal(DEGEN, me);
+  const usdc0 = await usdcOf(me);
+  const feeUsdc0 = await usdcOf(SATO_FEE_RECIPIENT);
+  const feeDegen0 = await tokenBal(DEGEN, SATO_FEE_RECIPIENT);
+  const nonce0 = await pub.getTransactionCount({ address: me });
+
+  const { verify, response } = await planLive({ from: DEGEN, to: "USDC", amount: evm.unitsToDecimal(degen0, 18) });
+  assert.equal(response.sato_fee_side, "out");
+  assert.ok((decodeFunctionData({ abi: evm.KYBER_ROUTER_ABI, data: response.tx.data }).args[0].desc.flags & evm.KYBER_FLAGS.FEE_ON_DST) !== 0n, "Kyber built it with FEE_ON_DST");
+  const plan = await verify();
+  assert.equal(plan.fee.side, "out");
+  assert.equal(plan.long_tail, "in");
+  assert.equal(plan.sell_back, null);
+  assert.equal(plan.approval.needed, true);
+  assert.ok(plan.usd > 0, "the USDC measured is the value held to the limits");
+
+  const out = await executeBaseSwap(plan, { usdNotional: plan.usd });
+  assert.equal(await pub.getTransactionCount({ address: me }), nonce0 + 2);
+  assert.equal(await tokenBal(DEGEN, me), 0n, "all of it sold");
+  const net = (await usdcOf(me)) - usdc0;
+  const fee = (await usdcOf(SATO_FEE_RECIPIENT)) - feeUsdc0;
+  assert.ok(net >= plan.min_out, `the net USDC received ${net} >= min_out ${plan.min_out}`);
+  assert.equal(out.received.amount, evm.unitsToDecimal(net, 6), "the receipt's Transfer logs say what the wallet got: net of the fee");
+  assert.equal(out.received.basis, "receipt_logs");
+  const gross = net + fee;
+  assert.ok(fee > 0n && fee * 10_000n <= gross * 15n && fee * 10_000n >= gross * 15n - 10_000n, `15 bps of the gross ${gross} went to the fee address (${fee})`);
+  assert.equal(fee, plan.simulation.fee_seen, "the kit's simulation predicted it exactly");
+  assert.equal((await tokenBal(DEGEN, SATO_FEE_RECIPIENT)) - feeDegen0, 0n, "no DEGEN ever reached the fee address");
+  assert.equal(await degenAllowance(), 0n, "the DEGEN approval is back to 0");
+  assert.deepEqual(out.warnings, []);
+  assert.deepEqual(out.sato_fee, { bps: 15, recipient: SATO_FEE_RECIPIENT, side: "out" });
+  const row = actions().filter((x) => x.kind === "swap").at(-1);
+  assert.deepEqual([row.status, row.asset_in, row.asset_out, row.sato_fee_side], ["confirmed", "DEGEN", "USDC", "out"]);
+  assert.equal(row.approve_tx, out.approve_tx);
+});
+
+test("fork: ETH -> DEGEN -> ETH: the fee in native ETH on both sides of a round trip", { skip: !enabled }, async () => {
+  const feeEth0 = await pub.getBalance({ address: SATO_FEE_RECIPIENT });
+  const buy = await planLive({ from: "ETH", to: DEGEN, amount: "0.01" });
+  const buyPlan = await buy.verify({ usdNotional: 25 });
+  assert.equal(buyPlan.sell_back.checked, true);
+  assert.equal(buyPlan.usd, 25, "no USDC leg: the caller's independent figure counts");
+  await executeBaseSwap(buyPlan, { usdNotional: 25 });
+  const feeEth1 = await pub.getBalance({ address: SATO_FEE_RECIPIENT });
+  assert.equal(feeEth1 - feeEth0, 15_000_000_000_000n, "15 bps of 0.01 ETH, on the input");
+
+  const have = await tokenBal(DEGEN, me);
+  assert.ok(have > 0n);
+  const eth0 = await pub.getBalance({ address: me });
+  const sell = await planLive({ from: DEGEN, to: "ETH", amount: evm.unitsToDecimal(have, 18) });
+  const sellPlan = await sell.verify({ usdNotional: 25 });
+  assert.equal(sellPlan.fee.side, "out");
+  const out = await executeBaseSwap(sellPlan, { usdNotional: 25 });
+  assert.equal(await tokenBal(DEGEN, me), 0n);
+  const gas = (await gasPaid(out.tx)) + (await gasPaid(out.approve_tx));
+  const gained = (await pub.getBalance({ address: me })) - eth0 + gas;
+  const reported = BigInt(Math.round(Number(out.received.amount) * 1e18));
+  assert.equal(out.received.basis, "router_event", "ETH out leaves no Transfer log: the router's own event is read, and it is the net of the fee");
+  assert.ok(reported >= gained - 10n ** 12n && reported <= gained + 10n ** 12n, `kit read ${reported}, balances say ${gained}`);
+  assert.ok(gained >= sellPlan.min_out);
+  const feeOut = (await pub.getBalance({ address: SATO_FEE_RECIPIENT })) - feeEth1;
+  // exact: the router's own event is the net, so net + fee is the gross and the fee is 15 bps of it
+  const net = evm.decimalToUnits(out.received.amount, 18);
+  const gross = net + feeOut;
+  assert.ok(feeOut > 0n && feeOut * 10_000n <= gross * 15n && feeOut * 10_000n >= gross * 15n - 10_000n, `15 bps of the gross ${gross} (${feeOut})`);
+  assert.equal(feeOut, sellPlan.simulation.fee_seen, "the kit's simulation predicted it exactly");
+  assert.equal(await degenAllowance(), 0n);
+});
+
+test("fork: a token that does not exist, or has no readable decimals, never reaches Sato Hub", { skip: !enabled }, async () => {
+  let asked = 0;
+  const callTool = async () => (asked++, { text: "", structured: null, isError: true });
+  // an address with no code, and a contract that is not a token (the Kyber router)
+  for (const bad of ["0x000000000000000000000000000000000000dEaD", KYBER_ROUTER_BASE]) {
+    await assert.rejects(planBaseSwap({ from: "USDC", to: bad, amount: "5", slippageBps: 100 }, { taker: me, callTool }), (e) => e instanceof Refused && e.refusals[0].rule === "token_unreadable", bad);
+  }
+  assert.equal(asked, 0);
 });

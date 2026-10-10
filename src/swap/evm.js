@@ -1,4 +1,21 @@
-// Swaps on Base between USDC and ETH / WETH, through Sato Hub's swap tool.
+// Swaps on Base through Sato Hub's swap tool: USDC <-> ETH / WETH, and ANY ERC-20 token
+// against USDC, ETH or WETH (the "major" side). One side is always a major; a swap of one
+// long-tail token for another is not supported (a later phase).
+//
+// Sato Hub's fee is always taken in the major side, never in the long-tail token:
+//   buying a long-tail token    fee in the input  (chargeFeeBy=currency_in, flags 0x280)
+//   selling a long-tail token   fee in the output (chargeFeeBy=currency_out, FEE_ON_DST 0x40, flags 0x2c0)
+// The fee side is read from Sato Hub's disclosure (`sato_fee_side`: "in" | "out"), or inferred from
+// which side is the major when the field is absent, and the decoded calldata must match it exactly.
+//
+// A token's decimals, symbol and name are read from the chain (never from a resolver): a token with
+// no code, or with unreadable decimals, is refused (token_unreadable).
+//
+// BUYING a long-tail token also runs a sell-back simulation: right after the buy, in one more
+// eth_simulateV1, everything the buy delivered is sold back to the major through a live KyberSwap
+// route (no Sato fee on that leg; it is only simulated, never sent). A token that cannot be sold
+// back, whose round trip loses more than the owner's slippage and the fees allow, or that takes a
+// fee on transfer, is refused before anything is signed.
 //
 //   plan     ask Sato Hub (onchain_agent_swap, mode build-tx) for an UNSIGNED
 //            transaction. Pinned token addresses, strict amounts.
@@ -43,6 +60,7 @@ import { record, release, reserve } from "../ledger.js";
 import { withLock } from "../store.js";
 import { callTool as satoCallTool } from "../satohub.js";
 import { unitsToUsd } from "../amount.js";
+import { USER_AGENT } from "../version.js";
 
 // ---------------------------------------------------------------- pinned values
 
@@ -58,11 +76,24 @@ export const MAX_SATO_FEE_BPS = 15;
 export const BASE_CHAIN_ID = 8453;
 export const VENUE = "kyberswap";
 
+/** The "major" assets: one side of every swap is one of these. Anything else is a long-tail token, read from the chain. */
 export const TOKENS = Object.freeze({
-  USDC: Object.freeze({ symbol: "USDC", address: USDC_BASE, decimals: 6, native: false }),
-  WETH: Object.freeze({ symbol: "WETH", address: WETH_BASE, decimals: 18, native: false }),
-  ETH: Object.freeze({ symbol: "ETH", address: NATIVE_PLACEHOLDER, decimals: 18, native: true }),
+  USDC: Object.freeze({ symbol: "USDC", name: "USD Coin", address: USDC_BASE, decimals: 6, native: false, major: true }),
+  WETH: Object.freeze({ symbol: "WETH", name: "Wrapped Ether", address: WETH_BASE, decimals: 18, native: false, major: true }),
+  ETH: Object.freeze({ symbol: "ETH", name: "Ether", address: NATIVE_PLACEHOLDER, decimals: 18, native: true, major: true }),
 });
+
+/** KyberSwap's public aggregator API on Base: used only to build the simulated sell-back leg (Sato Hub builds the real swap). */
+export const KYBER_API_BASE = "https://aggregator-api.kyberswap.com/base/api/v1";
+const KYBER_TIMEOUT_MS = 20_000;
+/** The sell-back is only simulated, so it is built with a wide slippage: a revert then means the token cannot be sold, not that the price moved. The round-trip rule decides. */
+const SELL_BACK_SLIPPAGE_BPS = 1000;
+/** The round trip (buy, then sell everything back) may lose 2x the owner's slippage, 2x the Sato fee and this margin for pool fees and spread. */
+export const ROUND_TRIP_MARGIN_BPS = 300;
+/** How far below min_out Kyber's own rounding can put the minimum in the calldata when the fee is on the output (measured: 2; one unit of margin). */
+const FEE_OUT_ROUNDING_UNITS = 3n;
+/** A buy that delivers this much less than the swap's own reported output took a fee on transfer. */
+export const TRANSFER_FEE_TOLERANCE_BPS = 10;
 
 // The router entry point the kit decodes. Source: MetaAggregationRouterV2 at KYBER_ROUTER_BASE, verified on Sourcify
 // (chain 8453, full match, 2024-08-08): swap(SwapExecutionParams) = selector 0xe21fd0e9, with
@@ -211,26 +242,158 @@ function uintOf(v) {
   return null;
 }
 
-// ---------------------------------------------------------------- intent
+// ---------------------------------------------------------------- tokens and intent
 
-function resolveSide(symbol, label) {
-  const t = TOKENS[String(symbol ?? "").toUpperCase()];
-  if (!t) throw new Error(`${label}: "${symbol}" is not supported on Base (USDC, ETH or WETH)`);
-  return t;
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+/** Symbols a long-tail token must not be shown under (a scam token can call itself USDC): the label then carries its address. */
+const SPOOFABLE_SYMBOLS = new Set([...Object.keys(TOKENS), "USDT", "DAI", "EURC", "WBTC", "CBBTC", "BTC", "SOL", "ETH"]);
+const MAX_DECIMALS = 36;
+const bytes32TextAbi = (name) => [{ type: "function", name, stateMutability: "view", inputs: [], outputs: [{ name: "", type: "bytes32" }] }];
+
+/** Text a token contract returns is untrusted data: one printable line, no control or direction characters, short. */
+export function cleanTokenText(value, max = 48) {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max);
 }
 
-/** Validate what the owner asked for. Throws a plain Error on bad input; nothing is sent anywhere. */
-export function parseIntent({ from, to, amount, slippageBps }) {
-  const tokenIn = resolveSide(from, "--from");
-  const tokenOut = resolveSide(to, "--to");
-  if (tokenIn.symbol === tokenOut.symbol) throw new Error("--from and --to are the same token");
-  if (tokenIn.symbol !== "USDC" && tokenOut.symbol !== "USDC") throw new Error("only USDC <-> ETH and USDC <-> WETH swaps are supported on Base");
+const shortAddress = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+const majorByAddress = (a) => Object.values(TOKENS).find((t) => same(t.address, a)) ?? null;
+/** A major asset from its symbol or its address, with no chain read; null if it is neither. */
+function majorOf(input) {
+  const raw = String(input ?? "").trim();
+  if (Object.hasOwn(TOKENS, raw.toUpperCase())) return TOKENS[raw.toUpperCase()];
+  return isAddress(raw, { strict: false }) ? majorByAddress(raw) : null;
+}
+
+const unreadable = (message, observed = null) => new Refused([refusal("token_unreadable", message, null, observed)]);
+
+async function readText(pub, address, name) {
+  try {
+    const v = await pub.readContract({ address, abi: erc20Abi, functionName: name });
+    if (typeof v === "string") return v;
+  } catch {
+    /* some old tokens (MKR, SAI) return bytes32: try that next */
+  }
+  try {
+    const v = await pub.readContract({ address, abi: bytes32TextAbi(name), functionName: name });
+    if (typeof v === "string" && /^0x[0-9a-fA-F]{64}$/.test(v)) return Buffer.from(v.slice(2), "hex").toString("utf8").replace(/\0+$/g, "");
+  } catch {
+    /* unreadable: the caller falls back */
+  }
+  return null;
+}
+
+/**
+ * A token on Base from its symbol (USDC, ETH, WETH) or its 0x contract address.
+ * The three major assets are known without a chain read. Any other token has its decimals, symbol
+ * and name READ FROM THE CHAIN here, never taken from a resolver or from Sato Hub: no code at the
+ * address, or decimals that cannot be read, refuses the token (rule token_unreadable). The symbol
+ * and name are the contract's own words, cleaned of control characters, and are display only.
+ * Returns { address, symbol, name, decimals, native, major }.
+ *
+ * deps: { c (a client with .pub) | getClient }
+ */
+export async function resolveBaseToken(addressOrSymbol, deps = {}) {
+  const raw = String(addressOrSymbol ?? "").trim();
+  const known = majorOf(raw);
+  if (known) return { ...known };
+  if (!isAddress(raw, { strict: false })) throw new Error(`"${raw}" is not USDC, ETH, WETH or a token's 0x contract address on Base`);
+  if (!isAddress(raw)) throw new Error(`"${raw}" is not a valid address: its capital letters do not match the checksum (a typo?)`);
+  const address = getAddress(raw);
+  if (address === ZERO_ADDRESS) throw new Error("the zero address is not a token");
+
+  const pub = (deps.c ?? deps.getClient?.() ?? clients()).pub;
+  let code;
+  try {
+    code = await pub.getCode({ address });
+  } catch (err) {
+    throw unreadable(`the token at ${address} could not be read from Base (${errText(err).slice(0, 160)}), so nothing is bought or sold`, address);
+  }
+  if (!code || code === "0x") throw unreadable(`there is no contract at ${address} on Base, so it is not a token this kit can swap`, address);
+  let decimals;
+  try {
+    decimals = await pub.readContract({ address, abi: erc20Abi, functionName: "decimals" });
+  } catch (err) {
+    throw unreadable(`the contract at ${address} does not report its decimals (${errText(err).slice(0, 120)}), so an amount of it cannot be counted exactly`, address);
+  }
+  const d = typeof decimals === "bigint" ? Number(decimals) : decimals;
+  if (!Number.isInteger(d) || d < 0 || d > MAX_DECIMALS) throw unreadable(`the contract at ${address} reports decimals this kit cannot use (${String(decimals).slice(0, 20)}; it accepts 0 to ${MAX_DECIMALS})`, String(decimals).slice(0, 20));
+  const [symbolRaw, nameRaw] = await Promise.all([readText(pub, address, "symbol"), readText(pub, address, "name")]);
+  const symbol = cleanTokenText(symbolRaw, 24) || shortAddress(address);
+  const name = cleanTokenText(nameRaw, 48) || null;
+  return { address, symbol, name, decimals: d, native: false, major: false };
+}
+
+/** How a token is named in the plan, the approval and the ledger: its symbol; a long-tail token that calls itself a major also carries its address. */
+function labelOf(t) {
+  if (t.major) return t.symbol;
+  return SPOOFABLE_SYMBOLS.has(t.symbol.toUpperCase()) ? `${t.symbol} ${shortAddress(t.address)}` : t.symbol;
+}
+
+/** The intent for two resolved tokens. Throws a plain Error on bad input; nothing is sent anywhere. */
+function buildIntent(tokenInRaw, tokenOutRaw, amount, slippageBps) {
+  const tokenIn = { ...tokenInRaw, major: Boolean(tokenInRaw.major) };
+  const tokenOut = { ...tokenOutRaw, major: Boolean(tokenOutRaw.major) };
+  if (same(tokenIn.address, tokenOut.address)) throw new Error("--from and --to are the same token");
+  if (tokenIn.major && tokenOut.major) {
+    if (tokenIn.symbol !== "USDC" && tokenOut.symbol !== "USDC") throw new Error("only USDC <-> ETH and USDC <-> WETH swaps are supported between the main assets on Base");
+  } else if (!tokenIn.major && !tokenOut.major) {
+    throw new Error("one side of a swap must be USDC, ETH or WETH: a swap of one token for another token is not supported yet");
+  }
   const amountIn = decimalToUnits(amount, tokenIn.decimals, `${tokenIn.symbol} amount`);
   // 500 bps is the most the owner's policy can allow; a library caller is held to the same cap.
   if (!Number.isInteger(slippageBps) || slippageBps < 1 || slippageBps > 500) {
     throw new Error(`slippage must be a whole number of basis points from 1 to 500 (got ${slippageBps})`);
   }
-  return { from: tokenIn.symbol, to: tokenOut.symbol, tokenIn, tokenOut, amount: unitsToDecimal(amountIn, tokenIn.decimals), amountIn, slippageBps };
+  // Which side is the long-tail token, if any. The fee is always taken on the other (major) side.
+  const longTail = tokenIn.major && tokenOut.major ? null : tokenIn.major ? "out" : "in";
+  return {
+    from: labelOf(tokenIn),
+    to: labelOf(tokenOut),
+    tokenIn,
+    tokenOut,
+    amount: unitsToDecimal(amountIn, tokenIn.decimals),
+    amountIn,
+    slippageBps,
+    longTail,
+    /** Where the Sato Hub fee is expected: on the input when buying a long-tail token (and between majors), on the output when selling one. */
+    feeSide: longTail === "in" ? "out" : "in",
+  };
+}
+
+/**
+ * Validate what the owner asked for, with no chain read: `from` / `to` are USDC, ETH, WETH (or their
+ * addresses), or tokens already resolved by resolveBaseToken. A bare token address needs resolveIntent.
+ */
+export function parseIntent({ from, to, amount, slippageBps }) {
+  const side = (v, label) => {
+    if (v && typeof v === "object" && typeof v.address === "string" && Number.isInteger(v.decimals)) return v;
+    const t = majorOf(v);
+    if (t) return t;
+    if (isAddress(String(v ?? "").trim(), { strict: false })) throw new Error(`${label}: a token address must be resolved first (resolveBaseToken / resolveIntent)`);
+    throw new Error(`${label}: "${v}" is not supported on Base (USDC, ETH, WETH or a token's 0x contract address)`);
+  };
+  return buildIntent(side(from, "--from"), side(to, "--to"), amount, slippageBps);
+}
+
+/** parseIntent for any token: addresses are resolved (decimals, symbol, name read from the chain) first. */
+export async function resolveIntent({ from, to, amount, slippageBps }, deps = {}) {
+  const resolve = async (v, label) => {
+    if (v && typeof v === "object" && typeof v.address === "string" && Number.isInteger(v.decimals)) return v;
+    try {
+      return await resolveBaseToken(v, deps);
+    } catch (err) {
+      if (err instanceof Refused || !(err instanceof Error)) throw err;
+      throw new Error(`${label}: ${err.message}`);
+    }
+  };
+  const tokenIn = await resolve(from, "--from");
+  const tokenOut = await resolve(to, "--to");
+  return buildIntent(tokenIn, tokenOut, amount, slippageBps);
 }
 
 // ---------------------------------------------------------------- plan
@@ -249,9 +412,10 @@ function takerOf(deps, getClient) {
  * deps: { taker, usdNotional, callTool, c }
  */
 export async function planBaseSwap({ from, to, amount, slippageBps }, deps = {}) {
-  const intent = parseIntent({ from, to, amount, slippageBps });
   let client;
   const getClient = () => (client ??= deps.c ?? clients());
+  // A token address is read from the chain here (decimals, symbol, name); Sato Hub is not asked yet.
+  const intent = await resolveIntent({ from, to, amount, slippageBps }, { ...deps, getClient });
   intent.taker = takerOf(deps, getClient);
   // The USD value the caller already knows. For a USDC sale it is the amount itself.
   const known = intent.tokenIn.symbol === "USDC" ? unitsToUsd(intent.amountIn) : deps.usdNotional;
@@ -369,6 +533,23 @@ function staticChecks(response, intent) {
     if (feeBps > MAX_SATO_FEE_BPS) out.push(refusal("fee_over_ceiling", `the fee rate is above the ${MAX_SATO_FEE_BPS} bps this kit release accepts`, MAX_SATO_FEE_BPS, feeBps));
   }
 
+  // (f2) which side the fee is taken on. Sato Hub discloses it (`sato_fee_side`); an answer that does not is read as the
+  // side the kit expects (the input when buying a long-tail token, the output when selling one). Either way it must be the
+  // major side: the fee is never taken in the long-tail token.
+  let feeSide = intent.feeSide ?? "in";
+  let feeSideDisclosed = false;
+  const sideField = response.sato_fee_side;
+  if (sideField !== undefined && sideField !== null) {
+    if (sideField !== "in" && sideField !== "out") {
+      out.push(refusal("fee_disclosure_missing", 'the fee side Sato Hub disclosed is neither "in" nor "out"', '"in" or "out"', String(sideField).slice(0, 20)));
+    } else {
+      feeSide = sideField;
+      feeSideDisclosed = true;
+      const feeToken = feeSide === "in" ? intent.tokenIn : intent.tokenOut;
+      if (!feeToken.major) out.push(refusal("fee_side_not_major", `Sato Hub's fee would be taken in ${labelOf(feeToken)}, not in USDC or ETH; this kit only accepts the fee on the USDC / ETH side`, intent.feeSide, feeSide));
+    }
+  }
+
   // (g) min_out is ours: the quote, less the owner's slippage
   const quoted = uintOf(response.amount_out);
   let minOut = null;
@@ -381,11 +562,36 @@ function staticChecks(response, intent) {
   // (h) the router calldata: what the contract itself will do, decoded, not what the response says it does
   let calldata = null;
   if (typeof tx.data === "string" && /^0x([0-9a-fA-F]{2}){4,}$/.test(tx.data)) {
-    const checked = checkRouterCalldata(tx.data, { intent, minOut: minOut !== null && minOut > 0n ? minOut : null, feeBps: feeDisclosed ? feeBps : null });
+    const checked = checkRouterCalldata(tx.data, { intent, minOut: minOut !== null && minOut > 0n ? minOut : null, feeBps: feeDisclosed ? feeBps : null, feeSide, feeSideInferred: !feeSideDisclosed });
     out.push(...checked.refusals);
     calldata = checked.facts;
   }
-  return { refusals: out, facts: { value: value ?? 0n, quoted, minOut, calldata } };
+  return { refusals: out, facts: { value: value ?? 0n, quoted, minOut, calldata, feeSide, feeSideDisclosed, market: marketOf(response) } };
+}
+
+/**
+ * The route's own market figures, if Sato Hub's answer carries them: Kyber's route summary has amountInUsd,
+ * amountOutUsd and (on some chains) priceImpact. Passed through for display; nothing is enforced here. Never
+ * invented: a field that is absent or not a finite number is null (unknown is not zero), and the gap between the two
+ * USD figures is only computed when both are there. (Kyber's route summary on Base carries no priceImpact; the USD gap
+ * includes the pool fees, Sato's fee and gas, so it is a value gap, not a pure price impact.)
+ */
+export function marketOf(response) {
+  const num = (v) => {
+    const n = typeof v === "string" && v.trim() !== "" ? Number(v) : v;
+    return typeof n === "number" && Number.isFinite(n) ? n : null;
+  };
+  const homes = [response, response?.route_summary, response?.routeSummary, response?.route, response?.quote, response?.market].filter((h) => h && typeof h === "object");
+  const pick = (...keys) => {
+    for (const h of homes) for (const k of keys) if (num(h[k]) !== null) return num(h[k]);
+    return null;
+  };
+  const priceImpactPct = pick("price_impact_pct", "price_impact", "priceImpact");
+  const amountInUsd = pick("amount_in_usd", "amountInUsd");
+  const amountOutUsd = pick("amount_out_usd", "amountOutUsd");
+  if (priceImpactPct === null && amountInUsd === null && amountOutUsd === null) return null;
+  const gap = amountInUsd !== null && amountOutUsd !== null && amountInUsd > 0 ? Math.round(((amountInUsd - amountOutUsd) / amountInUsd) * 10_000) / 100 : null;
+  return { price_impact_pct: priceImpactPct, amount_in_usd: amountInUsd, amount_out_usd: amountOutUsd, value_gap_pct: gap, source: "Sato Hub's answer (the KyberSwap route summary)" };
 }
 
 /**
@@ -393,9 +599,14 @@ function staticChecks(response, intent) {
  * re-quote of the route, which is one base unit below the route quote in every live build we recorded, and then
  * floors; so its floor is min_out or min_out - 1. The kit's min_out is floor(quote * (10000 - slippage) / 10000);
  * a calldata floor below min_out - 1 is not Kyber rounding, it is a weaker minimum than the owner's slippage allows.
+ *
+ * With the fee on the OUTPUT (selling a long-tail token) Kyber's re-quote is two units below the route quote, not one
+ * (it rounds the fee as well): 18 of 18 live builds on 2026-10-09, in USDC and in ETH, at 1 to 500 bps of slippage.
+ * The quote itself is the amount AFTER the fee, and the router checks its minimum against the amount after the fee too,
+ * so min_out needs no adjustment for the fee, only that wider rounding allowance (3 units of USDC or ETH).
  */
-export function requiredCalldataMin(minOut) {
-  const r = minOut - 1n;
+export function requiredCalldataMin(minOut, tolerance = 1n) {
+  const r = minOut - tolerance;
   return r > 1n ? r : 1n;
 }
 
@@ -404,7 +615,7 @@ export function requiredCalldataMin(minOut) {
  * Returns { refusals, facts }. Anything this kit cannot decode, or that does not re-encode to the
  * same bytes (so the decoder and the contract could read it differently), is refused whole.
  */
-export function checkRouterCalldata(data, { intent, minOut, feeBps }) {
+export function checkRouterCalldata(data, { intent, minOut, feeBps, feeSide = "in", feeSideInferred = false }) {
   const out = [];
   const unrecognized = (why) => ({ refusals: [refusal("calldata_unrecognized", `the transaction calls the router in a way this kit does not read (${why}), so it will not sign it`, KYBER_SWAP_SELECTOR, String(data).slice(0, 10))], facts: null });
   if (String(data).slice(0, 10).toLowerCase() !== KYBER_SWAP_SELECTOR) return unrecognized("it is not the router's swap function");
@@ -431,13 +642,14 @@ export function checkRouterCalldata(data, { intent, minOut, feeBps }) {
   // the minimum the router itself enforces
   const flags = d.flags;
   if (minOut !== null) {
-    const need = requiredCalldataMin(minOut);
+    // Kyber's rounding depends on where the fee is taken, which the calldata itself says (a disclosure that disagrees is refused below).
+    const need = requiredCalldataMin(minOut, (flags & KYBER_FLAGS.FEE_ON_DST) !== 0n ? FEE_OUT_ROUNDING_UNITS : 1n);
     if (d.minReturnAmount < need) out.push(refusal("min_out_not_enforced", `the transaction itself would accept less ${intent.tokenOut.symbol} than the minimum, so it would not stop a worse price`, need.toString(), d.minReturnAmount.toString()));
   }
   if ((flags & KYBER_FLAGS.PARTIAL_FILL) !== 0n) out.push(refusal("min_out_not_enforced", "the transaction allows a partial fill, which weakens the router's own minimum", "0", flags.toString()));
   if ((flags & ~(KYBER_ALLOWED_FLAGS | KYBER_FLAGS.FEE_ON_DST | KYBER_FLAGS.PARTIAL_FILL)) !== 0n) out.push(refusal("calldata_mismatch", "the transaction sets router options this kit does not know", `0x${KYBER_ALLOWED_FLAGS.toString(16)}`, `0x${flags.toString(16)}`));
 
-  // the fee: exactly the one disclosed receiver and rate, in bps, taken from the input
+  // the fee: exactly the one disclosed receiver and rate, in bps, on the disclosed side (the input, or with FEE_ON_DST the output)
   if (feeBps !== null) {
     const receivers = d.feeReceivers;
     const amounts = d.feeAmounts;
@@ -448,7 +660,15 @@ export function checkRouterCalldata(data, { intent, minOut, feeBps }) {
       else if (amounts.length !== 1 || amounts[0] !== BigInt(feeBps)) out.push(refusal("fee_not_as_disclosed", "the transaction takes a fee rate other than the one Sato Hub disclosed", `${feeBps} bps`, amounts.map(String).join(",") || "none"));
       if ((flags & KYBER_FLAGS.FEE_IN_BPS) === 0n) out.push(refusal("fee_not_as_disclosed", "the transaction does not count its fee in basis points, so the fee amount would be read differently", "in bps", `flags 0x${flags.toString(16)}`));
     }
-    if ((flags & KYBER_FLAGS.FEE_ON_DST) !== 0n) out.push(refusal("fee_not_as_disclosed", "the transaction takes its fee from the tokens bought instead of the tokens sold", "taken from the input", `flags 0x${flags.toString(16)}`));
+    // which side the router takes the fee from: FEE_ON_DST = the output, otherwise the input. It must be the disclosed (or expected) side.
+    const takenFromOutput = (flags & KYBER_FLAGS.FEE_ON_DST) !== 0n;
+    if (takenFromOutput !== (feeSide === "out")) {
+      const actualToken = takenFromOutput ? intent.tokenOut : intent.tokenIn;
+      // Nothing was disclosed and the transaction takes the fee in a long-tail token: that is the major-side rule, not a disclosure mismatch.
+      const rule = feeSideInferred && !actualToken.major ? "fee_side_not_major" : "fee_not_as_disclosed";
+      const where = takenFromOutput ? "from the tokens bought instead of the tokens sold" : "from the tokens sold instead of the tokens bought";
+      out.push(refusal(rule, `the transaction takes its fee ${where}${actualToken.major ? "" : `, so in ${labelOf(actualToken)}, not in USDC or ETH`}`, feeSide === "out" ? "taken from the output (FEE_ON_DST)" : "taken from the input", `flags 0x${flags.toString(16)}`));
+    }
   }
   return {
     refusals: out,
@@ -559,7 +779,8 @@ export function assetDeltas(calls, taker) {
 
 const assetKey = (token) => lc(token.address);
 
-async function simulateAndCheck({ intent, facts, tx, approvalNeeded, deps, getClient }) {
+/** The calls the swap itself sends: an exact approval when the allowance is short, then the swap. Each gets a gas limit. */
+function swapCalls({ intent, facts, tx, approvalNeeded }) {
   // Each simulated call gets a gas limit. With real fees in the simulation the node checks the
   // wallet can pay gas x fee, and with no limit it assumes a whole block's gas (about 0.003 ETH
   // on 2026-10-09), which a wallet funded with a little ETH for gas does not hold.
@@ -568,7 +789,11 @@ async function simulateAndCheck({ intent, facts, tx, approvalNeeded, deps, getCl
     calls.push({ to: intent.tokenIn.address, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [KYBER_ROUTER_BASE, intent.amountIn] }), value: 0n, gas: SIM_GAS_APPROVE });
   }
   calls.push({ to: getAddress(tx.to), data: tx.data, value: facts.value, gas: SIM_GAS_SWAP });
+  return calls;
+}
 
+/** Run calls through the kit's own eth_simulateV1 (or the injected one). Refuses, never guesses, when it cannot run or be read. */
+async function runSimulation({ intent, calls, deps, getClient }) {
   let raw;
   try {
     raw = await (deps.simulate ?? defaultSimulate)({ taker: intent.taker, calls, c: deps.simulate ? deps.c : getClient() });
@@ -584,8 +809,28 @@ async function simulateAndCheck({ intent, facts, tx, approvalNeeded, deps, getCl
   if (!Array.isArray(got) || got.length !== calls.length) {
     throw new Refused([refusal("simulation_unavailable", "this kit's own simulation returned an answer it cannot read; it never signs without one")]);
   }
+  return got;
+}
+
+const callOk = (c) => c.status === "0x1" || c.status === 1 || c.status === "0x01";
+
+/** The router's own Swapped event for this swap (receiver = the agent, the expected output token), or null if it is not exactly one. */
+function swappedOf(call, intent) {
+  try {
+    const events = parseEventLogs({ abi: KYBER_SWAPPED_EVENT, logs: call.logs ?? [], eventName: "Swapped" }).filter(
+      (l) => same(l.address, KYBER_ROUTER_BASE) && same(l.args.dstReceiver, intent.taker) && same(l.args.dstToken, intent.tokenOut.address),
+    );
+    return events.length === 1 ? events[0].args : null;
+  } catch {
+    return null;
+  }
+}
+
+async function simulateAndCheck({ intent, facts, tx, approvalNeeded, deps, getClient }) {
+  const calls = swapCalls({ intent, facts, tx, approvalNeeded });
+  const got = await runSimulation({ intent, calls, deps, getClient });
   for (let i = 0; i < got.length; i++) {
-    if (got[i].status !== "0x1" && got[i].status !== 1 && got[i].status !== "0x01") {
+    if (!callOk(got[i])) {
       throw new Refused([refusal("simulation_failed", `${i === calls.length - 1 ? "the swap" : "the approval"} would fail: ${revertNote(got[i])}`, null, got[i].status ?? null)]);
     }
   }
@@ -603,11 +848,29 @@ async function simulateAndCheck({ intent, facts, tx, approvalNeeded, deps, getCl
   }
   for (const l of leaves) out.push(refusal("other_token_leaves", `the swap would move an ${l.kind} token out of the wallet`, null, l.asset));
 
-  // The disclosed fee is taken from the input inside the venue call; what the fee address actually receives can't exceed it.
+  // The disclosed fee is taken inside the venue call, on the disclosed side; what the fee address actually receives can't exceed it.
+  //   side "in":  at most bps of the amount sold.
+  //   side "out": the router takes bps of the GROSS output and pays the rest to the agent, so the agent's
+  //               net output N and the fee F satisfy F <= (N + F) * bps / 10000, i.e. F <= N * bps / (10000 - bps).
   const feeBps = BigInt(facts.feeBps);
-  const ceiling = (intent.amountIn * feeBps + 9_999n) / 10_000n;
-  const feeSeen = received.get(lc(SATO_FEE_RECIPIENT))?.get(inKey) ?? 0n;
+  const feeKey = facts.feeSide === "out" ? outKey : inKey;
+  const ceiling = facts.feeSide === "out" ? (outDelta * feeBps) / (10_000n - feeBps) + 1n : (intent.amountIn * feeBps + 9_999n) / 10_000n;
+  const feeSeen = received.get(lc(SATO_FEE_RECIPIENT))?.get(feeKey) ?? 0n;
   if (feeSeen > ceiling) out.push(refusal("fee_exceeds_disclosed", "the fee address would receive more than the disclosed rate", ceiling.toString(), feeSeen.toString()));
+
+  // A fee on transfer: the router reports what it paid out (its Swapped event); a token that keeps part of every
+  // transfer delivers less than that to the agent. Only checked when buying a long-tail token.
+  let reportedOut = null;
+  if (intent.longTail === "out") {
+    const swapped = swappedOf(got[got.length - 1], intent);
+    if (swapped) {
+      reportedOut = swapped.returnAmount;
+      const slack = (reportedOut * BigInt(TRANSFER_FEE_TOLERANCE_BPS)) / 10_000n + 2n;
+      if (outDelta + slack < reportedOut) {
+        out.push(refusal("transfer_fee_detected", `the swap pays out ${unitsToDecimal(reportedOut, intent.tokenOut.decimals)} ${intent.to} but only ${unitsToDecimal(outDelta, intent.tokenOut.decimals)} reaches the wallet: the token keeps part of every transfer`, `at least ${reportedOut.toString()}`, outDelta.toString()));
+      }
+    }
+  }
   if (out.length) throw new Refused(out);
 
   return {
@@ -617,8 +880,176 @@ async function simulateAndCheck({ intent, facts, tx, approvalNeeded, deps, getCl
     in_delta: inDelta,
     out_delta: outDelta,
     fee_seen: feeSeen,
+    reported_out: reportedOut,
     deltas: Object.fromEntries([...deltas].map(([k, v]) => [k, v])),
   };
+}
+
+// ---------------------------------------------------------------- the sell-back simulation (buying a long-tail token)
+
+/** Why the sell-back leg could not be built: kind "no_route" (KyberSwap has no way to sell the token) or "unavailable" (its API did not answer). */
+export class SellBackError extends Error {
+  constructor(kind, message) {
+    super(message);
+    this.name = "SellBackError";
+    this.kind = kind;
+  }
+}
+
+/**
+ * A live KyberSwap route and build for selling `amountIn` of `tokenIn` for `tokenOut` from `taker`, with NO Sato fee
+ * (this leg is only ever simulated, never sent). Straight to KyberSwap's public API, not through Sato Hub: Sato Hub's
+ * build-tx writes a public record and this is a check, not a trade. Its answer is held to the same calldata rules as
+ * the real swap before it is simulated.
+ */
+export async function buildKyberSellBack({ tokenIn, tokenOut, amountIn, taker, slippageBps = SELL_BACK_SLIPPAGE_BPS }, deps = {}) {
+  const f = deps.kyberFetch ?? fetch;
+  const base = deps.kyberApi ?? KYBER_API_BASE;
+  const headers = { "user-agent": USER_AGENT, "x-client-id": "satohub", accept: "application/json" };
+  const sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const call = async (what, url, init = {}) => {
+    let res;
+    // One retry after a pause when KyberSwap's public API says "slow down" (429): the route and the build are two calls in a row.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        res = await f(url, { ...init, headers: { ...headers, ...(init.headers ?? {}) }, signal: AbortSignal.timeout(KYBER_TIMEOUT_MS) });
+      } catch (err) {
+        throw new SellBackError("unavailable", `KyberSwap's API did not answer for the ${what} (${errText(err).slice(0, 100)})`);
+      }
+      if (res.status === 429 && attempt === 0) {
+        await sleep(1500);
+        continue;
+      }
+      break;
+    }
+    let body = null;
+    try {
+      body = await res.json();
+    } catch {
+      /* handled below */
+    }
+    if (res.status === 429 || res.status >= 500) throw new SellBackError("unavailable", `KyberSwap's API answered ${res.status} for the ${what}`);
+    if (!body || typeof body !== "object") throw new SellBackError("unavailable", `KyberSwap's API gave an answer the kit cannot read for the ${what}`);
+    if (body.code !== 0 || !body.data) throw new SellBackError("no_route", `KyberSwap has no ${what}${body.message ? `: ${String(body.message).slice(0, 120)}` : ""}`);
+    return body.data;
+  };
+  const q = new URLSearchParams({ tokenIn: tokenIn.address, tokenOut: tokenOut.address, amountIn: amountIn.toString() });
+  const routeData = await call("route to sell it back", `${base}/routes?${q}`);
+  const summary = routeData.routeSummary;
+  if (!summary || typeof summary !== "object") throw new SellBackError("no_route", "KyberSwap returned no route to sell it back");
+  const built = await call("build of the sell-back", `${base}/route/build`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ routeSummary: summary, sender: taker, recipient: taker, slippageTolerance: slippageBps, source: "satohub" }),
+  });
+  return {
+    to: built.routerAddress,
+    data: built.data,
+    value: uintOf(built.transactionValue ?? "0"),
+    quoted_out: summary.amountOut != null ? String(summary.amountOut) : null,
+    route_id: summary.routeID != null ? String(summary.routeID) : null,
+  };
+}
+
+const sellBackRefusal = (message, observed = null) => new Refused([refusal("cannot_sell_back", message, null, observed)]);
+
+/**
+ * Sell back what a purchase of a long-tail token delivers, in ONE more eth_simulateV1 that repeats the buy and then sells
+ * the amount the buy delivered (measured in the first simulation) back to the major asset through a live KyberSwap route
+ * (pinned router, an exact approval of the token, no Sato fee). Refuses (cannot_sell_back) when no route exists, when the
+ * approval or the sell would fail, or when the round trip returns less than amount_in * (1 - 2 x slippage - 2 x fee - 3%).
+ * The sell is never sent and costs no gas; the only cost is one more simulation and a KyberSwap route + build.
+ */
+async function sellBackCheck({ intent, facts, tx, approvalNeeded, sim, deps, getClient }) {
+  const major = intent.tokenIn;
+  const token = intent.tokenOut;
+  const build = deps.buildSellBack ?? ((args) => buildKyberSellBack(args, deps));
+  const baseCalls = swapCalls({ intent, facts, tx, approvalNeeded });
+  const majorKey = assetKey(major);
+  const tokenKey = assetKey(token);
+  const feeBps = BigInt(facts.feeBps);
+  const allowedLossBps = BigInt(2 * intent.slippageBps) + 2n * feeBps + BigInt(ROUND_TRIP_MARGIN_BPS);
+  const minReturn = (intent.amountIn * (10_000n - allowedLossBps)) / 10_000n;
+
+  let units = sim.out_delta;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (units <= 0n) throw sellBackRefusal(`the swap delivers no ${token.symbol} to sell back`);
+    let built;
+    try {
+      built = await build({ tokenIn: token, tokenOut: major, amountIn: units, taker: intent.taker, slippageBps: SELL_BACK_SLIPPAGE_BPS });
+    } catch (err) {
+      if (err instanceof Refused) throw err;
+      if (err instanceof SellBackError && err.kind === "no_route") throw sellBackRefusal(`${intent.to} cannot be sold back: ${err.message}. The kit does not buy a token it cannot test selling.`, "no_route");
+      throw new Refused([refusal("sell_back_unavailable", `the kit could not check that ${intent.to} can be sold back (${errText(err).slice(0, 200)}); it does not buy a token it cannot test selling`)]);
+    }
+    if (!built || typeof built.data !== "string" || !/^0x([0-9a-fA-F]{2}){4,}$/.test(built.data)) throw new Refused([refusal("sell_back_unavailable", "the sell-back route came back without transaction data; the kit does not buy a token it cannot test selling")]);
+    if (!same(built.to, KYBER_ROUTER_BASE)) throw new Refused([refusal("router_not_pinned", "the sell-back route names a contract other than the pinned KyberSwap router", KYBER_ROUTER_BASE, built.to ?? null)]);
+    if (built.value !== undefined && built.value !== null && built.value !== 0n) throw new Refused([refusal("value_mismatch", "selling a token back must send no ETH", "0", String(built.value))]);
+
+    // The sell-back transaction gets the real swap's calldata rules: pinned executor, the agent as receiver, the right tokens
+    // and amount, no permit, and NO fee receivers (this leg carries no Sato fee).
+    const sellIntent = { from: intent.to, to: intent.from, tokenIn: token, tokenOut: major, amountIn: units, taker: intent.taker };
+    const checked = checkRouterCalldata(built.data, { intent: sellIntent, minOut: null, feeBps: 0, feeSide: "in" });
+    if (checked.refusals.length) throw new Refused(checked.refusals.map((r) => ({ ...r, message: `in the sell-back route: ${r.message}` })));
+
+    const approveToken = { to: token.address, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [KYBER_ROUTER_BASE, units] }), value: 0n, gas: SIM_GAS_APPROVE };
+    const sell = { to: KYBER_ROUTER_BASE, data: built.data, value: 0n, gas: SIM_GAS_SWAP };
+    const calls = [...baseCalls, approveToken, sell];
+    const got = await runSimulation({ intent, calls, deps, getClient });
+    const n = baseCalls.length;
+    for (let i = 0; i < n; i++) {
+      if (!callOk(got[i])) throw new Refused([refusal("simulation_failed", `${i === n - 1 ? "the swap" : "the approval"} would fail when repeated for the sell-back check: ${revertNote(got[i])}`, null, got[i].status ?? null)]);
+    }
+    const bought = assetDeltas(got.slice(0, n), intent.taker).deltas.get(tokenKey) ?? 0n;
+    if (!callOk(got[n])) throw sellBackRefusal(`${intent.to} cannot be sold back: it will not let the router spend it (the approval would fail: ${revertNote(got[n])})`, "approve_reverts");
+    if (!callOk(got[n + 1])) {
+      // The second run bought a little less than the first and the sell asked for more than it holds: measure again, once.
+      if (attempt === 0 && bought > 0n && bought < units) {
+        units = bought;
+        continue;
+      }
+      throw sellBackRefusal(
+        `${intent.to} cannot be sold back: selling what this swap delivers would fail (${revertNote(got[n + 1])}). A token that blocks selling in the same block it was bought in looks the same to this check.`,
+        "sell_reverts",
+      );
+    }
+
+    const leg = assetDeltas([got[n + 1]], intent.taker);
+    const out = [];
+    for (const [asset, delta] of leg.deltas) {
+      if (asset !== majorKey && asset !== tokenKey && delta < 0n) out.push(refusal("other_token_leaves", `the sell-back would also take ${asset === lc(NATIVE_PLACEHOLDER) ? "ETH" : asset} from the wallet`, "0", delta.toString()));
+    }
+    for (const l of leg.leaves) out.push(refusal("other_token_leaves", `the sell-back would move an ${l.kind} token out of the wallet`, null, l.asset));
+    const tokenSold = -(leg.deltas.get(tokenKey) ?? 0n);
+    if (tokenSold > units) out.push(refusal("outflow_exceeds_amount_in", `the sell-back would take more ${token.symbol} than it was asked to sell`, units.toString(), tokenSold.toString()));
+    if (out.length) throw new Refused(out);
+
+    const returned = leg.deltas.get(majorKey) ?? 0n;
+    const lossBps = Number(((intent.amountIn - returned) * 10_000n) / intent.amountIn);
+    if (returned < minReturn) {
+      const d = (u) => unitsToDecimal(u, major.decimals);
+      throw sellBackRefusal(
+        `buying ${intent.to} and selling it straight back returns ${d(returned)} ${major.symbol} for ${d(intent.amountIn)} ${major.symbol}, a loss of ${(lossBps / 100).toFixed(2)}%; the most this kit allows is ${(Number(allowedLossBps) / 100).toFixed(2)}% (twice the slippage, twice the Sato fee and ${ROUND_TRIP_MARGIN_BPS / 100}% for spread). The token may be hard to sell or take a fee on selling.`,
+        `${lossBps} bps`,
+      );
+    }
+    return {
+      checked: true,
+      source: "KyberSwap route, eth_simulateV1",
+      sold_units: units,
+      returned_units: returned,
+      asset: intent.from,
+      amount_in_units: intent.amountIn,
+      loss_bps: lossBps,
+      allowed_loss_bps: Number(allowedLossBps),
+      minimum_return_units: minReturn,
+      quoted_return: built.quoted_out ?? null,
+      route_id: built.route_id ?? null,
+      gas_used: { approve: String(uintOf(got[n].gasUsed) ?? ""), sell: String(uintOf(got[n + 1].gasUsed) ?? "") },
+      attempts: attempt + 1,
+    };
+  }
+  throw sellBackRefusal(`${intent.to} could not be sold back in the simulation`);
 }
 
 // ---------------------------------------------------------------- verify
@@ -674,12 +1105,22 @@ export async function verifyBaseSwapPlan(response, intent, deps = {}) {
 
   const sim = await simulateAndCheck({ intent, facts, tx, approvalNeeded, deps, getClient });
 
+  // Buying a long-tail token: sell everything it delivers straight back, in one more simulation. Refuses a token that
+  // cannot be sold, one whose round trip loses too much, and (above) one that keeps part of every transfer.
+  const sellBack = intent.longTail === "out" ? await sellBackCheck({ intent, facts, tx, approvalNeeded, sim, deps, getClient }) : null;
+
   // What counts against the owner's limits: the USDC leg, measured. A USDC sale is the amount itself;
   // an ETH sale is the USDC the kit's own simulation shows coming back, or the caller's figure if higher.
-  const usdcLeg = intent.tokenIn.symbol === "USDC" ? intent.amountIn : sim.out_delta;
+  // USDC is the real USDC contract, never a token that calls itself USDC. When neither side is USDC (ETH or WETH
+  // against a long-tail token) there is no USDC leg to measure: the caller's independent figure is the value.
+  const feeOut = facts.feeSide === "out";
+  const isUsdc = (t) => same(t.address, USDC_BASE);
+  const usdcLeg = isUsdc(intent.tokenIn) ? intent.amountIn : isUsdc(intent.tokenOut) ? sim.out_delta + (feeOut ? sim.fee_seen : 0n) : 0n;
   const measured = unitsToUsd(usdcLeg);
   const claimed = Number.isFinite(deps.usdNotional) && deps.usdNotional > 0 ? deps.usdNotional : 0;
   const usd = Math.max(measured, claimed);
+  // The major side's amount as the simulation measured it (fee included on a sale), for the caller's own pricing of an ETH leg.
+  const majorLeg = intent.longTail === null ? null : intent.longTail === "out" ? { asset: intent.from, units: intent.amountIn } : { asset: intent.to, units: sim.out_delta + (feeOut ? sim.fee_seen : 0n) };
 
   const plan = deepFreeze({
     verified: true,
@@ -699,14 +1140,21 @@ export async function verifyBaseSwapPlan(response, intent, deps = {}) {
     amount_in: intent.amountIn,
     quoted_out: facts.quoted,
     min_out: facts.minOut,
-    /** What the router itself will enforce, as decoded from the transaction (at most 1 base unit under min_out). */
+    /** What the router itself will enforce, as decoded from the transaction (Kyber's rounding: 1 base unit under min_out, 2 when the fee is on the output). */
     min_out_in_transaction: facts.calldata.min_return_amount,
     slippage_bps: intent.slippageBps,
     usd,
     router: getAddress(tx.to),
     tx: { to: getAddress(tx.to), data: tx.data, value: facts.value, gas_hint: uintOf(tx.gas) },
     approval: { needed: approvalNeeded, token: intent.tokenIn.native ? null : intent.tokenIn.address, spender: KYBER_ROUTER_BASE, amount: intent.amountIn, allowance_before: allowance },
-    fee: { bps: response.sato_fee_bps, recipient: getAddress(response.sato_fee_recipient), disclosure: response.disclosure, seen_in_simulation: sim.fee_seen },
+    fee: { bps: response.sato_fee_bps, recipient: getAddress(response.sato_fee_recipient), disclosure: response.disclosure, side: facts.feeSide, side_disclosed: facts.feeSideDisclosed, seen_in_simulation: sim.fee_seen },
+    /** Which side is the long-tail token: "in" (selling it), "out" (buying it) or null (USDC <-> ETH/WETH). */
+    long_tail: intent.longTail,
+    major_leg: majorLeg,
+    /** The route's own market figures, if Sato Hub's answer carries them (for display; not enforced here). */
+    market: facts.market,
+    /** The sell-back simulation (buying a long-tail token only): what selling the purchase straight back returned. */
+    sell_back: sellBack,
     simulation: sim,
     signature,
   });
@@ -729,12 +1177,36 @@ export function summarizeBaseSwapPlan(plan) {
     venue: plan.venue,
     route_id: plan.route_id,
     receipt_url: plan.receipt_url,
-    sell: { asset: plan.from, amount: d(plan.amount_in, plan.token_in) },
-    buy: { asset: plan.to, quoted: d(plan.quoted_out, plan.token_out), minimum: d(plan.min_out, plan.token_out), minimum_in_transaction: plan.min_out_in_transaction === undefined ? null : d(plan.min_out_in_transaction, plan.token_out), slippage_bps: plan.slippage_bps },
+    // `address`, `name` and `decimals` come from the chain (a long-tail token) and are display data; the symbol is the contract's own word.
+    sell: { asset: plan.from, address: plan.token_in.address, name: plan.token_in.name ?? null, amount: d(plan.amount_in, plan.token_in) },
+    buy: {
+      asset: plan.to,
+      address: plan.token_out.address,
+      name: plan.token_out.name ?? null,
+      quoted: d(plan.quoted_out, plan.token_out),
+      minimum: d(plan.min_out, plan.token_out),
+      minimum_in_transaction: plan.min_out_in_transaction === undefined ? null : d(plan.min_out_in_transaction, plan.token_out),
+      slippage_bps: plan.slippage_bps,
+    },
     usd: plan.usd,
     router: plan.router,
-    approval: plan.approval.needed ? { token: plan.from, spender: plan.approval.spender, amount: d(plan.approval.amount, plan.token_in), exact: true } : null,
-    sato_fee: { bps: plan.fee.bps, recipient: plan.fee.recipient, disclosure: plan.fee.disclosure },
+    approval: plan.approval.needed ? { token: plan.from, address: plan.approval.token, spender: plan.approval.spender, amount: d(plan.approval.amount, plan.token_in), exact: true } : null,
+    // `side`: where the fee is taken, "in" (from what is sold) or "out" (from what is received). Always the USDC / ETH side.
+    sato_fee: { bps: plan.fee.bps, recipient: plan.fee.recipient, disclosure: plan.fee.disclosure, side: plan.fee.side ?? "in", asset: (plan.fee.side ?? "in") === "out" ? plan.to : plan.from },
+    long_tail: plan.long_tail ? { side: plan.long_tail, role: plan.long_tail === "out" ? "buying" : "selling", asset: plan.long_tail === "out" ? plan.to : plan.from, address: (plan.long_tail === "out" ? plan.token_out : plan.token_in).address } : null,
+    market: plan.market ?? null,
+    sell_back: plan.sell_back
+      ? {
+          checked: true,
+          sold: d(plan.sell_back.sold_units, plan.token_out),
+          returned: d(plan.sell_back.returned_units, plan.token_in),
+          asset: plan.sell_back.asset,
+          loss_bps: plan.sell_back.loss_bps,
+          allowed_loss_bps: plan.sell_back.allowed_loss_bps,
+          route_id: plan.sell_back.route_id,
+          simulated_only: true,
+        }
+      : null,
     simulation: {
       source: plan.simulation.source,
       sell_leaves: d(-plan.simulation.in_delta, plan.token_in),
@@ -851,6 +1323,12 @@ async function executeLocked(plan, deps) {
     route_id: plan.route_id,
     sato_fee_bps: plan.fee.bps,
     sato_fee_recipient: plan.fee.recipient,
+    sato_fee_side: plan.fee.side ?? "in",
+    // The token contracts, so a row never rests on a symbol alone (a long-tail token can call itself anything).
+    token_in: plan.token_in.address,
+    token_out: plan.token_out.address,
+    ...(plan.long_tail ? { long_tail: plan.long_tail } : {}),
+    ...(plan.sell_back ? { sell_back_loss_bps: plan.sell_back.loss_bps } : {}),
   });
 
   let approveTx = null;
@@ -988,7 +1466,7 @@ async function executeLocked(plan, deps) {
     received: outUnits === null ? null : { asset: plan.to, amount: display(outUnits, plan.token_out), basis: outBasis },
     minimum: { asset: plan.to, amount: display(plan.min_out, plan.token_out) },
     usd,
-    sato_fee: { bps: plan.fee.bps, recipient: plan.fee.recipient },
+    sato_fee: { bps: plan.fee.bps, recipient: plan.fee.recipient, side: plan.fee.side ?? "in" },
     allowance: allowance?.state ?? null,
     warnings,
   };

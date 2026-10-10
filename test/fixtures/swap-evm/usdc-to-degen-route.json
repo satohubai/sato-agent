@@ -1,0 +1,113 @@
+{
+ "code": 0,
+ "message": "successfully",
+ "data": {
+  "routeSummary": {
+   "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+   "amountIn": "20000000",
+   "amountInUsd": "19.995997196829617",
+   "tokenOut": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+   "amountOut": "20035053585536636682240",
+   "amountOutUsd": "19.91629880347348",
+   "gas": "617166",
+   "gasPrice": "6000000",
+   "gasUsd": "0.009205863917947171",
+   "l1FeeUsd": "0.00001794988407300881",
+   "extraFee": {
+    "feeAmount": "15",
+    "chargeFeeBy": "currency_in",
+    "isInBps": true,
+    "feeReceiver": "0xcee53eb001d4d1743ef9df333dcf45bc38622be9"
+   },
+   "route": [
+    [
+     {
+      "pool": "0x0000efc4ec03a7c47d3a38a9be7ff1d52dd01b99",
+      "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "tokenOut": "0x4200000000000000000000000000000000000006",
+      "swapAmount": "19970000",
+      "amountOut": "8030871592786612",
+      "exchange": "lunarbase",
+      "poolType": "lunarbase",
+      "poolExtra": {
+       "blockHash": "0xd5cf53213c45b987e095ba3e199798792228f36e2182d94ca5a3ab4c872cedad",
+       "blockNumber": 52399999,
+       "approvalAddress": "0x0000efc4ec03a7c47d3a38a9be7ff1d52dd01b99",
+       "n": true
+      },
+      "extra": {
+       "_ce": {
+        "prCnt": 1,
+        "tgtAmtOut": "8030871592786612",
+        "ces": [
+         {
+          "pool": "0x72ab388e2e2f6facef59e3c3fa2c4e29011c2d38",
+          "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "tokenOut": "0x4200000000000000000000000000000000000006",
+          "swapAmount": "19970000",
+          "amountOut": "8030543536820711",
+          "exchange": "pancake-v3",
+          "poolType": "pancake-v3",
+          "poolExtra": {
+           "swapFee": 100,
+           "priceLimit": "1461446703485210103287273052203988822378723970341",
+           "blockNumber": 52399998
+          },
+          "extra": {
+           "rAI": "0",
+           "nSqrtRx96": "3950704219537086076358558",
+           "nT": -198134
+          }
+         }
+        ]
+       },
+       "_cs": "17929831526389454944",
+       "_ts": "1791589348",
+       "ri": "56a6aab2LSxKcL2y"
+      }
+     },
+     {
+      "pool": "0xafb62448929664bfccb0aae22f232520e765ba88",
+      "tokenIn": "0x4200000000000000000000000000000000000006",
+      "tokenOut": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+      "swapAmount": "8030871592786612",
+      "amountOut": "20035053585536636682240",
+      "exchange": "aerodrome-cl",
+      "poolType": "slipstream",
+      "poolExtra": {
+       "swapFee": 2430,
+       "priceLimit": "4310618293",
+       "blockNumber": 52399497
+      },
+      "extra": {
+       "_ss": {
+        "pool": "0x2c4909355b0c036840819484c3a882a95659abf3",
+        "tokenIn": "0x4200000000000000000000000000000000000006",
+        "tokenOut": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+        "swapAmount": "8030871592786612",
+        "amountOut": "19988278936644051444213",
+        "exchange": "aerodrome",
+        "poolType": "velodrome-v2",
+        "poolExtra": {
+         "fee": 30,
+         "feePrecision": 10000,
+         "blockNumber": 52399497
+        },
+        "extra": null
+       },
+       "nSqrtRx96": "125281924444131156965470587823644",
+       "nT": 147327,
+       "rAI": "0"
+      }
+     }
+    ]
+   ],
+   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+   "routeID": "56a6aab2LSxKcL2y",
+   "checksum": "17929831526389454944",
+   "timestamp": 1791589348
+  },
+  "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
+ },
+ "requestId": "56a6aab2-2d2c-4a70-bdb2-c4ed825e6320"
+}

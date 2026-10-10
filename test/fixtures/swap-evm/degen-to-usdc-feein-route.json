@@ -1,0 +1,95 @@
+{
+ "code": 0,
+ "message": "successfully",
+ "data": {
+  "routeSummary": {
+   "tokenIn": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+   "amountIn": "5000000000000000000000",
+   "amountInUsd": "4.970424247513206",
+   "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+   "amountOut": "4951232",
+   "amountOutUsd": "4.9502410596426545",
+   "gas": "443831",
+   "gasPrice": "6000000",
+   "gasUsd": "0.006620338431745125",
+   "l1FeeUsd": "0.00001614451829032502",
+   "extraFee": {
+    "feeAmount": "15",
+    "chargeFeeBy": "currency_in",
+    "isInBps": true,
+    "feeReceiver": "0xcee53eb001d4d1743ef9df333dcf45bc38622be9"
+   },
+   "route": [
+    [
+     {
+      "pool": "bebop_0x4ed4e862860bed51a9570b96d89af5e1b0efefed_0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "tokenIn": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+      "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "swapAmount": "4992500000000000000000",
+      "amountOut": "4951232",
+      "exchange": "bebop/aerodrome",
+      "poolType": "bebop",
+      "poolExtra": {
+       "timestamp": 1791589375
+      },
+      "extra": {
+       "_ce": {
+        "prCnt": 0,
+        "tgtAmtOut": "4951232",
+        "ces": [
+         {
+          "pool": "0x637ad8d2611d3efe2ef41fdbb40b9f21abaf9585",
+          "tokenIn": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+          "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "swapAmount": "4992500000000000000000",
+          "amountOut": "4913760",
+          "exchange": "aerodrome",
+          "poolType": "velodrome-v2",
+          "poolExtra": {
+           "fee": 30,
+           "feePrecision": 10000,
+           "blockNumber": 52397255
+          },
+          "extra": null
+         }
+        ]
+       },
+       "_cs": "13351768700340191389",
+       "_fr": {
+        "amountOut": "4913760",
+        "amountOutUsd": 4.912776559294675
+       },
+       "_fs": {
+        "pool": "0x637ad8d2611d3efe2ef41fdbb40b9f21abaf9585",
+        "tokenIn": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+        "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "swapAmount": "4992500000000000000000",
+        "amountOut": "4913760",
+        "exchange": "aerodrome",
+        "poolType": "velodrome-v2",
+        "poolExtra": {
+         "fee": 30,
+         "feePrecision": 10000,
+         "blockNumber": 52397255
+        },
+        "extra": null
+       },
+       "_ts": "1791589378",
+       "b": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+       "bAmt": "4992500000000000000000",
+       "q": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+       "qAmt": "4960505",
+       "ri": "637a919eiANLhrAi"
+      }
+     }
+    ]
+   ],
+   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+   "routeID": "637a919eiANLhrAi",
+   "checksum": "13351768700340191389",
+   "timestamp": 1791589378
+  },
+  "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
+ },
+ "requestId": "637a919e-8803-4b86-b022-c1a21a9c9180"
+}

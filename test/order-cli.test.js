@@ -40,7 +40,15 @@ test("setup: wallet, limits, and the shipping address (mode 600, shown back by s
   noAddress(st.stdout, "status");
   noAddress(run(["status", "--json"]).stdout, "status --json");
   noAddress(run(["policy", "show"]).stdout, "policy show");
-  assert.equal(run(["settings", "set", "--ship-country", "USA"]).status, 2);
+  // Stored in the form Sato Hub hashes: "USA" / "United States" -> "US"; the state only as its two-letter code.
+  assert.equal(run(["settings", "set", "--ship-country", "United States"]).status, 0);
+  assert.equal(JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).ship_to.country, "US");
+  assert.equal(run(["settings", "set", "--ship-country", "Canada"]).status, 2);
+  const state = run(["settings", "set", "--ship-state", "Illinois"]);
+  assert.equal(state.status, 2);
+  assert.match(state.stderr, /two-letter state code, like CA/);
+  assert.equal(run(["settings", "set", "--ship-state", "il"]).status, 0);
+  assert.equal(JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).ship_to.state, "IL");
   assert.equal(run(["settings", "set", "--ship-name", "Ada‮evil"]).status, 2, "an invisible direction mark is refused");
 });
 

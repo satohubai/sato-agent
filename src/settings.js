@@ -48,8 +48,15 @@ function cleanField(key, flag, raw) {
   if (/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(raw)) throw new Error(`${flag} contains a control or invisible character`);
   const v = raw.trim().replace(/\s+/g, " ");
   if (v.length > MAX_FIELD) throw new Error(`${flag} is longer than ${MAX_FIELD} characters`);
+  // Stored in the exact form Sato Hub sends on to the merchant, so recipient_sha256 matches byte for byte:
+  // a country code and a state code upper-cased (Amazon orders ship to US addresses only).
   if (key === "country") {
+    if (/^(usa|united states( of america)?)$/i.test(v)) return "US";
     if (!/^[A-Za-z]{2}$/.test(v)) throw new Error(`${flag} must be a two-letter country code, like US`);
+    return v.toUpperCase();
+  }
+  if (key === "state") {
+    if (!/^[A-Za-z]{2}$/.test(v)) throw new Error(`${flag} must be a two-letter state code, like CA`);
     return v.toUpperCase();
   }
   if (key === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) throw new Error(`${flag} must be an email address`);

@@ -33,20 +33,26 @@ const refused = (rule) => (e) => e instanceof Refused && e.refusals.some((r) => 
 const recipient = C.recipientOf(SHIP);
 const recipientSha = C.recipientSha256(recipient);
 
-test("recipient_sha256: SHA-256 of the canonical JSON (keys sorted at every level, no whitespace, absent keys left out)", () => {
-  const expected = `{"city":"Springfield","country":"US","email":"ada.quartermaine@example.com","line1":"1729 Ramanujan Street","line2":"Apt 42","name":"Ada Quartermaine","postalCode":"62704","state":"IL"}`;
+test("recipient_sha256: SHA-256 of the merchant form { email, physicalAddress }, canonical JSON (keys sorted at every level, no whitespace, absent keys left out)", () => {
+  const expected = `{"email":"ada.quartermaine@example.com","physicalAddress":{"city":"Springfield","country":"US","line1":"1729 Ramanujan Street","line2":"Apt 42","name":"Ada Quartermaine","postalCode":"62704","state":"IL"}}`;
   assert.equal(C.canonicalRecipient(recipient), expected);
   assert.equal(recipientSha, createHash("sha256").update(expected, "utf8").digest("hex"));
   const { line2: _l, ...noLine2 } = SHIP;
   assert.equal(C.canonicalRecipient(C.recipientOf(noLine2)).includes("line2"), false, "an unset line2 is absent, not null or empty");
-  assert.equal(C.canonicalRecipient({ b: { d: 1, c: undefined, a: [2, { z: 1, y: 2 }] }, a: "x" }), '{"a":"x","b":{"a":[2,{"y":2,"z":1}],"d":1}}');
 });
 
-test("the product: an amazon.com link or an ASIN; another Amazon store is refused", () => {
-  assert.deepEqual(C.amazonProduct("https://www.amazon.com/Some-Pencil/dp/B0TESTASIN/ref=sr_1?x=1"), { product: "amazon:B0TESTASIN", asin: "B0TESTASIN" });
-  assert.deepEqual(C.amazonProduct("b0testasin"), { product: "amazon:B0TESTASIN", asin: "B0TESTASIN" });
-  assert.deepEqual(C.amazonProduct("https://amazon.com/gp/product/B0TESTASIN"), { product: "amazon:B0TESTASIN", asin: "B0TESTASIN" });
-  assert.equal(C.amazonProduct("https://a.co/d/abc123").product, "amazon:https://a.co/d/abc123");
+test("recipient_sha256: the cross-repo vectors computed by Sato Hub's own code (app lib/commerce/validate.ts)", () => {
+  const ada = { name: "Ada Lovelace", line1: "1 Main St", line2: "Apt 2", city: "San Francisco", state: "CA", postalCode: "94105", country: "US", email: "ada@example.com" };
+  assert.equal(C.recipientSha256(C.recipientOf(ada)), "cdb8817cf14dddfba0b41555d20a91a537a4b5bf92db3099a749915bc029f508");
+  const { line2: _l, ...noLine2 } = { ...ada, email: "Ada@Example.com" };
+  assert.equal(C.recipientSha256(C.recipientOf(noLine2)), "ef6fd6be324066a09f26989daaf2e92aea0b79cb2a25250ee2daaeb4c60d7250");
+});
+
+test("the product: the bare ASIN, from an amazon.com link or given; short links are never opened; another Amazon store is refused", () => {
+  assert.deepEqual(C.amazonProduct("https://www.amazon.com/Some-Pencil/dp/B0TESTASIN/ref=sr_1?x=1"), { product: "B0TESTASIN", asin: "B0TESTASIN" });
+  assert.deepEqual(C.amazonProduct("b0testasin"), { product: "B0TESTASIN", asin: "B0TESTASIN" });
+  assert.deepEqual(C.amazonProduct("https://amazon.com/gp/product/B0TESTASIN"), { product: "B0TESTASIN", asin: "B0TESTASIN" });
+  for (const short of ["https://a.co/d/abc123", "https://amzn.to/3xYz", "https://amzn.com/B0TESTASIN"]) assert.throws(() => C.amazonProduct(short), /short Amazon links are not opened/, short);
   assert.throws(() => C.amazonProduct("https://www.amazon.co.uk/dp/B0TESTASIN"), refused("amazon_us_only"));
   assert.throws(() => C.amazonProduct("https://www.amazon.com/s?k=pencil"), /no product/);
 });
@@ -54,9 +60,10 @@ test("the product: an amazon.com link or an ASIN; another Amazon store is refuse
 const now = () => Date.now();
 const verify = (body, over = {}) => C.verifyOrderQuote(body, { chain: "base", payer: agentBase, recipient, jwks: JWKS, ...over });
 
-test("the quote: a signed, matching answer passes", async () => {
+test("the quote: a signed, matching answer passes, with or without the app's extra fields (env production, status_url, meta)", async () => {
   const q = await verify(signHub(orderQuote({ payer: agentBase, recipientSha })));
   assert.equal(q.order_id, "ord_test_0001");
+  await verify(signHub(orderQuote({ payer: agentBase, recipientSha, env: "production", status_url: "https://satohub.ai/api/commerce/order/ord_test_0001" })));
   assert.equal(q.price.total_base_units, 21_500_000n);
   assert.equal(q.title, "Mechanical pencil, 0.5 mm");
 });
@@ -90,6 +97,7 @@ test("the quote: a fee, another payer or chain, an expired or invalid quote, or 
     orderQuote({ payer: agentBase, recipientSha, quote_status: "item-unavailable" }),
     orderQuote({ payer: agentBase, recipientSha, merchant: "someone" }),
     orderQuote({ payer: agentBase, recipientSha, kind: "swap" }),
+    orderQuote({ payer: agentBase, recipientSha, env: "staging" }),
     { ...orderQuote({ payer: agentBase, recipientSha }), price: { item_usd: 19.99, tax_usd: 1.51, shipping_usd: 0, total_usd: 25, currency: "usdc", total_base_units: "25000000" } },
     { ...orderQuote({ payer: agentBase, recipientSha }), price: { item_usd: 19.99, tax_usd: 1.51, shipping_usd: 0, total_usd: 21.5, currency: "usdc", total_base_units: "21600000" } },
   ];
@@ -212,7 +220,7 @@ test("an order end to end (Base, auto): the address goes only in the request bod
   const r = await C.placeOrder({ input: "https://www.amazon.com/dp/B0TESTASIN", chain: "base" }, { fetchImpl, origin: ORIGIN, jwks: JWKS, simulate: simWith([transferLog(USDC_BASE, agentBase, MERCHANT, MAX)]).simulate, signAndSend: okSign, c: {} });
   assert.equal(seen[0].url, `${ORIGIN}/api/commerce/order`);
   const sent = JSON.parse(seen[0].init.body);
-  assert.deepEqual(sent, { product: "amazon:B0TESTASIN", chain: "base", payer: agentBase, recipient });
+  assert.deepEqual(sent, { product: "B0TESTASIN", chain: "base", payer: agentBase, recipient });
   assert.match(seen[0].init.headers["user-agent"], /^sato-agent\//);
   assert.match(r.explorer, /basescan/);
   assert.match(r.card.join("\n"), /Item \$19\.99 · tax \$1\.51 · shipping \$0\.00 · total 21\.5 USDC on Base\. No Sato Hub fee\./);

@@ -62,12 +62,13 @@ export function looksLikeAmazon(input) {
 }
 
 /**
- * The product as sent to Sato Hub: `amazon:<ASIN>` (an ASIN, or a link with one in its path), else `amazon:<link>`
- * (a short link). Amazon US only; another Amazon store is refused.
+ * The product as sent to Sato Hub: the ASIN (given, or taken from a link's path). Sato Hub builds the merchant's
+ * `amazon:<ASIN>` itself. A short link (a.co, amzn.to) is never opened, here or at Sato Hub: the owner sends the full
+ * link or the ASIN. Amazon US only; another Amazon store is refused.
  */
 export function amazonProduct(input) {
   const s = String(input ?? "").trim();
-  if (/^[A-Za-z0-9]{10}$/.test(s) && ASIN.test(s.toUpperCase())) return { product: `amazon:${s.toUpperCase()}`, asin: s.toUpperCase() };
+  if (/^[A-Za-z0-9]{10}$/.test(s) && ASIN.test(s.toUpperCase())) return { product: s.toUpperCase(), asin: s.toUpperCase() };
   let u;
   try {
     u = new URL(s);
@@ -81,8 +82,10 @@ export function amazonProduct(input) {
     throw new Error("give an Amazon link (amazon.com) or a 10-character ASIN");
   }
   const m = /\/(?:dp|gp\/product|gp\/aw\/d|exec\/obidos\/asin)\/([A-Za-z0-9]{10})(?:[/?]|$)/.exec(u.pathname + (u.pathname.endsWith("/") ? "" : "/"));
-  if (m && ASIN.test(m[1].toUpperCase())) return { product: `amazon:${m[1].toUpperCase()}`, asin: m[1].toUpperCase() };
-  if (["a.co", "amzn.to"].includes(host)) return { product: `amazon:https://${host}${u.pathname}`, asin: null };
+  if (m && ASIN.test(m[1].toUpperCase())) return { product: m[1].toUpperCase(), asin: m[1].toUpperCase() };
+  if (["a.co", "amzn.to", "amzn.com", "www.amzn.com"].includes(host)) {
+    throw new Error("short Amazon links are not opened: send the full product link (it has /dp/ followed by the ASIN) or the ASIN itself");
+  }
   throw new Error("that Amazon link has no product in it (look for /dp/<ASIN>); send the product page link or its ASIN");
 }
 
@@ -96,11 +99,14 @@ export function recipientOf(ship) {
 }
 
 /**
- * THE canonical form of a recipient, shared with Sato Hub: JSON with object keys sorted lexicographically at every
- * level, no whitespace, and no undefined (absent) keys. `recipient_sha256` is the SHA-256 hex of this string (UTF-8).
+ * THE canonical form of a recipient, shared with Sato Hub (app lib/commerce/validate.ts canonicalRecipient): the object
+ * exactly as Sato Hub sends it to the merchant, `{ email, physicalAddress: { name, line1, line2?, city, state,
+ * postalCode, country } }`, as JSON with object keys sorted lexicographically at every level, no whitespace, and no
+ * absent keys (`line2` left out when unset). `recipient_sha256` is the SHA-256 hex of this string (UTF-8).
  */
 export function canonicalRecipient(recipient) {
-  return canonicalJson(recipient);
+  const { email, ...physicalAddress } = recipient;
+  return canonicalJson({ email, physicalAddress });
 }
 
 export const recipientSha256 = (recipient) => createHash("sha256").update(canonicalRecipient(recipient), "utf8").digest("hex");
@@ -162,6 +168,8 @@ export async function verifyOrderQuote(body, ctx) {
   if (!samePayer(chain, body.payer, payer)) bad("it is for a different payer than this wallet");
   if (body.sato_fee_usd !== 0) bad(`it carries a Sato Hub fee (${clean(JSON.stringify(body.sato_fee_usd) ?? "none", 30)}); Amazon orders have none`);
   if (body.merchant !== "crossmint") bad("its merchant is not Crossmint");
+  // Sato Hub's test lane (env "staging") pays in a test token on test networks: never something this wallet signs.
+  if (body.env !== undefined && body.env !== "production") bad(`it is a ${clean(String(body.env), 20)} quote, not a real order`);
   if (body.quote_status !== "valid") bad(`its quote is ${clean(body.quote_status ?? "missing", 40)}, not valid`);
   const expires = Date.parse(body.expires_at);
   if (!Number.isFinite(expires)) bad("it has no expiry");

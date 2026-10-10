@@ -515,15 +515,15 @@ test("the thresholds: 300 bps of slippage, 300 bps of price impact, a 3% Base va
   // Base value gap (percent) and sell-back loss (bps)
   const baseOf = (plan) => baseRig(plan).deps;
   assert.deepEqual(await at(DEGEN_BUY, buyPlan({ market: { price_impact_pct: null, amount_in_usd: 20, amount_out_usd: 19.4, value_gap_pct: 3 } }), baseOf), []);
-  assert.deepEqual(await at(DEGEN_BUY, buyPlan({ market: { price_impact_pct: null, amount_in_usd: 20, amount_out_usd: 19.38, value_gap_pct: 3.1 } }), baseOf), ["value_gap_over_3_pct"]);
+  assert.deepEqual(await at(DEGEN_BUY, buyPlan({ market: { price_impact_pct: null, amount_in_usd: 20, amount_out_usd: 19.38, value_gap_pct: 3.1 } }), baseOf), ["value_gap_over_3_pct_upto_4pct"]);
   assert.deepEqual(await at(DEGEN_BUY, buyPlan({ sellBack: { checked: true, sold_units: 5n * 10n ** 21n, returned_units: 19_400_000n, asset: "USDC", loss_bps: 300, allowed_loss_bps: 600, route_id: "r" } }), baseOf), []);
-  assert.deepEqual(await at(DEGEN_BUY, buyPlan({ sellBack: { checked: true, sold_units: 5n * 10n ** 21n, returned_units: 19_300_000n, asset: "USDC", loss_bps: 301, allowed_loss_bps: 600, route_id: "r" } }), baseOf), ["sell_back_loss_over_300_bps"]);
+  assert.deepEqual(await at(DEGEN_BUY, buyPlan({ sellBack: { checked: true, sold_units: 5n * 10n ** 21n, returned_units: 19_300_000n, asset: "USDC", loss_bps: 301, allowed_loss_bps: 600, route_id: "r" } }), baseOf), ["sell_back_loss_over_300_bps_upto_4pct"]);
   // a sale carries no sell-back test, and a value gap on a sale asks the same way
-  assert.deepEqual(await at(DEGEN_SELL, sellPlan({ market: { price_impact_pct: null, amount_in_usd: 21, amount_out_usd: 19.9, value_gap_pct: 5.24 } }), baseOf), ["value_gap_over_3_pct"]);
+  assert.deepEqual(await at(DEGEN_SELL, sellPlan({ market: { price_impact_pct: null, amount_in_usd: 21, amount_out_usd: 19.9, value_gap_pct: 5.24 } }), baseOf), ["value_gap_over_3_pct_upto_6pct"]);
   // Solana price impact (bps), from Jupiter
   const solOf = (impactBps) => solRig(bonkBuyPlan({ impactBps })).deps;
   assert.deepEqual(await at(BONK_BUY, 300, solOf), []);
-  assert.deepEqual(await at(BONK_BUY, 301, solOf), ["price_impact_over_300_bps"]);
+  assert.deepEqual(await at(BONK_BUY, 301, solOf), ["price_impact_over_300_bps_upto_4pct"]);
   assert.deepEqual(await at(BONK_BUY, null, solOf), [], "an unknown impact is not a reason (and not zero)");
 });
 
@@ -553,7 +553,7 @@ test("each reason forces the owner's approval in auto mode (exit 5), says why, a
   {
     const rig = baseRig(buyPlan({ market: { price_impact_pct: null, amount_in_usd: 20, amount_out_usd: 18.8, value_gap_pct: 6 } }));
     const e = await needs(runSwap(DEGEN_BUY, {}, rig.deps));
-    assert.deepEqual(e.intent.confirm_reasons, ["value_gap_over_3_pct"]);
+    assert.deepEqual(e.intent.confirm_reasons, ["value_gap_over_3_pct_upto_6pct"]);
     assert.match(e.reasons[0], /value gap that includes pool fees, Sato's fee and gas/);
     assert.equal(rig.executed.length, 0);
     const ok = await runSwap(DEGEN_BUY, { approve: e.approval.code }, rig.deps);
@@ -564,14 +564,14 @@ test("each reason forces the owner's approval in auto mode (exit 5), says why, a
   {
     const rig = baseRig(buyPlan({ sellBack: { checked: true, sold_units: 5n * 10n ** 21n, returned_units: 19_000_000n, asset: "USDC", loss_bps: 500, allowed_loss_bps: 600, route_id: "r" } }));
     const e = await needs(runSwap(DEGEN_BUY, {}, rig.deps));
-    assert.deepEqual(e.intent.confirm_reasons, ["sell_back_loss_over_300_bps"]);
+    assert.deepEqual(e.intent.confirm_reasons, ["sell_back_loss_over_300_bps_upto_5pct"]);
     await runSwap(DEGEN_BUY, { approve: e.approval.code }, rig.deps);
   }
   // 4. Solana price impact
   {
     const rig = solRig(bonkSellPlan({ impactBps: 900 }));
     const e = await needs(runSwap(BONK_SELL, {}, rig.deps));
-    assert.deepEqual(e.intent.confirm_reasons, ["price_impact_over_300_bps"]);
+    assert.deepEqual(e.intent.confirm_reasons, ["price_impact_over_300_bps_upto_9pct"]);
     assert.match(e.reasons[0], /moves the price by 9%/);
     const ok = await runSwap(BONK_SELL, { approve: e.approval.code }, rig.deps);
     await ok.prepared.execute();
@@ -586,6 +586,18 @@ test("each reason forces the owner's approval in auto mode (exit 5), says why, a
     await assert.rejects(runSwap(slippy, { approve: first.approval.code }, solRig(bonkSellPlan({ impactBps: 900 })).deps), /different intent/, "another slippage is another swap");
     await runSwap(BONK_SELL, { approve: first.approval.code }, solRig(bonkSellPlan({ impactBps: 900 })).deps); // still good for the swap it was given for
   }
+  // approving the impact the owner saw never approves a worse one: 9% approved, the re-quote says 40%
+  {
+    const seen = await needs(runSwap(BONK_SELL, {}, solRig(bonkSellPlan({ impactBps: 900 })).deps));
+    const worse = solRig(bonkSellPlan({ impactBps: 4000 }));
+    const again = await needs(runSwap(BONK_SELL, { approve: seen.approval.code }, worse.deps));
+    assert.deepEqual(again.intent.confirm_reasons, ["price_impact_over_300_bps_upto_40pct"], "asked again, with the new figure");
+    assert.equal(worse.executed.length, 0, "nothing was signed on the old approval");
+    // within the same band (8.5% after approving 9%) the approval still holds
+    const near = await needs(runSwap(BONK_SELL, {}, solRig(bonkSellPlan({ impactBps: 900 })).deps));
+    const ok = await runSwap(BONK_SELL, { approve: near.approval.code }, solRig(bonkSellPlan({ impactBps: 850 })).deps);
+    assert.deepEqual(ok.confirm.map((c) => c.code), ["price_impact_over_300_bps_upto_9pct"]);
+  }
   // a trade with no reason runs without the owner in auto mode
   {
     const rig = solRig(bonkBuyPlan({ impactBps: 100 }));
@@ -598,7 +610,7 @@ test("a dry run asks nobody and says what would need approval", async () => {
   owner();
   const rig = solRig(bonkSellPlan({ impactBps: 900 }));
   const r = await runSwap(BONK_SELL, { dryRun: true }, rig.deps);
-  assert.deepEqual(r.confirm.map((c) => c.code), ["price_impact_over_300_bps"]);
+  assert.deepEqual(r.confirm.map((c) => c.code), ["price_impact_over_300_bps_upto_9pct"]);
   assert.match(swapLines(r.prepared.display).join("\n"), /Needs the owner's approval before it is signed, because: Jupiter estimates this swap moves the price by 9%/);
 });
 
@@ -624,7 +636,7 @@ test("ask mode: the normal approval comes first; a reason only the quote shows n
     assert.deepEqual(first.intent.confirm_reasons, []);
     const second = await needs(runSwap(BONK_SELL, { approve: first.approval.code }, loud.deps));
     assert.ok(second, "the quote showed a price impact: asked again");
-    assert.deepEqual(second.intent.confirm_reasons, ["price_impact_over_300_bps"]);
+    assert.deepEqual(second.intent.confirm_reasons, ["price_impact_over_300_bps_upto_9pct"]);
     assert.notEqual(second.approval.code, first.approval.code);
     assert.match(second.message, /moves the price by 9%/);
     assert.equal(loud.executed.length, 0);

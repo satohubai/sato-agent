@@ -203,6 +203,14 @@ export function chooseSlippage({ flag, cap, longTail, tokenFeeBps = 0 }) {
 
 const reason = (code, text) => ({ code, text });
 
+/**
+ * A reason read from a quote carries the band the owner saw, rounded UP to the next whole
+ * percent ("…_upto_5pct" for 4.2%). The code is what the approval binds, so a re-quote in
+ * the same band still matches, and a worse one (or a different one) needs a new approval:
+ * approving a 4% price impact never approves a 40% one.
+ */
+const band = (pct) => `upto_${Math.max(1, Math.ceil(Number(pct) - 1e-9))}pct`;
+
 /** The reasons known before any quote: the slippage, and a Solana token's issuer powers. */
 function preConfirm(sized) {
   const out = [];
@@ -215,12 +223,12 @@ function preConfirm(sized) {
 function baseConfirm(plan) {
   const out = [];
   const m = plan.market;
-  if (m && typeof m.price_impact_pct === "number" && m.price_impact_pct > CONFIRM.valueGapPct) out.push(reason("price_impact_over_300_bps", `the route's own price impact is ${m.price_impact_pct}%, above ${CONFIRM.priceImpactBps / 100}%`));
+  if (m && typeof m.price_impact_pct === "number" && m.price_impact_pct > CONFIRM.priceImpactBps / 100) out.push(reason(`price_impact_over_300_bps_${band(m.price_impact_pct)}`, `the route's own price impact is ${m.price_impact_pct}%, above ${CONFIRM.priceImpactBps / 100}%`));
   if (m && typeof m.value_gap_pct === "number" && m.value_gap_pct > CONFIRM.valueGapPct) {
-    out.push(reason("value_gap_over_3_pct", `the route values what you get ${m.value_gap_pct}% below what you give (a value gap that includes pool fees, Sato's fee and gas), above ${CONFIRM.valueGapPct}%`));
+    out.push(reason(`value_gap_over_3_pct_${band(m.value_gap_pct)}`, `the route values what you get ${m.value_gap_pct}% below what you give (a value gap that includes pool fees, Sato's fee and gas), above ${CONFIRM.valueGapPct}%`));
   }
   if (plan.sell_back && plan.sell_back.loss_bps > CONFIRM.sellBackLossBps) {
-    out.push(reason("sell_back_loss_over_300_bps", `buying this token and selling it straight back (simulated) loses ${plan.sell_back.loss_bps / 100}%, above ${CONFIRM.sellBackLossBps / 100}%`));
+    out.push(reason(`sell_back_loss_over_300_bps_${band(plan.sell_back.loss_bps / 100)}`, `buying this token and selling it straight back (simulated) loses ${plan.sell_back.loss_bps / 100}%, above ${CONFIRM.sellBackLossBps / 100}%`));
   }
   return out;
 }
@@ -228,7 +236,7 @@ function baseConfirm(plan) {
 /** Solana reason from a plan: Jupiter's price impact. */
 function solanaConfirm(plan) {
   const bps = plan.quote?.price_impact_bps;
-  return typeof bps === "number" && bps > CONFIRM.priceImpactBps ? [reason("price_impact_over_300_bps", `Jupiter estimates this swap moves the price by ${bps / 100}%, above ${CONFIRM.priceImpactBps / 100}%`)] : [];
+  return typeof bps === "number" && bps > CONFIRM.priceImpactBps ? [reason(`price_impact_over_300_bps_${band(bps / 100)}`, `Jupiter estimates this swap moves the price by ${bps / 100}%, above ${CONFIRM.priceImpactBps / 100}%`)] : [];
 }
 
 const merge = (...lists) => {
@@ -652,7 +660,14 @@ export async function runSwap(req, { approve, dryRun = false, skipCheck = false 
   if (!dryRun && added.length) {
     const intent = swapIntent(sized, prepared.confirm.map((r) => r.code), { skipCheck });
     if (!codeFree) throw await needsApproval(intent, prepared.confirm);
-    await consumeApproval(approve, intent);
+    try {
+      await consumeApproval(approve, intent);
+    } catch (err) {
+      // The code was for what the owner saw before (another band: a worse price impact, a bigger loss).
+      // Nothing is signed; the owner is asked again, with the figures this quote shows.
+      if (!/different intent/.test(err.message)) throw err;
+      throw await needsApproval(intent, prepared.confirm);
+    }
   } else if (deferred) {
     throw deferred; // the code fit neither intent
   }

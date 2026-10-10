@@ -272,12 +272,15 @@ test("fork: the kit's simulation has a real PREVRANDAO, and the sell-back's seco
   // a real mixHash goes in; two blocks come out, the second later than the first
   const mix = `0x${"cd".repeat(32)}`;
   const blocks = await run({ prevRandao: mix, blockNumber: latest.number, timestamp: latest.timestamp });
-  assert.equal(blocks.length, 2);
-  const [a, b] = blocks.map((blk) => read(blk.calls[0].returnData));
+  // the node fills the blocks in between with empty ones: the first and the last carry the calls
+  assert.equal(blocks.length, evm.LATER_BLOCK[1].blocks);
+  assert.equal(blocks.filter((blk) => blk.calls.length).length, 2);
+  const [a, b] = [blocks[0], blocks.at(-1)].map((blk) => read(blk.calls[0].returnData));
   assert.equal(a[0], BigInt(mix), "block.prevrandao inside the simulation is the one the kit set");
   assert.equal(b[0], BigInt(mix));
   assert.equal(a[1], latest.number + 1n);
-  assert.equal(b[1], latest.number + 2n);
+  assert.equal(b[1], latest.number + BigInt(evm.LATER_BLOCK[1].blocks));
+  assert.equal(b[2], latest.timestamp + BigInt(evm.LATER_BLOCK[1].seconds), "the sell-back runs blocks after the buy");
   assert.ok(b[2] > a[2] && a[2] > latest.timestamp, "later timestamps");
 });
 

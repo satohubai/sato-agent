@@ -217,15 +217,22 @@ test("swap: a link whose resolver answer is not signed by Sato Hub decides nothi
   assert.deepEqual(asked.map((a) => a.name), ["onchain_agent_resolve_token"], "nothing else was asked of Sato Hub");
 });
 
-test("a link Sato Hub resolves becomes the address, and the chain is read for it", async () => {
-  reset();
+test("a link Sato Hub resolves becomes the address only when its answer is signed; the chain is read for it", async () => {
+  // the token card for a link: an unsigned answer decides nothing (the owner trades the card's address)
+  reset(); // the mock answers, but unsigned (meta.signature is null)
   const r = await run(["token", "https://dexscreener.com/base/0xc9034c3e7f58003e6ae0c8438e7c8f4598d5acaa", "--json"]);
-  assert.equal(r.code, 0, r.stderr);
-  const card = JSON.parse(r.stdout);
+  assert.equal(r.code, 3, r.stderr);
+  assert.match(r.stdout + r.stderr, /resolver_unsigned/);
+  assert.match(r.stdout + r.stderr, /send the contract address instead/);
+  assert.equal(asked.length, 1, "no token check for an address the kit did not accept");
+  // signed: the link's token becomes the card's address, read from the chain and checked by that address
+  const card = await describeToken("https://dexscreener.com/base/0xc9034c3e7f58003e6ae0c8438e7c8f4598d5acaa", {}, {
+    resolveHub: async () => ({ ok: true, token: resolveBase(), signature: { ok: true } }),
+    resolveBaseToken: async (a) => ({ address: a, decimals: chainDecimals, symbol: "DEGEN", name: "Degen", major: false }),
+    runCheck: async (args) => ({ available: true, args }),
+  });
   assert.equal(card.address, DEGEN);
-  assert.equal(card.sato_hub_check.available, true);
-  assert.equal(asked[0].args.input.startsWith("https://dexscreener.com/"), true);
-  assert.deepEqual(asked[1].args, { token: DEGEN, chain: "Base" });
+  assert.equal(card.sato_hub_resolver.signature_checked, true);
   // a link Sato Hub answers "not found" for is not guessed at
   reset({ resolve: () => ({ resolved: false, code: "pair_unresolved", error: "that pool has no base token on record" }) });
   const miss = await run(["token", "https://dexscreener.com/base/0xdead"]);

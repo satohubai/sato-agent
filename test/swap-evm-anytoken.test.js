@@ -830,9 +830,10 @@ test("the sell-back simulation runs the buy in one block and the token's approve
     assert.equal(b.blockOverrides.prevRandao, MIX, "the latest block's mixHash");
     assert.notEqual(BigInt(b.blockOverrides.prevRandao), 0n, "never zero");
     assert.equal(b.blockOverrides.baseFeePerGas, "0x4c4b40", "the real base fee, as before");
-    assert.equal(BigInt(b.blockOverrides.number), 1001n + BigInt(i), "later block numbers");
-    assert.equal(BigInt(b.blockOverrides.time), 1_700_000_002n + BigInt(2 * i), "later timestamps");
+    assert.equal(BigInt(b.blockOverrides.number), 1000n + BigInt(evm.LATER_BLOCK[i].blocks), "later block numbers");
+    assert.equal(BigInt(b.blockOverrides.time), 1_700_000_000n + BigInt(evm.LATER_BLOCK[i].seconds), "later timestamps");
   }
+  assert.equal(BigInt(blocks[1].blockOverrides.time) - BigInt(blocks[0].blockOverrides.time) > 0n, true, "the sell-back runs after the buy");
   assert.ok(BigInt(blocks[1].blockOverrides.number) > BigInt(blocks[0].blockOverrides.number));
   assert.ok(BigInt(blocks[1].blockOverrides.time) > BigInt(blocks[0].blockOverrides.time));
   // the request builder in isolation: no randao without a real one, one block without a split

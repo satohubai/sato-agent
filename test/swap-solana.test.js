@@ -1505,7 +1505,7 @@ test("tokens: a Token-2022 mint with a transfer fee is read from the chain, the 
 
 test("tokens: Token-2022 extensions that stop a sale, or that the kit cannot read, are refused, naming the extension", async () => {
   const mint = await randomAddress();
-  for (const name of ["NonTransferable", "ConfidentialTransferMint", "ConfidentialTransferFeeConfig", "ConfidentialMintBurn"]) {
+  for (const name of ["NonTransferable", "ConfidentialMintBurn"]) {
     // On its own and among harmless ones.
     for (const extensions of [[ext(name)], [ext("MetadataPointer"), ext(name), ext("TokenMetadata")]]) {
       const t = await S.resolveSolanaToken(mint, { rpc: rpcFor(mint, mintEntry({ program: TOKEN_2022_PROGRAM, extensions })) });
@@ -1525,14 +1525,20 @@ test("tokens: Token-2022 extensions that stop a sale, or that the kit cannot rea
   assert.equal(all.refusals.length, 1);
   assert.match(all.refusals[0].message, /\bNonTransferable\b/);
   assert.deepEqual(all.confirm.map((c) => c.extension), ["PermanentDelegate", "TransferHook"]);
-  assert.deepEqual(Object.keys(S.TOKEN_2022_EXTENSION_POLICY.refuse).sort(), ["ConfidentialMintBurn", "ConfidentialTransferFeeConfig", "ConfidentialTransferMint", "NonTransferable"]);
-  assert.deepEqual(Object.keys(S.TOKEN_2022_EXTENSION_POLICY.confirm).sort(), ["PermanentDelegate", "TransferHook"]);
+  assert.deepEqual(Object.keys(S.TOKEN_2022_EXTENSION_POLICY.refuse).sort(), ["ConfidentialMintBurn", "NonTransferable"]);
+  assert.deepEqual(Object.keys(S.TOKEN_2022_EXTENSION_POLICY.confirm).sort(), ["ConfidentialTransferFeeConfig", "ConfidentialTransferMint", "PermanentDelegate", "TransferHook"]);
 });
 
-test("tokens: a permanent delegate or a transfer hook is not refused: it is listed for the owner to confirm, trade by trade", async () => {
+test("tokens: a permanent delegate, a transfer hook or confidential transfers are not refused: they are listed for the owner to confirm, trade by trade", async () => {
   const mint = await randomAddress();
-  const want = { PermanentDelegate: "the issuer can move or burn this token in your wallet", TransferHook: "the issuer's program runs on every transfer and can block a sale" };
-  for (const name of ["PermanentDelegate", "TransferHook"]) {
+  const private_ = "confidential transfers are enabled on this token; plain transfers still work, but the issuer can configure accounts for private balances";
+  const want = {
+    PermanentDelegate: "the issuer can move or burn this token in your wallet",
+    TransferHook: "the issuer's program runs on every transfer and can block a sale",
+    ConfidentialTransferMint: private_,
+    ConfidentialTransferFeeConfig: private_.replace("transfers are", "transfers with a fee are"),
+  };
+  for (const name of ["PermanentDelegate", "TransferHook", "ConfidentialTransferMint", "ConfidentialTransferFeeConfig"]) {
     for (const extensions of [[ext(name)], [ext("MetadataPointer"), ext(name), ext("TokenMetadata")]]) {
       const t = await S.resolveSolanaToken(mint, { rpc: rpcFor(mint, mintEntry({ program: TOKEN_2022_PROGRAM, extensions })) });
       assert.deepEqual(t.refusals, [], name);
@@ -1566,6 +1572,13 @@ test("tokens: a transfer fee, a freeze or mint authority, metadata and the like 
   assert.match(notes, /interest-adjusted/);
   assert.doesNotMatch(notes, /\b(safe|secure|trusted|guaranteed?|scam|malicious)\b/i);
   S.assertSolanaTokenTradable(t);
+  // ...and the powers that can stop a sale or make it return less are listed for the owner to confirm: a freeze authority, pausable
+  // transfers, a transfer fee above 300 bps (400 bps here, in the band "upto_4pct")
+  assert.deepEqual(t.confirm.map((c) => [c.extension, c.code]), [["FreezeAuthority", "freeze_authority_set"], ["PausableConfig", "transfers_pausable"], ["TransferFeeConfig", "transfer_fee_upto_4pct"]]);
+  const low = await S.resolveSolanaToken(mint, { rpc: rpcFor(mint, mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [ext("TransferFeeConfig", 300, 300)] })) });
+  assert.deepEqual(low.confirm, [], "300 bps is the line: not above it");
+  const odd = await S.resolveSolanaToken(mint, { rpc: rpcFor(mint, mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [ext("TransferFeeConfig", 301, 301)] })) });
+  assert.deepEqual(odd.confirm.map((c) => c.code), ["transfer_fee_upto_4pct"], "301 bps rounds up to the 4% band");
   // A classic mint reports its authorities too.
   const classic = await S.resolveSolanaToken(mint, { rpc: rpcFor(mint, mintEntry({ freezeAuthority: auth })) });
   assert.equal(classic.freeze_authority, auth);

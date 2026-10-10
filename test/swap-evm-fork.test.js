@@ -257,6 +257,30 @@ test("fork: the kit's simulation runs with the chain's real base fee, so BASEFEE
   assert.equal(real, latest.baseFeePerGas);
 });
 
+test("fork: the kit's simulation has a real PREVRANDAO, and the sell-back's second block has a later NUMBER and TIMESTAMP, with state carried over", { skip: !enabled }, async () => {
+  // a contract that returns [prevrandao, number, timestamp]: 44 5f 52 | 43 60 20 52 | 42 60 40 52 | 60 60 5f f3
+  const probe = "0x00000000000000000000000000000000000b45f0";
+  const code = "0x445f52436020524260405260605ff3";
+  const latest = await pub.getBlock({ blockTag: "latest" });
+  const fees = { baseFeePerGas: latest.baseFeePerGas, maxPriorityFeePerGas: 1_000_000n };
+  const read = (hex) => [BigInt(`0x${hex.slice(2, 66)}`), BigInt(`0x${hex.slice(66, 130)}`), BigInt(`0x${hex.slice(130, 194)}`)];
+  const run = async (extra) => {
+    const params = evm.buildSimulationRequest({ taker: me, calls: [{ to: probe, data: "0x" }, { to: probe, data: "0x" }], splitAt: 1, ...fees, ...extra });
+    for (const b of params[0].blockStateCalls) b.stateOverrides = { [probe]: { code } };
+    return rpc("eth_simulateV1", params);
+  };
+  // a real mixHash goes in; two blocks come out, the second later than the first
+  const mix = `0x${"cd".repeat(32)}`;
+  const blocks = await run({ prevRandao: mix, blockNumber: latest.number, timestamp: latest.timestamp });
+  assert.equal(blocks.length, 2);
+  const [a, b] = blocks.map((blk) => read(blk.calls[0].returnData));
+  assert.equal(a[0], BigInt(mix), "block.prevrandao inside the simulation is the one the kit set");
+  assert.equal(b[0], BigInt(mix));
+  assert.equal(a[1], latest.number + 1n);
+  assert.equal(b[1], latest.number + 2n);
+  assert.ok(b[2] > a[2] && a[2] > latest.timestamp, "later timestamps");
+});
+
 // ---------------------------------------------------------------- any ERC-20: DEGEN against USDC and ETH, live routes, real simulation
 
 const tokenBal = (token, owner) => pub.readContract({ address: token, abi: erc20Abi, functionName: "balanceOf", args: [owner] });
@@ -364,7 +388,7 @@ test("fork: SELL DEGEN for USDC: the fee comes off the USDC received (FEE_ON_DST
   assert.deepEqual(out.warnings, []);
   assert.deepEqual(out.sato_fee, { bps: 15, recipient: SATO_FEE_RECIPIENT, side: "out" });
   const row = actions().filter((x) => x.kind === "swap").at(-1);
-  assert.deepEqual([row.status, row.asset_in, row.asset_out, row.sato_fee_side], ["confirmed", "DEGEN", "USDC", "out"]);
+  assert.deepEqual([row.status, row.asset_in, row.asset_out, row.sato_fee_side], ["confirmed", "DEGEN 0x4ed4…efed", "USDC", "out"]);
   assert.equal(row.approve_tx, out.approve_tx);
 });
 

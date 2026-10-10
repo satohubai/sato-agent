@@ -97,7 +97,7 @@ export const looksLikeLink = (input) => /^\s*(https?:\/\/|[a-z0-9-]+(\.[a-z0-9-]
  * The answer is a HINT, not the truth: the caller re-reads decimals and the token program from the chain, and the chain wins.
  * Its price and liquidity are one pool's listing, dated by `sources`; they are shown as such and never used to size a trade.
  */
-export async function resolveTokenViaHub(input, { chain, call = callTool, verifySignature } = {}) {
+export async function resolveTokenViaHub(input, { chain, call = callTool, verifySignature, maxAgeMs = 10 * 60 * 1000 } = {}) {
   const args = { input: String(input), ...(chain ? { chain } : {}), response_format: "json" };
   let r;
   try {
@@ -113,7 +113,7 @@ export async function resolveTokenViaHub(input, { chain, call = callTool, verify
   let signature = { ok: false, error: "not checked" };
   try {
     const v = verifySignature ?? (await import("./hub-signature.js")).verifyHubSignature;
-    await v(s, { maxAgeMs: 10 * 60 * 1000 });
+    await v(s, { maxAgeMs });
     signature = { ok: true };
   } catch (err) {
     signature = { ok: false, error: err.message };

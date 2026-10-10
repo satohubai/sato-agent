@@ -139,7 +139,7 @@ test("token <address>: the card has the chain's facts, Sato Hub's dated price an
   reset();
   const r = await run(["token", DEGEN]);
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /Degen \(DEGEN\) on Base/);
+  assert.match(r.stdout, /Degen \(DEGEN 0x4ed4…efed\) on Base/, "a token is always shown with its short address");
   assert.match(r.stdout, new RegExp(`Address:  ${DEGEN}`));
   assert.match(r.stdout, /Decimals: 18 \(read from the chain\)/);
   assert.match(r.stdout, /Program:  ERC-20/);
@@ -187,7 +187,7 @@ test("Sato Hub's resolver missing: a bare address is read from the chain alone, 
   reset({ noResolver: true });
   const r = await run(["token", DEGEN]);
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /Degen \(DEGEN\) on Base \(name per the contract/);
+  assert.match(r.stdout, /Degen \(DEGEN 0x4ed4…efed\) on Base \(name per the contract/);
   assert.match(r.stdout, /Decimals: 18 \(read from the chain\)/);
   assert.match(r.stdout, /Price:    unknown/);
   assert.match(r.stdout, /Liquidity: unknown/);
@@ -206,6 +206,15 @@ test("Sato Hub's resolver missing: a link says so and asks for the contract addr
   const s = await run(["swap", "--chain", "base", "--from", "USDC", "--to", "https://dexscreener.com/base/0xc9034c3e7f58003e6ae0c8438e7c8f4598d5acaa", "--amount", "5", "--dry-run"]);
   assert.equal(s.code, 1);
   assert.match(s.stderr, /Sato Hub could not resolve this link right now; send the contract address instead/);
+});
+
+test("swap: a link whose resolver answer is not signed by Sato Hub decides nothing (exit 3, resolver_unsigned)", async () => {
+  reset(); // the mock answers, but unsigned (meta.signature is null)
+  const s = await run(["swap", "--chain", "base", "--from", "USDC", "--to", "https://dexscreener.com/base/0xc9034c3e7f58003e6ae0c8438e7c8f4598d5acaa", "--amount", "5", "--dry-run"]);
+  assert.equal(s.code, 3, s.stderr);
+  assert.match(s.stderr, /resolver_unsigned/);
+  assert.match(s.stderr, /send the contract address instead/);
+  assert.deepEqual(asked.map((a) => a.name), ["onchain_agent_resolve_token"], "nothing else was asked of Sato Hub");
 });
 
 test("a link Sato Hub resolves becomes the address, and the chain is read for it", async () => {
@@ -228,7 +237,8 @@ test("token on Solana: authorities and extensions in plain words, issuer powers 
   reset({ resolve: (a) => resolveSol(a.input) });
   const bonk = await run(["token", BONK]);
   assert.equal(bonk.code, 0, bonk.stderr);
-  assert.match(bonk.stdout, /Bonk \(BONK\) on Solana/);
+  assert.match(bonk.stdout, /Bonk \(BONK DezX…B263\) on Solana/);
+  assert.match(bonk.stdout, /Needs your approval on every trade: a freeze authority is set: it can freeze this wallet's account/);
   assert.match(bonk.stdout, /Decimals: 5 \(read from the chain\)/);
   assert.match(bonk.stdout, /Program:  Token \(read from the chain\)/);
   assert.match(bonk.stdout, /Mint authority:   none \(no more can be created\)/);
@@ -319,7 +329,7 @@ test("swap: a token that stops a sale is refused before anything is asked; high 
   const r = await run(["swap", "--chain", "solana", "--from", "USDC", "--to", BONK, "--amount", "5", "--slippage-bps", "400", "--json"]);
   assert.equal(r.code, 5, r.stderr);
   const out = JSON.parse(r.stdout);
-  assert.deepEqual(out.needs_approval.intent.confirm_reasons, ["slippage_over_300_bps"]);
+  assert.deepEqual(out.needs_approval.intent.confirm_reasons, ["freeze_authority_set", "slippage_over_300_bps"], "BONK's mock mint has a freeze authority: that asks too");
   assert.deepEqual([out.needs_approval.intent.from_id, out.needs_approval.intent.to_id, out.needs_approval.intent.slippage_bps], ["EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", BONK, 400]);
   assert.match(out.needs_approval.reasons[0], /the slippage is 400 bps, above 300 bps/);
   assert.equal(asked.length, 0, "no quote before the owner says yes");

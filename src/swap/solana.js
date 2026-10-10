@@ -227,6 +227,9 @@ const TOKEN_2022_EXTENSIONS = Object.freeze({
 /** Fixed data sizes of the mint extensions the kit reads (TokenMetadata is variable). A known extension of another size is unreadable. */
 const EXTENSION_SIZE = { TransferFeeConfig: 108, MintCloseAuthority: 32, ConfidentialTransferMint: 65, DefaultAccountState: 1, NonTransferable: 0, InterestBearingConfig: 52, PermanentDelegate: 32, TransferHook: 64, ConfidentialTransferFeeConfig: 129, MetadataPointer: 64, GroupPointer: 64, TokenGroup: 80, GroupMemberPointer: 64, TokenGroupMember: 72, ConfidentialMintBurn: 196, ScaledUiAmountConfig: 56, PausableConfig: 33 };
 
+/** A Token-2022 transfer fee above this (basis points) stops the trade for the owner's approval. */
+export const TRANSFER_FEE_CONFIRM_BPS = 300;
+
 /**
  * What the kit does with each Token-2022 mint extension. `refuse`: the swap is not built,
  * with the reason shown to the owner. `confirm` (owner decision, 2026-10-09): the swap is built, and the
@@ -238,11 +241,13 @@ export const TOKEN_2022_EXTENSION_POLICY = Object.freeze({
   confirm: Object.freeze({
     PermanentDelegate: "the issuer can move or burn this token in your wallet",
     TransferHook: "the issuer's program runs on every transfer and can block a sale",
+    // Owner decision (2026-10-09): issuer-power tokens, PYUSD included, are allowed with per-trade confirmation. A plain
+    // (non-confidential) transfer works on these mints, and a swap only moves plain balances.
+    ConfidentialTransferMint: "confidential transfers are enabled on this token; plain transfers still work, but the issuer can configure accounts for private balances",
+    ConfidentialTransferFeeConfig: "confidential transfers with a fee are enabled on this token; plain transfers still work, but the issuer can configure accounts for private balances",
   }),
   refuse: Object.freeze({
     NonTransferable: "this mint cannot be transferred, so it cannot be sold or swapped",
-    ConfidentialTransferMint: "confidential transfers are enabled on this mint, and the kit cannot tell that a plain sale will work",
-    ConfidentialTransferFeeConfig: "confidential transfers with a fee are enabled on this mint, and the kit cannot tell that a plain sale will work",
     ConfidentialMintBurn: "this mint hides its supply changes behind confidential mint and burn, which this kit does not read",
   }),
   report: Object.freeze(["TransferFeeConfig", "MintCloseAuthority", "InterestBearingConfig", "ScaledUiAmountConfig", "PausableConfig", "MetadataPointer", "TokenMetadata", "GroupPointer", "TokenGroup", "GroupMemberPointer", "TokenGroupMember", "DefaultAccountState"]),
@@ -353,6 +358,15 @@ export function parseMintAccount(entry, mint) {
 
   // Reported to the owner, in plain words (no verdict).
   for (const c of confirm) notes.push(`This mint has the Token-2022 ${c.extension} extension: ${c.why}. The owner approves each trade of it.`);
+  // Powers that can stop a sale, or make it return less, are not extensions of the table above but still need the owner's say
+  // on each trade (they apply whatever slippage the owner's cap allows). `code` is what an approval binds; a quantity is
+  // bound in a band ("…_upto_5pct"), rounded up, so approving a 4% fee never approves a 40% one.
+  if (freezeAuthority) confirm.push({ extension: "FreezeAuthority", code: "freeze_authority_set", why: "a freeze authority is set: it can freeze this wallet's account for the token, and a frozen account cannot sell" });
+  if (details.PausableConfig) confirm.push({ extension: "PausableConfig", code: "transfers_pausable", why: "transfers of this token can be paused by its authority, and while they are paused it cannot be sold" });
+  if (details.TransferFeeConfig && details.TransferFeeConfig.bps > TRANSFER_FEE_CONFIRM_BPS) {
+    const bps = details.TransferFeeConfig.bps;
+    confirm.push({ extension: "TransferFeeConfig", code: `transfer_fee_upto_${Math.ceil(bps / 100)}pct`, why: `the token takes a ${bps / 100}% fee on every transfer, so a sale returns less than the quote suggests` });
+  }
   if (freezeAuthority) notes.push(`A freeze authority is set (${freezeAuthority}): it can freeze the agent's account for this token, and a frozen account cannot sell.`);
   else notes.push("No freeze authority is set on this mint.");
   if (mintAuthority) notes.push(`A mint authority is set (${mintAuthority}): it can create more of this token.`);
@@ -677,6 +691,22 @@ function withDefaults(deps = {}) {
     userAgent: deps.userAgent ?? USER_AGENT,
     jupiterBase: deps.jupiterBase ?? JUPITER_API,
   };
+}
+
+/**
+ * What Jupiter's public quote says `units` of `inputMint` returns in `outputMint` right now (base units, a bigint), or null when
+ * it has none. Jupiter only: no call to Sato Hub, so no public record. Used to size a token sale against the owner's limits BEFORE
+ * Sato Hub is asked for its fee disclosure (run.js); advisory, as the plan built afterwards is sized and checked again.
+ */
+export async function publicQuoteOut({ inputMint, outputMint, units, slippageBps }, deps = {}) {
+  const d = withDefaults(deps);
+  const q = new URLSearchParams({ inputMint, outputMint, amount: String(units), slippageBps: String(slippageBps ?? SLIPPAGE_BPS_DEFAULT), swapMode: "ExactIn", restrictIntermediateTokens: "true" });
+  try {
+    const quote = await jupiter(`/quote?${q}`, {}, d);
+    return /^\d+$/.test(String(quote?.outAmount)) && big(quote.outAmount) > 0n ? big(quote.outAmount) : null;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------- plan

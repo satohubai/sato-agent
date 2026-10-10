@@ -21,6 +21,8 @@ const { decodeFunctionData, encodeFunctionData, erc20Abi, toEventSelector } = aw
 const { KYBER_ROUTER_BASE, NATIVE_PLACEHOLDER, SATO_FEE_RECIPIENT, TOKENS, KYBER_FLAGS: FLAGS, KYBER_ROUTER_ABI: ROUTER_ABI } = evm;
 const USDC = TOKENS.USDC.address;
 const DEGEN_ADDRESS = "0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed";
+/** Every long-tail token is named with its short address, in the plan, the approval, the ledger and the messages (homoglyphs). */
+const DEGEN_L = "DEGEN 0x4ed4…efed";
 const DEGEN = { address: DEGEN_ADDRESS, symbol: "DEGEN", name: "Degen", decimals: 18, native: false, major: false };
 const STRANGER = "0x000000000000000000000000000000000000dEaD";
 const TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
@@ -246,9 +248,9 @@ test("a token that calls itself USDC is shown with its address, never as plain U
 
 test("intent: a long-tail token on one side, a major on the other, in either direction", () => {
   const buy = evm.parseIntent({ from: "USDC", to: DEGEN, amount: "20", slippageBps: 50 });
-  assert.deepEqual([buy.longTail, buy.feeSide, buy.amountIn, buy.to], ["out", "in", 20_000_000n, "DEGEN"]);
+  assert.deepEqual([buy.longTail, buy.feeSide, buy.amountIn, buy.to], ["out", "in", 20_000_000n, DEGEN_L]);
   const sell = evm.parseIntent({ from: DEGEN, to: "ETH", amount: "5000.5", slippageBps: 50 });
-  assert.deepEqual([sell.longTail, sell.feeSide, sell.amountIn, sell.from], ["in", "out", 5000_500000000000000000n, "DEGEN"]);
+  assert.deepEqual([sell.longTail, sell.feeSide, sell.amountIn, sell.from], ["in", "out", 5000_500000000000000000n, DEGEN_L]);
   assert.equal(evm.parseIntent({ from: "USDC", to: "ETH", amount: "1", slippageBps: 50 }).longTail, null);
   assert.equal(evm.parseIntent({ from: "USDC", to: "ETH", amount: "1", slippageBps: 50 }).feeSide, "in");
   // WETH is a major too
@@ -375,11 +377,11 @@ test("a sale whose fee is on the input (so in the long-tail token) is refused: d
   // honest about it: the side is 'in', which is not the major side
   const e = await refusal(feeIn("in"));
   assert.deepEqual(e.refusals.map((r) => r.rule), ["fee_side_not_major"]);
-  assert.match(e.message, /fee would be taken in DEGEN, not in USDC or ETH/);
+  assert.match(e.message, /fee would be taken in DEGEN 0x4ed4…efed, not in USDC or ETH/);
   // says nothing: the kit reads it as 'out' and the transaction takes it from the input, in DEGEN
   const e2 = await refusal(feeIn(undefined));
   assert.deepEqual(e2.refusals.map((r) => r.rule), ["fee_side_not_major"]);
-  assert.match(e2.message, /so in DEGEN, not in USDC or ETH/);
+  assert.match(e2.message, /so in DEGEN 0x4ed4…efed, not in USDC or ETH/);
   // says 'out' and delivers 'in': a transaction that is not what was disclosed
   assert.deepEqual(await rules(feeIn("out")), ["fee_not_as_disclosed"]);
 });
@@ -482,10 +484,10 @@ test("the summary of a sale names the token, the fee side and the asset the fee 
   const { plan } = await verifyLT("degen-to-usdc", { feeSide: "out" });
   const s = evm.summarizeBaseSwapPlan(plan);
   assert.doesNotThrow(() => JSON.stringify(s));
-  assert.deepEqual([s.sell.asset, s.sell.address, s.sell.name, s.sell.amount], ["DEGEN", DEGEN_ADDRESS, "Degen", "5000"]);
+  assert.deepEqual([s.sell.asset, s.sell.address, s.sell.name, s.sell.amount], [DEGEN_L, DEGEN_ADDRESS, "Degen", "5000"]);
   assert.equal(s.buy.asset, "USDC");
   assert.deepEqual([s.sato_fee.side, s.sato_fee.asset, s.sato_fee.bps], ["out", "USDC", 15]);
-  assert.deepEqual(s.long_tail, { side: "in", role: "selling", asset: "DEGEN", address: DEGEN_ADDRESS });
+  assert.deepEqual(s.long_tail, { side: "in", role: "selling", asset: DEGEN_L, address: DEGEN_ADDRESS });
   assert.equal(s.sell_back, null);
   assert.equal(s.approval.address, DEGEN_ADDRESS);
   const buy = evm.summarizeBaseSwapPlan((await verifyLT("usdc-to-degen", { feeSide: "in" })).plan);
@@ -559,7 +561,7 @@ test("a buy's USD value: the USDC measured; ETH against a token has no USDC leg,
 test("cannot_sell_back: the sell reverts in the simulation (a honeypot)", async () => {
   const e = await refusal(verifyLT("usdc-to-degen", { feeSide: "in", editSell: (s) => { const c = s.result[0].calls.at(-1); c.status = "0x0"; c.error = { code: 3, message: "execution reverted: trading disabled" }; c.logs = []; } }));
   assert.deepEqual(e.refusals.map((r) => r.rule), ["cannot_sell_back"]);
-  assert.match(e.message, /DEGEN cannot be sold back: selling what this swap delivers would fail \(execution reverted: trading disabled\)/);
+  assert.match(e.message, /DEGEN 0x4ed4…efed cannot be sold back: selling what this swap delivers would fail \(execution reverted: trading disabled\)/);
   assert.match(e.message, /blocks selling in the same block/);
   assert.equal(e.refusals[0].observed, "sell_reverts");
 });
@@ -608,7 +610,7 @@ test("transfer_fee_detected: the buy pays out more than reaches the wallet", asy
   const skim = (num) => (s) => rewrite([s.result[0].calls.at(-1)], toTaker(DEGEN_ADDRESS), (v) => (v * num) / 1000n);
   const e = await refusal(verifyLT("usdc-to-degen", { feeSide: "in", slippageBps: 500, editSim: skim(970n) }));
   assert.deepEqual(e.refusals.map((r) => r.rule), ["transfer_fee_detected"]);
-  assert.match(e.message, /the swap pays out [\d.]+ DEGEN but only [\d.]+ reaches the wallet: the token keeps part of every transfer/);
+  assert.match(e.message, /the swap pays out [\d.]+ DEGEN 0x4ed4…efed but only [\d.]+ reaches the wallet: the token keeps part of every transfer/);
   // rounding-sized differences are not a fee: 10 bps is the edge and passes, 20 bps does not. (The sell-back that follows a
   // pass is served for the smaller amount: the recorded sell is rescaled to it.)
   const small = { feeSide: "in", slippageBps: 500, deps: { buildSellBack: adaptiveSellBack("usdc-to-degen") }, editSell: (s) => rewrite([s.result[0].calls.at(-1)], fromTaker(DEGEN_ADDRESS), (v) => (v * 999n) / 1000n) };
@@ -657,12 +659,12 @@ test("no route to sell it back, or no answer from KyberSwap: refused, in plain w
   const run = (build) => verifyLT("usdc-to-degen", { feeSide: "in", deps: { buildSellBack: build } });
   const noRoute = await refusal(run(async () => { throw new evm.SellBackError("no_route", "KyberSwap has no route to sell it back: route not found"); }));
   assert.deepEqual(noRoute.refusals.map((r) => r.rule), ["cannot_sell_back"]);
-  assert.match(noRoute.message, /DEGEN cannot be sold back: KyberSwap has no route to sell it back.*does not buy a token it cannot test selling/);
+  assert.match(noRoute.message, /DEGEN 0x4ed4…efed cannot be sold back: KyberSwap has no route to sell it back.*does not buy a token it cannot test selling/);
   assert.equal(noRoute.refusals[0].observed, "no_route");
   for (const err of [new evm.SellBackError("unavailable", "KyberSwap's API answered 503 for the route to sell it back"), new Error("boom")]) {
     const e = await refusal(run(async () => { throw err; }));
     assert.deepEqual(e.refusals.map((r) => r.rule), ["sell_back_unavailable"]);
-    assert.match(e.message, /could not check that DEGEN can be sold back/);
+    assert.match(e.message, /could not check that DEGEN 0x4ed4…efed can be sold back/);
     assert.match(e.message, /does not buy a token it cannot test selling/);
   }
   assert.deepEqual(await rules(run(async () => ({ to: KYBER_ROUTER_BASE, data: "0x" }))), ["sell_back_unavailable"]);
@@ -792,6 +794,58 @@ test("the default builder maps KyberSwap's answers: no route -> no_route; a busy
   assert.deepEqual(await rules(v({ routeBody: { code: 4008, message: "route not found" } })), ["cannot_sell_back"]);
 });
 
+// ------------------------------------------------------------------ the sell-back request: two blocks, a real prevRandao
+
+test("the sell-back simulation runs the buy in one block and the token's approve + the sell in the NEXT, with a real prevRandao, number and time", async () => {
+  const MIX = `0x${"ab".repeat(32)}`;
+  const sims = [recordedSimulation("usdc-to-degen"), recordedSimulation("usdc-to-degen-sellback")];
+  const requests = [];
+  let n = 0;
+  const pub = {
+    async getBlock() { return { baseFeePerGas: 5_000_000n, mixHash: MIX, number: 1000n, timestamp: 1_700_000_000n }; },
+    async estimateMaxPriorityFeePerGas() { return 1_000_000n; },
+    async request({ method, params }) {
+      assert.equal(method, "eth_simulateV1");
+      requests.push(params);
+      // an eth_simulateV1 node answers one entry per simulated block: split the recorded single-block answer the same way
+      const calls = sims[Math.min(n++, 1)].result[0].calls;
+      const at = params[0].blockStateCalls[0].calls.length;
+      return params[0].blockStateCalls.length === 2 ? [{ ...sims[1].result[0], calls: calls.slice(0, at) }, { ...sims[1].result[0], calls: calls.slice(at) }] : [{ ...sims[0].result[0], calls }];
+    },
+  };
+  const intent = { ...evm.parseIntent({ from: "USDC", to: DEGEN, amount: "20", slippageBps: 50 }), taker: SENDER };
+  const plan = await evm.verifyBaseSwapPlan(satoResponse("usdc-to-degen", { feeSide: "in" }), intent, { verifySignature: passes, c: { pub }, readAllowance: async () => 0n, buildSellBack: recordedSellBack("usdc-to-degen") });
+  assert.equal(plan.sell_back.checked, true);
+  // the first simulation (the swap alone): one block, but with the real randao and a real block number and time
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0][0].blockStateCalls.length, 1);
+  // the sell-back simulation: two blocks
+  const blocks = requests[1][0].blockStateCalls;
+  assert.equal(blocks.length, 2, "two simulated blocks");
+  assert.equal(blocks[0].calls.length, 2, "the USDC approval and the buy");
+  assert.equal(blocks[1].calls.length, 2, "the token's approval and the sell");
+  assert.equal(blocks[1].calls[0].to, DEGEN_ADDRESS);
+  assert.equal(blocks[1].calls[1].to, KYBER_ROUTER_BASE);
+  for (const [i, b] of blocks.entries()) {
+    assert.equal(b.blockOverrides.prevRandao, MIX, "the latest block's mixHash");
+    assert.notEqual(BigInt(b.blockOverrides.prevRandao), 0n, "never zero");
+    assert.equal(b.blockOverrides.baseFeePerGas, "0x4c4b40", "the real base fee, as before");
+    assert.equal(BigInt(b.blockOverrides.number), 1001n + BigInt(i), "later block numbers");
+    assert.equal(BigInt(b.blockOverrides.time), 1_700_000_002n + BigInt(2 * i), "later timestamps");
+  }
+  assert.ok(BigInt(blocks[1].blockOverrides.number) > BigInt(blocks[0].blockOverrides.number));
+  assert.ok(BigInt(blocks[1].blockOverrides.time) > BigInt(blocks[0].blockOverrides.time));
+  // the request builder in isolation: no randao without a real one, one block without a split
+  const one = evm.buildSimulationRequest({ taker: SENDER, calls: [{ to: USDC, data: "0x12" }, { to: USDC, data: "0x34" }], baseFeePerGas: 5_000_000n, maxPriorityFeePerGas: 1n, prevRandao: `0x${"00".repeat(32)}` });
+  assert.equal(one[0].blockStateCalls.length, 1);
+  assert.equal("prevRandao" in one[0].blockStateCalls[0].blockOverrides, false, "a zero mixHash is not sent");
+  assert.equal(evm.buildSimulationRequest({ taker: SENDER, calls: [{ to: USDC, data: "0x12" }, { to: USDC, data: "0x34" }], splitAt: 1 })[0].blockStateCalls.length, 2);
+  // an injected simulate() is told where the second block starts and may answer with one block or two
+  const hints = [];
+  await evm.verifyBaseSwapPlan(satoResponse("usdc-to-degen", { feeSide: "in" }), intent, { verifySignature: passes, simulate: async (req) => (hints.push(req.splitAt), clone(sims[hints.length === 1 ? 0 : 1].result)), readAllowance: async () => 0n, buildSellBack: recordedSellBack("usdc-to-degen") });
+  assert.deepEqual(hints, [undefined, 2]);
+});
+
 // ------------------------------------------------------------------ the route's market figures
 
 test("price impact and USD figures pass through when Sato Hub's answer carries them; none are invented", async () => {
@@ -800,11 +854,17 @@ test("price impact and USD figures pass through when Sato Hub's answer carries t
   assert.equal(plan.market.amount_in_usd, Number(r.amountInUsd));
   assert.equal(plan.market.amount_out_usd, Number(r.amountOutUsd));
   assert.equal(plan.market.price_impact_pct, null, "Kyber's route summary on Base has no priceImpact: null, not 0");
-  assert.equal(plan.market.value_gap_pct, Math.round(((Number(r.amountInUsd) - Number(r.amountOutUsd)) / Number(r.amountInUsd)) * 10_000) / 100);
+  assert.ok(Math.abs(plan.market.value_gap_pct - ((Number(r.amountInUsd) - Number(r.amountOutUsd)) / Number(r.amountInUsd)) * 100) < 0.001, "the gap Sato Hub reports in usd_value_gap_bps, as a percent");
   assert.deepEqual(evm.summarizeBaseSwapPlan(plan).market, plan.market);
   assert.equal((await verifyLT("usdc-to-degen", { feeSide: "in" })).plan.market, null, "absent in the answer: null");
 
   const m = evm.marketOf;
+  // Sato Hub's real shape: a top-level price_impact block of basis points and USD figures
+  assert.deepEqual(m({ price_impact: { reported_bps: 350, usd_value_gap_bps: 412.5, amount_in_usd: 100, amount_out_usd: 95.875, source: "x" } }), { price_impact_pct: 3.5, amount_in_usd: 100, amount_out_usd: 95.875, value_gap_pct: 4.125, source: m({ price_impact: 1 }).source });
+  assert.equal(m({ price_impact: { reported_bps: null, usd_value_gap_bps: 275, amount_in_usd: null, amount_out_usd: null } }).value_gap_pct, 2.75, "a reported gap stands without the USD figures");
+  assert.equal(m({ price_impact: { reported_bps: null, usd_value_gap_bps: null, amount_in_usd: null, amount_out_usd: null } }), null, "all null: no figure at all");
+  assert.equal(m({ price_impact: { reported_bps: 0, usd_value_gap_bps: null, amount_in_usd: null, amount_out_usd: null } }).price_impact_pct, 0, "a real zero stays zero");
+  assert.equal(m({ price_impact: { reported_bps: null, usd_value_gap_bps: null, amount_in_usd: 100, amount_out_usd: 90 } }).value_gap_pct, 10, "computed when only the USD figures are there");
   assert.deepEqual(m({ price_impact: 3.2, amount_in_usd: "100", amount_out_usd: 96 }), { price_impact_pct: 3.2, amount_in_usd: 100, amount_out_usd: 96, value_gap_pct: 4, source: m({ price_impact: 1 }).source });
   assert.equal(m({ routeSummary: { priceImpact: "0.4" } }).price_impact_pct, 0.4);
   assert.equal(m({ route_summary: { amountInUsd: "10" } }).value_gap_pct, null, "a gap needs both figures");
@@ -830,12 +890,12 @@ test("selling DEGEN for USDC: an exact approval of DEGEN to the router, the swap
   assert.deepEqual([a.functionName, a.args[0], a.args[1]], ["approve", KYBER_ROUTER_BASE, 5000n * 10n ** 18n]);
   assert.equal(state.sent[1].to, KYBER_ROUTER_BASE);
   assert.equal(state.sent[1].value, 0n);
-  assert.deepEqual([out.sold.asset, out.sold.amount, out.received.asset, out.received.amount, out.received.basis], ["DEGEN", "5000", "USDC", "4.951069", "receipt_logs"]);
+  assert.deepEqual([out.sold.asset, out.sold.amount, out.received.asset, out.received.amount, out.received.basis], [DEGEN_L, "5000", "USDC", "4.951069", "receipt_logs"]);
   assert.deepEqual(out.sato_fee, { bps: 15, recipient: SATO_FEE_RECIPIENT, side: "out" });
   assert.equal(out.allowance, "none_left");
   assert.deepEqual(out.warnings, []);
   const row = lastSwap();
-  assert.deepEqual([row.status, row.asset_in, row.asset_out, row.amount_in, row.sato_fee_side, row.token_in, row.token_out, row.long_tail], ["confirmed", "DEGEN", "USDC", "5000", "out", DEGEN_ADDRESS, USDC, "in"]);
+  assert.deepEqual([row.status, row.asset_in, row.asset_out, row.amount_in, row.sato_fee_side, row.token_in, row.token_out, row.long_tail], ["confirmed", DEGEN_L, "USDC", "5000", "out", DEGEN_ADDRESS, USDC, "in"]);
   assert.equal(row.min_out_units, plan.min_out.toString());
 });
 
@@ -857,10 +917,10 @@ test("buying DEGEN with USDC: the exact approval is for the USDC, the DEGEN rece
   assert.equal(state.sent.length, 2, "approve USDC, swap: the sell-back leg is never sent");
   assert.equal(state.sent[0].to, USDC);
   assert.equal(state.sent[1].data, plan.tx.data);
-  assert.deepEqual([out.received.asset, out.received.amount], ["DEGEN", evm.unitsToDecimal(got, 18)]);
+  assert.deepEqual([out.received.asset, out.received.amount], [DEGEN_L, evm.unitsToDecimal(got, 18)]);
   assert.deepEqual(out.sato_fee, { bps: 15, recipient: SATO_FEE_RECIPIENT, side: "in" });
   const row = lastSwap();
-  assert.deepEqual([row.asset_in, row.asset_out, row.long_tail, row.token_out, row.sato_fee_side], ["USDC", "DEGEN", "out", DEGEN_ADDRESS, "in"]);
+  assert.deepEqual([row.asset_in, row.asset_out, row.long_tail, row.token_out, row.sato_fee_side], ["USDC", DEGEN_L, "out", DEGEN_ADDRESS, "in"]);
   assert.equal(row.sell_back_loss_bps, plan.sell_back.loss_bps);
   assert.equal(row.usd, 20);
   assert.equal(JSON.stringify(row).includes("sell_back_units"), false);
@@ -869,7 +929,7 @@ test("buying DEGEN with USDC: the exact approval is for the USDC, the DEGEN rece
 test("a swap that reverts after a DEGEN approval resets the DEGEN approval to 0", async () => {
   const { plan } = await verifyLT("degen-to-usdc", { feeSide: "out" });
   const { c, state } = fakeChain({ address: SENDER, receipts: ["success", "revert", "success"] });
-  await assert.rejects(executeBaseSwap(plan, { c }), (e) => /transaction reverted/.test(e.message) && /DEGEN approval granted for this swap was set back to 0/.test(e.message));
+  await assert.rejects(executeBaseSwap(plan, { c }), (e) => /transaction reverted/.test(e.message) && /DEGEN 0x4ed4…efed approval granted for this swap was set back to 0/.test(e.message));
   assert.equal(state.sent.length, 3);
   assert.equal(state.sent[2].to, DEGEN_ADDRESS);
   assert.equal(decodeFunctionData({ abi: erc20Abi, data: state.sent[2].data }).args[1], 0n);

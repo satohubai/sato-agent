@@ -13,9 +13,11 @@
 //
 // BUYING a long-tail token also runs a sell-back simulation: right after the buy, in one more
 // eth_simulateV1, everything the buy delivered is sold back to the major through a live KyberSwap
-// route (no Sato fee on that leg; it is only simulated, never sent). A token that cannot be sold
-// back, whose round trip loses more than the owner's slippage and the fees allow, or that takes a
-// fee on transfer, is refused before anything is signed.
+// route (no Sato fee on that leg; it is only simulated, never sent). The buy runs in one simulated
+// block and the sell in the NEXT, with the chain's real prevRandao, so a token that only refuses a
+// sale in the block it was bought in does not fail the test. A token that cannot be sold back, or
+// whose round trip loses more than the owner's slippage and the fees allow, is refused before
+// anything is signed. (A transfer fee shows up as that round-trip loss: see transfer_fee_detected.)
 //
 //   plan     ask Sato Hub (onchain_agent_swap, mode build-tx) for an UNSIGNED
 //            transaction. Pinned token addresses, strict amounts.
@@ -245,8 +247,6 @@ function uintOf(v) {
 // ---------------------------------------------------------------- tokens and intent
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
-/** Symbols a long-tail token must not be shown under (a scam token can call itself USDC): the label then carries its address. */
-const SPOOFABLE_SYMBOLS = new Set([...Object.keys(TOKENS), "USDT", "DAI", "EURC", "WBTC", "CBBTC", "BTC", "SOL", "ETH"]);
 const MAX_DECIMALS = 36;
 const bytes32TextAbi = (name) => [{ type: "function", name, stateMutability: "view", inputs: [], outputs: [{ name: "", type: "bytes32" }] }];
 
@@ -328,10 +328,15 @@ export async function resolveBaseToken(addressOrSymbol, deps = {}) {
   return { address, symbol, name, decimals: d, native: false, major: false };
 }
 
-/** How a token is named in the plan, the approval and the ledger: its symbol; a long-tail token that calls itself a major also carries its address. */
+/**
+ * How a token is named in the plan, the approval and the ledger. A major is its symbol. EVERY other token carries its short
+ * address beside its symbol ("PEPE 0x6982…1933"): a symbol is whatever the contract's creator wrote (it can look like another
+ * token's, with homoglyphs or an RTL mark), the address is what the approval is really about.
+ */
 function labelOf(t) {
   if (t.major) return t.symbol;
-  return SPOOFABLE_SYMBOLS.has(t.symbol.toUpperCase()) ? `${t.symbol} ${shortAddress(t.address)}` : t.symbol;
+  const short = shortAddress(t.address);
+  return t.symbol === short ? short : `${t.symbol} ${short}`;
 }
 
 /** The intent for two resolved tokens. Throws a plain Error on bad input; nothing is sent anywhere. */
@@ -581,16 +586,25 @@ export function marketOf(response) {
     const n = typeof v === "string" && v.trim() !== "" ? Number(v) : v;
     return typeof n === "number" && Number.isFinite(n) ? n : null;
   };
-  const homes = [response, response?.route_summary, response?.routeSummary, response?.route, response?.quote, response?.market].filter((h) => h && typeof h === "object");
+  // Sato Hub's real shape (app lib/route/adapters/types.ts QuotePriceImpact), at the top of its answer:
+  //   price_impact: { reported_bps, usd_value_gap_bps, amount_in_usd, amount_out_usd, source }
+  // reported_bps is the venue's own price-impact figure (null for KyberSwap); usd_value_gap_bps is the gap between the
+  // venue's USD valuations of the input and the output, in basis points (fees included). Both are null when unknown.
+  const pi = response?.price_impact && typeof response.price_impact === "object" && !Array.isArray(response.price_impact) ? response.price_impact : null;
+  const bpsToPct = (v) => (num(v) === null ? null : Math.round(num(v) * 100) / 10_000);
+  // Older shapes stay as fallbacks (a flat answer, or the route summary carried through).
+  const homes = [pi, response, response?.route_summary, response?.routeSummary, response?.route, response?.quote, response?.market].filter((h) => h && typeof h === "object");
   const pick = (...keys) => {
     for (const h of homes) for (const k of keys) if (num(h[k]) !== null) return num(h[k]);
     return null;
   };
-  const priceImpactPct = pick("price_impact_pct", "price_impact", "priceImpact");
+  const priceImpactPct = pi && num(pi.reported_bps) !== null ? bpsToPct(pi.reported_bps) : pick("price_impact_pct", "price_impact", "priceImpact");
   const amountInUsd = pick("amount_in_usd", "amountInUsd");
   const amountOutUsd = pick("amount_out_usd", "amountOutUsd");
-  if (priceImpactPct === null && amountInUsd === null && amountOutUsd === null) return null;
-  const gap = amountInUsd !== null && amountOutUsd !== null && amountInUsd > 0 ? Math.round(((amountInUsd - amountOutUsd) / amountInUsd) * 10_000) / 100 : null;
+  const reportedGap = pi && num(pi.usd_value_gap_bps) !== null ? bpsToPct(pi.usd_value_gap_bps) : null;
+  const computedGap = amountInUsd !== null && amountOutUsd !== null && amountInUsd > 0 ? Math.round(((amountInUsd - amountOutUsd) / amountInUsd) * 10_000) / 100 : null;
+  const gap = reportedGap ?? computedGap;
+  if (priceImpactPct === null && gap === null && amountInUsd === null && amountOutUsd === null) return null;
   return { price_impact_pct: priceImpactPct, amount_in_usd: amountInUsd, amount_out_usd: amountOutUsd, value_gap_pct: gap, source: "Sato Hub's answer (the KyberSwap route summary)" };
 }
 
@@ -684,19 +698,34 @@ export function checkRouterCalldata(data, { intent, minOut, feeBps, feeSide = "i
  * With `baseFeePerGas` the simulated block carries the real chain's base fee and every call carries a
  * real-looking fee (maxFeePerGas, maxPriorityFeePerGas), so `block.basefee == 0` and `tx.gasprice == 0`
  * cannot tell a pool that this is a simulation. (eth_simulateV1 runs with a zero base fee by default.)
+ *
+ * Also realistic when the caller has the latest block's facts:
+ *   - `prevRandao` (the latest block's mixHash; on Base it is the L1 randomness) goes in the block overrides, so
+ *     `block.prevrandao == 0` cannot tell a token that this is a simulation either;
+ *   - `blockNumber` / `timestamp` (the latest block's) give the simulated blocks real, later numbers and times:
+ *     the first block is the next one, the second two blocks on (Base makes a block every 2 s).
+ *   - `splitAt`: calls from that index on go in a SECOND simulated block (eth_simulateV1 carries state from one
+ *     block to the next). The sell-back test uses it: the buy in one block, the approve and the sell in the next, so a
+ *     token that refuses to be sold in the block it was bought in (a common honeypot trick) does not fail the test.
  */
-export function buildSimulationRequest({ taker, calls, baseFeePerGas, maxPriorityFeePerGas }) {
+export function buildSimulationRequest({ taker, calls, baseFeePerGas, maxPriorityFeePerGas, prevRandao, blockNumber, timestamp, splitAt }) {
   const realistic = typeof baseFeePerGas === "bigint" && baseFeePerGas > 0n;
   const tip = typeof maxPriorityFeePerGas === "bigint" && maxPriorityFeePerGas >= 0n ? maxPriorityFeePerGas : 0n;
   const fees = realistic ? { maxFeePerGas: toHex((baseFeePerGas * 12n) / 10n + tip), maxPriorityFeePerGas: toHex(tip) } : {};
+  const randao = typeof prevRandao === "string" && /^0x[0-9a-fA-F]{64}$/.test(prevRandao) && !/^0x0{64}$/.test(prevRandao) ? prevRandao : null;
+  const timed = typeof blockNumber === "bigint" && typeof timestamp === "bigint";
+  const encode = (c) => ({ from: taker, to: c.to, data: c.data, ...(c.value ? { value: toHex(c.value) } : {}), ...(c.gas ? { gas: toHex(c.gas) } : {}), ...fees });
+  const overrides = (k) => ({
+    ...(realistic ? { baseFeePerGas: toHex(baseFeePerGas) } : {}),
+    ...(randao ? { prevRandao: randao } : {}),
+    ...(timed ? { number: toHex(blockNumber + BigInt(k)), time: toHex(timestamp + BigInt(2 * k)) } : {}),
+  });
+  const withOverrides = (k) => (Object.keys(overrides(k)).length ? { blockOverrides: overrides(k) } : {});
+  const split = Number.isInteger(splitAt) && splitAt > 0 && splitAt < calls.length ? splitAt : null;
+  const groups = split === null ? [calls] : [calls.slice(0, split), calls.slice(split)];
   return [
     {
-      blockStateCalls: [
-        {
-          ...(realistic ? { blockOverrides: { baseFeePerGas: toHex(baseFeePerGas) } } : {}),
-          calls: calls.map((c) => ({ from: taker, to: c.to, data: c.data, ...(c.value ? { value: toHex(c.value) } : {}), ...(c.gas ? { gas: toHex(c.gas) } : {}), ...fees })),
-        },
-      ],
+      blockStateCalls: groups.map((g, i) => ({ ...withOverrides(i + 1), calls: g.map(encode) })),
       traceTransfers: true,
       validation: false,
     },
@@ -704,7 +733,7 @@ export function buildSimulationRequest({ taker, calls, baseFeePerGas, maxPriorit
   ];
 }
 
-/** The latest block's base fee and a priority fee, read from the node the swap will be sent through. */
+/** The latest block's facts and a priority fee, read from the node the swap will be sent through. */
 async function simulationFees(c) {
   const block = await c.pub.getBlock({ blockTag: "latest" });
   const baseFeePerGas = block?.baseFeePerGas;
@@ -716,12 +745,18 @@ async function simulationFees(c) {
   } catch {
     /* keep the fallback */
   }
-  return { baseFeePerGas, maxPriorityFeePerGas: tip };
+  return {
+    baseFeePerGas,
+    maxPriorityFeePerGas: tip,
+    prevRandao: block.mixHash ?? undefined,
+    blockNumber: typeof block.number === "bigint" ? block.number : undefined,
+    timestamp: typeof block.timestamp === "bigint" ? block.timestamp : undefined,
+  };
 }
 
-export async function defaultSimulate({ taker, calls, c }) {
+export async function defaultSimulate({ taker, calls, splitAt, c }) {
   const fees = await simulationFees(c);
-  return c.pub.request({ method: "eth_simulateV1", params: buildSimulationRequest({ taker, calls, ...fees }) });
+  return c.pub.request({ method: "eth_simulateV1", params: buildSimulationRequest({ taker, calls, splitAt, ...fees }) });
 }
 
 function revertNote(call) {
@@ -793,10 +828,12 @@ function swapCalls({ intent, facts, tx, approvalNeeded }) {
 }
 
 /** Run calls through the kit's own eth_simulateV1 (or the injected one). Refuses, never guesses, when it cannot run or be read. */
-async function runSimulation({ intent, calls, deps, getClient }) {
+async function runSimulation({ intent, calls, splitAt, deps, getClient }) {
   let raw;
   try {
-    raw = await (deps.simulate ?? defaultSimulate)({ taker: intent.taker, calls, c: deps.simulate ? deps.c : getClient() });
+    // `splitAt`: the calls from that index on run in a second simulated block (see buildSimulationRequest). An injected
+    // simulate() gets the same flat list and the same hint, and may answer with one block or two.
+    raw = await (deps.simulate ?? defaultSimulate)({ taker: intent.taker, calls, ...(splitAt !== undefined ? { splitAt } : {}), c: deps.simulate ? deps.c : getClient() });
   } catch (err) {
     const why = String(err.details || err.shortMessage || err.message);
     if (/insufficient funds/i.test(why)) {
@@ -804,8 +841,9 @@ async function runSimulation({ intent, calls, deps, getClient }) {
     }
     throw new Refused([refusal("simulation_unavailable", `this kit's own simulation could not run (${why.slice(0, 200)}); it never signs without one`)]);
   }
-  const block = Array.isArray(raw) ? raw[0] : raw;
-  const got = block?.calls;
+  // One entry per simulated block, calls in order across the blocks.
+  const blocks = Array.isArray(raw) ? raw : [raw];
+  const got = blocks.every((b) => Array.isArray(b?.calls)) ? blocks.flatMap((b) => b.calls) : null;
   if (!Array.isArray(got) || got.length !== calls.length) {
     throw new Refused([refusal("simulation_unavailable", "this kit's own simulation returned an answer it cannot read; it never signs without one")]);
   }
@@ -860,6 +898,10 @@ async function simulateAndCheck({ intent, facts, tx, approvalNeeded, deps, getCl
 
   // A fee on transfer: the router reports what it paid out (its Swapped event); a token that keeps part of every
   // transfer delivers less than that to the agent. Only checked when buying a long-tail token.
+  // CAVEAT (review, 2026-10-09): against the real router this cannot fire. MetaAggregationRouterV2 measures `returnAmount` as the
+  // receiver's balance change, AFTER the token's own fee, so the event and the agent's balance agree. The check is kept as a cheap
+  // consistency test (an injected or different router could disagree), and the kit does not claim to detect transfer fees with it;
+  // what the sell-back round trip loses is what shows a fee, as a loss against the allowed band.
   let reportedOut = null;
   if (intent.longTail === "out") {
     const swapped = swappedOf(got[got.length - 1], intent);
@@ -951,6 +993,26 @@ export async function buildKyberSellBack({ tokenIn, tokenOut, amountIn, taker, s
   };
 }
 
+/**
+ * What KyberSwap's public route API says `amountIn` of `tokenIn` returns in `tokenOut` right now (base units, a bigint), or
+ * null when it has no answer. Straight to KyberSwap, not through Sato Hub: Sato Hub's build-tx writes a public record, and this
+ * is only used to size a token sale against the owner's limits BEFORE Sato Hub is asked (run.js). It is advisory; the
+ * quote Sato Hub gives is sized and checked again afterwards.
+ */
+export async function kyberPublicOut({ tokenIn, tokenOut, amountIn }, deps = {}) {
+  const f = deps.kyberFetch ?? fetch;
+  const q = new URLSearchParams({ tokenIn: tokenIn.address, tokenOut: tokenOut.address, amountIn: amountIn.toString() });
+  try {
+    const res = await f(`${deps.kyberApi ?? KYBER_API_BASE}/routes?${q}`, { headers: { "user-agent": USER_AGENT, "x-client-id": "satohub", accept: "application/json" }, signal: AbortSignal.timeout(KYBER_TIMEOUT_MS) });
+    if (!res.ok) return null;
+    const body = await res.json();
+    const out = uintOf(body?.data?.routeSummary?.amountOut);
+    return out !== null && out > 0n ? out : null;
+  } catch {
+    return null;
+  }
+}
+
 const sellBackRefusal = (message, observed = null) => new Refused([refusal("cannot_sell_back", message, null, observed)]);
 
 /**
@@ -995,7 +1057,8 @@ async function sellBackCheck({ intent, facts, tx, approvalNeeded, sim, deps, get
     const approveToken = { to: token.address, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [KYBER_ROUTER_BASE, units] }), value: 0n, gas: SIM_GAS_APPROVE };
     const sell = { to: KYBER_ROUTER_BASE, data: built.data, value: 0n, gas: SIM_GAS_SWAP };
     const calls = [...baseCalls, approveToken, sell];
-    const got = await runSimulation({ intent, calls, deps, getClient });
+    // The buy (and its approval) in one block, the token's approval and the sell in the NEXT one.
+    const got = await runSimulation({ intent, calls, splitAt: baseCalls.length, deps, getClient });
     const n = baseCalls.length;
     for (let i = 0; i < n; i++) {
       if (!callOk(got[i])) throw new Refused([refusal("simulation_failed", `${i === n - 1 ? "the swap" : "the approval"} would fail when repeated for the sell-back check: ${revertNote(got[i])}`, null, got[i].status ?? null)]);
@@ -1106,7 +1169,7 @@ export async function verifyBaseSwapPlan(response, intent, deps = {}) {
   const sim = await simulateAndCheck({ intent, facts, tx, approvalNeeded, deps, getClient });
 
   // Buying a long-tail token: sell everything it delivers straight back, in one more simulation. Refuses a token that
-  // cannot be sold, one whose round trip loses too much, and (above) one that keeps part of every transfer.
+  // cannot be sold, or one whose round trip loses too much (the sell-back is run in a second simulated block).
   const sellBack = intent.longTail === "out" ? await sellBackCheck({ intent, facts, tx, approvalNeeded, sim, deps, getClient }) : null;
 
   // What counts against the owner's limits: the USDC leg, measured. A USDC sale is the amount itself;

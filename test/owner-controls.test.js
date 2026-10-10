@@ -110,7 +110,7 @@ test("any loosening is a raise: allowlist widened, chains widened, gate loosened
 });
 
 test("swaps: on once the limits exist (owner decision 2026-10-09); `--swaps off` turns them off; optional caps refuse with their rule; loosening is a raise", () => {
-  const p = { max_usd_per_tx: 100, max_usd_per_day: 500, allow_recipients: [DEAD], chains: ["base"] };
+  const p = { max_usd_per_tx: 100, max_usd_per_day: 500, allow_recipients: [DEAD], chains: ["base"], swaps_off: false };
   const swap = (extra = {}, swaps = 0) => evaluate({ ...p, ...extra }, { usd: 10, to: "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5", chain: "base", kind: "swap", slippage_bps: 50 }, { usd: 0, swaps, unreadable: [] }).map((r) => r.rule);
   assert.deepEqual(swap(), [], "no caps set: swaps are on, held to the spending limits; a swap is not held to the payee allowlist");
   assert.deepEqual(swap({ swaps_off: true }), ["swaps_not_enabled"]);

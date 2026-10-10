@@ -15,6 +15,24 @@ export const SENDER = "0x20FE51A9229EEf2cF8Ad9E89d91CAb9312cF3b7A"; // public, f
 export const load = (name) => JSON.parse(fs.readFileSync(`${FIXTURES}${name}.json`, "utf8"));
 const clone = (o) => JSON.parse(JSON.stringify(o));
 
+/**
+ * Sato Hub's real `price_impact` block for a KyberSwap route (app lib/route/adapters/kyberswap.ts): Kyber reports no
+ * price impact (reported_bps null); the USD gap is (in - out) / in in basis points, to 2 places, from the route's own
+ * amountInUsd / amountOutUsd. Top level of the answer, not inside a route summary.
+ */
+export function realPriceImpact(route) {
+  const num = (v) => (v === undefined || v === null || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
+  const inUsd = num(route.amountInUsd);
+  const outUsd = num(route.amountOutUsd);
+  return {
+    reported_bps: null,
+    usd_value_gap_bps: inUsd === null || outUsd === null || inUsd <= 0 ? null : Math.round(((inUsd - outUsd) / inUsd) * 10_000 * 100) / 100,
+    amount_in_usd: inUsd,
+    amount_out_usd: outUsd,
+    source: "KyberSwap routes API, routeSummary.amountInUsd and amountOutUsd (the venue's own USD valuations; it reports no price-impact field).",
+  };
+}
+
 /** A Sato-shaped build-tx response for one recorded case ("usdc-to-eth" | "eth-to-usdc" | "usdc-to-weth"). */
 export function satoResponse(name, opts = {}) {
   return satoResponseFrom(load(`${name}-route`), load(`${name}-build`), opts);
@@ -31,7 +49,7 @@ export function satoResponseFrom(routeBody, buildBody, { signedAt = new Date().t
   const by = route.extraFee?.chargeFeeBy ?? "currency_in";
   return {
     ...(feeSide !== undefined ? { sato_fee_side: feeSide } : {}),
-    ...(market ? { route_summary: { amountInUsd: route.amountInUsd, amountOutUsd: route.amountOutUsd, priceImpact: route.priceImpact } } : {}),
+    ...(market ? { price_impact: realPriceImpact(route) } : {}),
     mode: "build-tx",
     route_id: "rt_fixture00001",
     venue: "kyberswap",

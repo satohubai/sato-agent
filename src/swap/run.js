@@ -63,8 +63,9 @@ const MAJORS = {
   solana: { USDC: { decimals: 6 }, SOL: { decimals: 9, oracle: "SOL" } },
 };
 /** Symbols a token must not be shown under without its address: a scam token can call itself USDC. */
-const SPOOFABLE = new Set(["USDC", "USDT", "DAI", "EURC", "WBTC", "CBBTC", "BTC", "SOL", "ETH", "WETH"]);
-const shortId = (a) => `${String(a).slice(0, 4)}...${String(a).slice(-4)}`;
+/** A long-tail token is always shown with its short address ("PEPE 0x6982…1933", "DezX…B263"): its symbol is whatever its creator wrote. */
+export const shortBaseAddress = (a) => `${String(a).slice(0, 6)}…${String(a).slice(-4)}`;
+export const shortMint = (a) => `${String(a).slice(0, 4)}…${String(a).slice(-4)}`;
 const isBaseAddress = (s) => /^0x[0-9a-fA-F]{40}$/.test(s);
 const isSolanaMint = (s) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s);
 
@@ -95,7 +96,12 @@ const unitsToText = (units, decimals) => sol.formatUnits(units, decimals);
 async function inputToAddress(chain, raw, deps) {
   const input = String(raw ?? "").trim();
   if (!looksLikeLink(input)) return { input, hub: null };
-  const res = await (deps.resolveHub ?? resolveTokenViaHub)(input, { chain });
+  // The same signature check as Sato Hub's fee disclosure (two minutes old at most). A link decides WHICH token is traded, so an
+  // answer that cannot be shown to come from Sato Hub is not followed; the owner sends the contract address instead.
+  const res = await (deps.resolveHub ?? resolveTokenViaHub)(input, { chain, verifySignature: deps.verifySignature, maxAgeMs: DISCLOSURE_MAX_AGE_MS });
+  if (res.ok && res.signature?.ok !== true) {
+    throw refuse("resolver_unsigned", `Sato Hub's answer for this link could not be shown to be signed by Sato Hub (${clean(res.signature?.error ?? "no signature", 160)}); send the contract address instead`);
+  }
   if (!res.ok) {
     throw new Error(
       res.reason === "not_resolved"
@@ -124,12 +130,13 @@ async function resolveAsset(chain, raw, deps, label) {
   try {
     if (chain === "base") {
       const t = await (deps.resolveBaseToken ?? evm.resolveBaseToken)(input, deps.baseDeps ?? {});
-      const shown = t.major ? t.symbol : SPOOFABLE.has(String(t.symbol).toUpperCase()) ? `${t.symbol} ${shortId(t.address)}` : t.symbol;
+      const short = shortBaseAddress(t.address);
+      const shown = t.major ? t.symbol : t.symbol === short ? short : `${t.symbol} ${short}`;
       asset = { kind: t.major ? "major" : "token", symbol: shown, id: t.address, decimals: t.decimals, oracle: t.major ? MAJORS.base[t.symbol]?.oracle : undefined, arg: t, name: t.name ?? null, info: t };
     } else {
       const t = await (deps.resolveSolanaToken ?? sol.resolveSolanaToken)(input, deps.solDeps ?? {});
       (deps.assertSolanaTokenTradable ?? sol.assertSolanaTokenTradable)(t);
-      asset = { kind: t.major ? "major" : "token", symbol: t.major ?? shortId(t.mint), id: t.mint, decimals: t.decimals, oracle: t.major ? MAJORS.solana[t.major]?.oracle : undefined, arg: t.major ?? t.mint, name: null, info: t };
+      asset = { kind: t.major ? "major" : "token", symbol: t.major ?? shortMint(t.mint), id: t.mint, decimals: t.decimals, oracle: t.major ? MAJORS.solana[t.major]?.oracle : undefined, arg: t.major ?? t.mint, name: null, info: t };
     }
   } catch (err) {
     if (err instanceof Refused) throw err;
@@ -215,7 +222,10 @@ const band = (pct) => `upto_${Math.max(1, Math.ceil(Number(pct) - 1e-9))}pct`;
 function preConfirm(sized) {
   const out = [];
   if (sized.slippageBps > CONFIRM.slippageBps) out.push(reason("slippage_over_300_bps", `the slippage is ${sized.slippageBps} bps, above ${CONFIRM.slippageBps} bps`));
-  for (const c of sized.tail?.info?.confirm ?? []) out.push(reason(`issuer_power_${c.extension}`, `the token has the Token-2022 ${c.extension} extension: ${c.why}`));
+  // A Solana token's powers over the agent's tokens (src/swap/solana.js `confirm`). An extension is `issuer_power_<name>`; the other
+  // powers (a freeze authority, pausable transfers, a transfer fee above 300 bps) carry their own code, the fee in a band.
+  // None of these depends on the slippage, so an owner's cap does not silence them.
+  for (const c of sized.tail?.info?.confirm ?? []) out.push(reason(c.code ?? `issuer_power_${c.extension}`, c.code ? `the token: ${c.why}` : `the token has the Token-2022 ${c.extension} extension: ${c.why}`));
   return out;
 }
 
@@ -223,6 +233,10 @@ function preConfirm(sized) {
 function baseConfirm(plan) {
   const out = [];
   const m = plan.market;
+  // Fail closed: on a trade with a token, an answer with no market figure at all leaves nothing to judge the price by, so the owner decides.
+  if (plan.long_tail && (!m || (typeof m.price_impact_pct !== "number" && typeof m.value_gap_pct !== "number"))) {
+    out.push(reason("no_market_figure", "the quote gave no USD figures, so price impact can't be checked"));
+  }
   if (m && typeof m.price_impact_pct === "number" && m.price_impact_pct > CONFIRM.priceImpactBps / 100) out.push(reason(`price_impact_over_300_bps_${band(m.price_impact_pct)}`, `the route's own price impact is ${m.price_impact_pct}%, above ${CONFIRM.priceImpactBps / 100}%`));
   if (m && typeof m.value_gap_pct === "number" && m.value_gap_pct > CONFIRM.valueGapPct) {
     out.push(reason(`value_gap_over_3_pct_${band(m.value_gap_pct)}`, `the route values what you get ${m.value_gap_pct}% below what you give (a value gap that includes pool fees, Sato's fee and gas), above ${CONFIRM.valueGapPct}%`));
@@ -326,7 +340,13 @@ export async function sizeSwap({ chain, from, to, amount, slippageBps }, deps = 
     volatile: oracleAsset,
     longTail,
     tail,
-    notes: [...fromAsset.disagreements, ...toAsset.disagreements],
+    // A link names the token only through Sato Hub: say which address it became, so the owner sees what is really traded.
+    resolvedFromLink: [fromAsset, toAsset].filter((a) => a.hub).map((a) => ({ symbol: a.symbol, address: a.id, chain })),
+    notes: [
+      ...[fromAsset, toAsset].filter((a) => a.hub).map((a) => `The link resolved to ${a.id} on ${chain === "base" ? "Base" : "Solana"} (Sato Hub's signed answer); the chain was read for that address, not the link.`),
+      ...fromAsset.disagreements,
+      ...toAsset.disagreements,
+    ],
   };
   sized.confirm = preConfirm(sized);
   return sized;
@@ -366,6 +386,29 @@ async function freshOracle(sized, deps) {
 function oracleDisplay(sized, deviation) {
   if (!sized.oracle) return null;
   return { asset: sized.volatile, usd: sized.oracle.usd, source: sized.oracle.source, age_s: sized.oracle.age_s, deviation_pct: deviation ?? null, ...(sized.longTail ? { used_for: `sizing the ${sized.volatile} leg only; there is no independent price for the token` } : {}) };
+}
+
+/**
+ * A token sale has no USD figure until there is a quote, and Sato Hub's quote writes a public record. So the sale is sized first from
+ * the venue's PUBLIC quote (KyberSwap on Base, Jupiter on Solana: no record): if the major leg it returns already exceeds what the
+ * owner's per-transaction or remaining 24-hour limit allows, it is refused before Sato Hub is asked. Advisory: a venue with no
+ * answer skips this, and the figure from Sato Hub's own quote is sized and checked again after it (the real check).
+ */
+async function presizeTokenSale(sized, deps) {
+  if (sized.longTail !== "in") return;
+  let out = null;
+  try {
+    if (deps.publicQuote) out = await deps.publicQuote(sized);
+    else if (sized.chain === "base") out = await evm.kyberPublicOut({ tokenIn: sized.fromAsset.arg, tokenOut: sized.toAsset.arg, amountIn: toUnits(sized.amount, sized.fromAsset.decimals, sized.from) }, deps.baseDeps ?? {});
+    else out = await sol.publicQuoteOut({ inputMint: sized.fromAsset.id, outputMint: sized.toAsset.id, units: toUnits(sized.amount, sized.fromAsset.decimals, sized.from), slippageBps: sized.slippageBps }, deps.solDeps ?? {});
+  } catch {
+    out = null;
+  }
+  if (out === null || out === undefined) return;
+  const whole = Number(out) / 10 ** sized.toAsset.decimals;
+  const usd = roundUsd(sized.toAsset.symbol === "USDC" ? whole : whole * (sized.oracle?.usd ?? NaN));
+  if (!(usd > 0)) return;
+  recheckLimits(sized, usd, deps);
 }
 
 /** Re-check the owner's caps once the size is known from the quote. Throws Refused. */
@@ -465,6 +508,7 @@ export async function prepareSwap(req, deps = {}) {
 
 async function prepareBase(sized, deps) {
   const baseDeps = deps.baseDeps ?? {};
+  await presizeTokenSale(sized, deps); // before Sato Hub is asked: its quote writes a public record
   const plan = await (deps.planAndVerifyBaseSwap ?? evm.planAndVerifyBaseSwap)(
     { from: sized.fromAsset.arg, to: sized.toAsset.arg, amount: sized.amount, slippageBps: sized.slippageBps },
     // A token sale has no USD figure before the quote; nothing made up is sent to Sato Hub.
@@ -506,6 +550,7 @@ async function prepareBase(sized, deps) {
       oracle: oracleDisplay(sized, deviation),
       confirm_reasons: confirm,
       notes: sized.notes,
+      resolved_from_link: sized.resolvedFromLink,
     },
     execute: () => (deps.executeBaseSwap ?? evm.executeBaseSwap)(plan, { ...baseDeps, usdNotional: held }),
   };
@@ -521,6 +566,7 @@ function majorOutUsd(plan, sized, oracleUsd) {
 }
 
 async function prepareSolana(sized, deps) {
+  await presizeTokenSale(sized, deps); // before Sato Hub is asked: its quote writes a public record
   const fee = await satoSolanaDisclosure(sized, deps);
   const planOnce = () => (deps.planSolanaSwap ?? sol.planSolanaSwap)({ from: sized.fromAsset.arg, to: sized.toAsset.arg, amount: sized.amount, slippageBps: sized.slippageBps }, { satoFeeBps: fee.feeBps, ...(deps.solDeps ?? {}) });
   // The bound the transaction is held to: the owner's slippage and the fee Sato Hub disclosed, never the plan's own values.
@@ -566,6 +612,7 @@ async function prepareSolana(sized, deps) {
     long_tail: tail ? { side: sized.longTail, role: sized.longTail === "out" ? "buying" : "selling", asset: sized.tail.symbol, address: tail.mint, program: tail.program_name, decimals: tail.decimals, mint_authority: tail.mint_authority, freeze_authority: tail.freeze_authority, extensions: tail.extensions, transfer_fee_bps: tail.transfer_fee?.bps ?? null } : null,
     confirm_reasons: confirm,
     notes: sized.notes,
+    resolved_from_link: sized.resolvedFromLink,
   };
   // What arrived, in whole units of the output asset (the module reports base units).
   const withReceived = (r) => (r && typeof r.amount_out === "string" && !r.received ? { ...r, received: { asset: sized.to, amount: sol.formatUnits(r.amount_out, outDecimals) } } : r);
@@ -597,6 +644,10 @@ async function prepareSolana(sized, deps) {
           if (added.length) throw refuse("confirm_reasons_changed", `the first quote expired and the rebuilt one needs approval for a reason you were not shown (${added.map((r) => r.text).join("; ")}); nothing was signed`);
           if (sized.longTail === "in") {
             usdNow = Math.max(held, majorOutUsd(plan, sized, fresh.oracle?.usd));
+            recheckLimits(sized, usdNow, deps);
+          } else if (sized.fromAsset.oracle) {
+            // SOL sold for a token: valued again at the new Chainlink price; the larger of the two readings counts against the limits.
+            usdNow = Math.max(held, roundUsd(sized.amountNum * fresh.oracle.usd));
             recheckLimits(sized, usdNow, deps);
           }
         } else {
@@ -643,11 +694,12 @@ export async function runSwap(req, { approve, dryRun = false, skipCheck = false 
   const before = sized.confirm;
   let codeFree = Boolean(approve); // an approval code this run has not used yet
   let deferred = null;
+  let firstIntent = null;
   if (!dryRun && (ask || before.length)) {
-    const intent = swapIntent(sized, before.map((r) => r.code), { skipCheck });
-    if (!approve) throw await needsApproval(intent, before);
+    firstIntent = swapIntent(sized, before.map((r) => r.code), { skipCheck });
+    if (!approve) throw await needsApproval(firstIntent, before);
     try {
-      await consumeApproval(approve, intent);
+      await consumeApproval(approve, firstIntent);
       codeFree = false;
     } catch (err) {
       // The code may be one given for the quote-time intent (reasons only the quote showed): look again after the quote.
@@ -669,7 +721,9 @@ export async function runSwap(req, { approve, dryRun = false, skipCheck = false 
       throw await needsApproval(intent, prepared.confirm);
     }
   } else if (deferred) {
-    throw deferred; // the code fit neither intent
+    // The code was given for reasons this quote no longer shows (the price impact improved, or went away), and the owner's approval
+    // is still due for the trade as it stands now: ask again, cleanly, instead of failing on "different intent".
+    throw await needsApproval(firstIntent, before);
   }
   return { sized, prepared, confirm: prepared.confirm };
 }
@@ -789,6 +843,12 @@ export async function describeToken(input, { chain } = {}, deps = {}) {
       ? { available: false, reason: check.reason ?? null, text: check.text }
       : { available: true, verdict: check.verdict, rule: check.rule, checked_at: check.checked_at, text: check.text },
   };
+  // A name and a symbol are whatever the creator wrote. Every token other than a major is shown with its short address, and a
+  // symbol or name with characters outside plain ASCII (homoglyphs, direction marks) is flagged.
+  const shortAddr = where === "base" ? shortBaseAddress(card.address) : shortMint(card.address);
+  card.label = card.major ? card.symbol : card.symbol ? `${clean(card.symbol, 30)} ${shortAddr}` : shortAddr;
+  card.symbol_non_ascii = !card.major && /[^\x20-\x7E]/.test(`${card.symbol ?? ""}${card.name ?? ""}`);
+  if (card.symbol_non_ascii) card.notes.push("The name or symbol contains characters outside plain ASCII (look-alike letters or direction marks), which can make a token pass for another one. Go by the address.");
   return card;
 }
 
@@ -796,7 +856,7 @@ export async function describeToken(input, { chain } = {}, deps = {}) {
 export function renderTokenCard(card) {
   const c = (v, max = 200) => clean(v, max);
   const lines = [];
-  lines.push(`${card.name ? `${c(card.name, 60)} ` : ""}${card.symbol ? `(${c(card.symbol, 30)}) ` : ""}on ${CHAIN_LABEL[card.chain]}${card.name_source ? ` (name per ${card.name_source}; it is whatever the creator wrote)` : ""}`.trim());
+  lines.push(`${card.name ? `${c(card.name, 60)} ` : ""}${card.label ? `(${c(card.label, 60)}) ` : ""}on ${CHAIN_LABEL[card.chain]}${card.name_source ? ` (name per ${card.name_source}; it is whatever the creator wrote)` : ""}`.trim());
   lines.push(`Address:  ${card.address}`);
   lines.push(`Decimals: ${card.decimals} (read from the chain)`);
   lines.push(`Program:  ${card.program} (read from the chain)`);
@@ -812,7 +872,7 @@ export function renderTokenCard(card) {
     lines.push(`Freeze authority: ${s.freeze_authority ? `set, to ${s.freeze_authority}: it can freeze this wallet's account for the token, and a frozen account cannot sell` : "none"}`);
     lines.push(`Token-2022 extensions: ${s.extensions.length ? s.extensions.join(", ") : "none"}`);
     if (s.transfer_fee_bps) lines.push(`Transfer fee: ${s.transfer_fee_bps / 100}% on every transfer of this token.`);
-    for (const x of s.confirm) lines.push(`Needs your approval on every trade: ${x.extension}: ${x.why}.`);
+    for (const x of s.confirm) lines.push(`Needs your approval on every trade: ${x.code ? "" : `${x.extension}: `}${x.why}.`);
     for (const m of s.refused) lines.push(`Not tradable by this kit: ${c(m, 300)}`);
   }
   for (const d of card.disagreements) lines.push(`Note: ${d}`);

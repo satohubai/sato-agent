@@ -7,7 +7,7 @@
 import { parseArgs } from "node:util";
 import { createHash } from "node:crypto";
 import { addresses, initWallet, walletExists } from "../src/wallet.js";
-import { allowedChains, evaluate, loadPolicy, setPolicy } from "../src/policy.js";
+import { allowedChains, evaluate, isLegacySwapsOff, loadPolicy, setPolicy, swapsEnabled } from "../src/policy.js";
 import { NeedsApproval, Pending, Refused } from "../src/errors.js";
 import { actions, read, recordCheckEvent, spentLast24h } from "../src/ledger.js";
 import { consumeApproval, requestApproval } from "../src/approvals.js";
@@ -136,7 +136,7 @@ function policyText(p) {
     `recipients:      ${p.allow_recipients ? p.allow_recipients.join(", ") : "any"}`,
     `Sato Hub checks: ${p.check_gate && p.check_gate !== "off" ? `stop a spend on "${p.check_gate === "caution" ? "caution or no" : "no"}"${p.on_check_unavailable ? ` · if a check can't run: ${p.on_check_unavailable}` : ""}` : "inform only"}`,
     `approval:        ${p.approval === "ask" ? "ask the owner before every spend" : "act within the limits"}`,
-    `swaps:           ${p.swaps_off === true ? "off" : `on · ${Number.isInteger(p.max_slippage_bps) ? `slippage up to ${p.max_slippage_bps} bps` : "slippage chosen per trade"} · ${Number.isInteger(p.max_trades_per_day) ? `${p.max_trades_per_day} per 24 hours` : "no trade cap"}`}`,
+    `swaps:           ${!swapsEnabled(p) ? `off${isLegacySwapsOff(p) ? " (this policy is from before v0.3 and never had swaps on; \`policy set --swaps on\` turns them on)" : ""}` : `on · ${Number.isInteger(p.max_slippage_bps) ? `slippage up to ${p.max_slippage_bps} bps` : "slippage chosen per trade"} · ${Number.isInteger(p.max_trades_per_day) ? `${p.max_trades_per_day} per 24 hours` : "no trade cap"}`}`,
   ].join("\n");
 }
 

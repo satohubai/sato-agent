@@ -1503,9 +1503,9 @@ test("tokens: a Token-2022 mint with a transfer fee is read from the chain, the 
   S.assertSolanaTokenTradable(t); // does not throw
 });
 
-test("tokens: Token-2022 extensions that let someone move or freeze the agent's tokens, or stop a sale, are refused, naming the extension", async () => {
+test("tokens: Token-2022 extensions that stop a sale, or that the kit cannot read, are refused, naming the extension", async () => {
   const mint = await randomAddress();
-  for (const name of ["PermanentDelegate", "TransferHook", "NonTransferable", "ConfidentialTransferMint", "ConfidentialTransferFeeConfig", "ConfidentialMintBurn"]) {
+  for (const name of ["NonTransferable", "ConfidentialTransferMint", "ConfidentialTransferFeeConfig", "ConfidentialMintBurn"]) {
     // On its own and among harmless ones.
     for (const extensions of [[ext(name)], [ext("MetadataPointer"), ext(name), ext("TokenMetadata")]]) {
       const t = await S.resolveSolanaToken(mint, { rpc: rpcFor(mint, mintEntry({ program: TOKEN_2022_PROGRAM, extensions })) });
@@ -1520,10 +1520,30 @@ test("tokens: Token-2022 extensions that let someone move or freeze the agent's 
     assert.deepEqual(t.refusals.map((r) => r.rule), ["solana_swap.token_extension_refused"]);
     assert.match(t.refusals[0].message, re);
   }
-  // All of them at once: every one is named.
+  // A refused extension among issuer powers: only the refused one is a refusal, the powers are still listed for the owner.
   const all = await S.resolveSolanaToken(mint, { rpc: rpcFor(mint, mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [ext("PermanentDelegate"), ext("TransferHook"), ext("NonTransferable")] })) });
-  assert.equal(all.refusals.length, 3);
-  assert.deepEqual(S.TOKEN_2022_EXTENSION_POLICY.refuse && Object.keys(S.TOKEN_2022_EXTENSION_POLICY.refuse).sort(), ["ConfidentialMintBurn", "ConfidentialTransferFeeConfig", "ConfidentialTransferMint", "NonTransferable", "PermanentDelegate", "TransferHook"]);
+  assert.equal(all.refusals.length, 1);
+  assert.match(all.refusals[0].message, /\bNonTransferable\b/);
+  assert.deepEqual(all.confirm.map((c) => c.extension), ["PermanentDelegate", "TransferHook"]);
+  assert.deepEqual(Object.keys(S.TOKEN_2022_EXTENSION_POLICY.refuse).sort(), ["ConfidentialMintBurn", "ConfidentialTransferFeeConfig", "ConfidentialTransferMint", "NonTransferable"]);
+  assert.deepEqual(Object.keys(S.TOKEN_2022_EXTENSION_POLICY.confirm).sort(), ["PermanentDelegate", "TransferHook"]);
+});
+
+test("tokens: a permanent delegate or a transfer hook is not refused: it is listed for the owner to confirm, trade by trade", async () => {
+  const mint = await randomAddress();
+  const want = { PermanentDelegate: "the issuer can move or burn this token in your wallet", TransferHook: "the issuer's program runs on every transfer and can block a sale" };
+  for (const name of ["PermanentDelegate", "TransferHook"]) {
+    for (const extensions of [[ext(name)], [ext("MetadataPointer"), ext(name), ext("TokenMetadata")]]) {
+      const t = await S.resolveSolanaToken(mint, { rpc: rpcFor(mint, mintEntry({ program: TOKEN_2022_PROGRAM, extensions })) });
+      assert.deepEqual(t.refusals, [], name);
+      assert.deepEqual(t.confirm, [{ extension: name, why: want[name] }], name);
+      assert.match(t.notes.join("\n"), new RegExp(`${name} extension: ${want[name].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+      S.assertSolanaTokenTradable(t); // does not throw
+    }
+  }
+  // Majors and plain mints have none.
+  assert.deepEqual((await S.resolveSolanaToken("SOL")).confirm, []);
+  assert.deepEqual((await S.resolveSolanaToken(mint, { rpc: rpcFor(mint, mintEntry()) })).confirm, []);
 });
 
 test("tokens: a transfer fee, a freeze or mint authority, metadata and the like are reported and allowed", async () => {
@@ -1586,9 +1606,14 @@ test("tokens: a swap with a refused mint, with two tokens, or with the same asse
   const calls = [];
   const fetch = async (u) => (calls.push(String(u)), new Response("{}"));
   const base = (entry) => ({ agent: WALLET, satoFeeBps: 15, fetch, minGapMs: 0, rpc: rpcFor(mint, entry) });
+  const frozen = mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [ext("NonTransferable")] });
+  await assert.rejects(S.planSolanaSwap({ from: "USDC", to: mint, amount: "5" }, base(frozen)), (e) => e instanceof Refused && rules(e)[0] === "solana_swap.token_extension_refused" && /NonTransferable/.test(e.message));
+  await assert.rejects(S.planSolanaSwap({ from: mint, to: "SOL", amount: "5" }, base(frozen)), (e) => e instanceof Refused && rules(e)[0] === "solana_swap.token_extension_refused");
+  // An issuer power is not a refusal here: the plan goes on to Jupiter (which this separate stub answers with nothing usable).
   const hooked = mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [ext("TransferHook")] });
-  await assert.rejects(S.planSolanaSwap({ from: "USDC", to: mint, amount: "5" }, base(hooked)), (e) => e instanceof Refused && rules(e)[0] === "solana_swap.token_extension_refused" && /TransferHook/.test(e.message));
-  await assert.rejects(S.planSolanaSwap({ from: mint, to: "SOL", amount: "5" }, base(hooked)), (e) => e instanceof Refused && rules(e)[0] === "solana_swap.token_extension_refused");
+  const asked = [];
+  await assert.rejects(S.planSolanaSwap({ from: "USDC", to: mint, amount: "5" }, { ...base(hooked), fetch: async (u) => (asked.push(String(u)), new Response("{}")) }), (e) => !(e instanceof Refused));
+  assert.ok(asked.length > 0, "Jupiter was asked for a token with a transfer hook");
   // Token <-> token is a later phase.
   const other = await randomAddress();
   const two = { ...base(mintEntry()), rpc: fakeRpc(BONK_BUY, { accounts: { [mint]: mintEntry(), [other]: mintEntry() } }).rpc };
@@ -1761,10 +1786,13 @@ for (const [fx, program] of [[BONK_BUY, TOKEN_PROGRAM_ADDRESS], [BONK_SELL, TOKE
 
 test("verify: the plan is checked against what the chain says about the mint, read again here", async () => {
   const plan = await planFrom(BONK_BUY);
-  // The mint now carries a permanent delegate (the fake chain says so): the swap is refused though the transaction is untouched.
-  const hooked = mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [ext("PermanentDelegate")] });
-  const deps = { rpc: fakeRpc(BONK_BUY, { accounts: { [BONK]: hooked } }).rpc, minGapMs: 0 };
+  // The mint now carries an extension that stops a sale (the fake chain says so): the swap is refused though the transaction is untouched.
+  const stuck = mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [ext("NonTransferable")] });
+  const deps = { rpc: fakeRpc(BONK_BUY, { accounts: { [BONK]: stuck } }).rpc, minGapMs: 0 };
   await assert.rejects(S.verifySolanaSwapPlan(plan, intentOf(BONK_BUY), deps), (e) => e instanceof Refused && rules(e).includes("solana_swap.token_extension_refused"));
+  // A permanent delegate is an issuer power for the owner to confirm, not a refusal of its own (the program change is still caught).
+  const delegated = mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [ext("PermanentDelegate")] });
+  await assert.rejects(S.verifySolanaSwapPlan(plan, intentOf(BONK_BUY), { rpc: fakeRpc(BONK_BUY, { accounts: { [BONK]: delegated } }).rpc, minGapMs: 0 }), (e) => e instanceof Refused && !rules(e).includes("solana_swap.token_extension_refused"));
   // A plan that describes the token differently from the chain (here: decimals) is refused.
   const lied = { ...plan, token: { ...plan.token, decimals: 9 } };
   assert.ok((await refusedBy(lied, BONK_BUY)).includes("solana_swap.intent"));
@@ -2307,9 +2335,9 @@ test("every long-tail refusal message is plain words for the owner (no safe / se
   const all = [];
   const plan = await planFrom(BONK_BUY);
   for (const slot of [1, 2, 3, 4, 5, 6, 9, 10]) all.push(...(await refusalsOf(withAccount(plan, slot, stranger), BONK_BUY)).map((r) => r.message));
-  for (const name of Object.keys(S.TOKEN_2022_EXTENSION_POLICY.refuse)) {
+  for (const name of [...Object.keys(S.TOKEN_2022_EXTENSION_POLICY.refuse), ...Object.keys(S.TOKEN_2022_EXTENSION_POLICY.confirm)]) {
     const t = await S.resolveSolanaToken(mint, { rpc: rpcFor(mint, mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [ext(name)] })) });
-    all.push(...t.refusals.map((r) => r.message), ...t.notes);
+    all.push(...t.refusals.map((r) => r.message), ...t.notes, ...t.confirm.map((c) => c.why));
   }
   const freeze = await S.resolveSolanaToken(mint, { rpc: rpcFor(mint, mintEntry({ program: TOKEN_2022_PROGRAM, freezeAuthority: stranger, mintAuthority: stranger, extensions: [ext("TransferFeeConfig")] })) });
   all.push(...freeze.notes);
@@ -2492,7 +2520,7 @@ test("LIVE read: the funded wallet's BONK buy and sell (USDC and SOL) plan, veri
   }
 });
 
-test("LIVE read: mints are read from the chain: BONK is a plain mint; PYUSD, the PUMP token and an xStock are refused for what their extensions allow", { skip: !live, timeout: 120_000 }, async () => {
+test("LIVE read: mints are read from the chain: BONK is a plain mint; PYUSD, the PUMP token and an xStock list their issuer powers for the owner to confirm", { skip: !live, timeout: 120_000 }, async () => {
   const deps = liveDeps();
   const bonk = await patient(() => S.resolveSolanaToken(BONK, deps));
   assert.deepEqual([bonk.program, bonk.decimals, bonk.extensions, bonk.refusals], [TOKEN_PROGRAM_ADDRESS, 5, [], []]);
@@ -2505,8 +2533,8 @@ test("LIVE read: mints are read from the chain: BONK is a plain mint; PYUSD, the
   for (const [mint, names] of Object.entries(refused)) {
     const t = await patient(() => S.resolveSolanaToken(mint, deps));
     assert.equal(t.program, TOKEN_2022_PROGRAM);
-    for (const n of names) assert.ok(t.refusals.some((r) => new RegExp(`\\b${n}\\b`).test(r.message)), `${mint.slice(0, 6)} ${n}`);
-    await assert.rejects(S.planSolanaSwap({ from: "USDC", to: mint, amount: "1" }, { ...deps, agent: WALLET, satoFeeBps: 15 }), (e) => e instanceof Refused && rules(e).includes("solana_swap.token_extension_refused"));
+    assert.deepEqual(t.refusals, [], mint);
+    for (const n of names) assert.ok(t.confirm.some((c) => c.extension === n), `${mint.slice(0, 6)} ${n}`);
     await pause(1200);
   }
   // Not a mint: Sato's USDC fee account is a token account, and a wallet is not a token program's account at all.

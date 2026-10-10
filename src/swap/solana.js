@@ -20,8 +20,9 @@
 // Token-2022 mint against USDC or SOL. One side is always USDC or SOL (token <->
 // token is a later phase) and Sato Hub's fee is always taken on that side, never in
 // the long-tail token. A long-tail mint is read from the chain (never from a
-// resolver): its token program, decimals, authorities and Token-2022 extensions, and
-// a mint that can move, freeze or strand the agent's tokens is refused.
+// resolver): its token program, decimals, authorities and Token-2022 extensions. A mint
+// that cannot be sold at all is refused; one whose issuer holds a power over the agent's
+// tokens (permanent delegate, transfer hook) is allowed with the owner's approval of each trade.
 // Every network dependency is injectable, so the tests run offline against
 // recorded mainnet responses.
 
@@ -205,8 +206,9 @@ const shortMint = (m) => `${String(m).slice(0, 4)}...${String(m).slice(-4)}`;
 // A mint other than USDC and SOL is read from the chain, never from a resolver or from
 // anything a response says: the program that owns it (Token or Token-2022), its
 // decimals, its mint and freeze authority and, for Token-2022, its extensions. What the
-// kit refuses is mechanical: an extension that lets someone else move or freeze the
-// agent's tokens, or that stops them being sold. What it only reports (freeze authority,
+// kit refuses is mechanical: an extension that stops the token being sold, or that the
+// kit cannot read. An issuer power (permanent delegate, transfer hook) is listed in
+// `confirm`: the trade goes ahead only with the owner's approval. What it only reports (freeze authority,
 // mint authority, a transfer fee, metadata) is for the owner to weigh, in plain words.
 //
 // Layouts: spl-token `Mint` (82 bytes: mint_authority COption<Pubkey> 0..36, supply u64
@@ -227,13 +229,17 @@ const EXTENSION_SIZE = { TransferFeeConfig: 108, MintCloseAuthority: 32, Confide
 
 /**
  * What the kit does with each Token-2022 mint extension. `refuse`: the swap is not built,
- * with the reason shown to the owner. `report`: allowed, and told to the owner.
+ * with the reason shown to the owner. `confirm` (owner decision, 2026-10-09): the swap is built, and the
+ * orchestrator (src/swap/run.js) stops it for the owner's approval of that exact trade even in auto mode;
+ * `why` is the plain sentence the owner is shown. `report`: allowed, and told to the owner.
  * An extension this table does not know is refused (a newer one could do anything).
  */
 export const TOKEN_2022_EXTENSION_POLICY = Object.freeze({
+  confirm: Object.freeze({
+    PermanentDelegate: "the issuer can move or burn this token in your wallet",
+    TransferHook: "the issuer's program runs on every transfer and can block a sale",
+  }),
   refuse: Object.freeze({
-    PermanentDelegate: "a permanent delegate can move or burn anyone's tokens of this mint, the agent's included",
-    TransferHook: "a transfer hook runs another program on every transfer of this mint, which can block or change a sale",
     NonTransferable: "this mint cannot be transferred, so it cannot be sold or swapped",
     ConfidentialTransferMint: "confidential transfers are enabled on this mint, and the kit cannot tell that a plain sale will work",
     ConfidentialTransferFeeConfig: "confidential transfers with a fee are enabled on this mint, and the kit cannot tell that a plain sale will work",
@@ -330,9 +336,13 @@ export function parseMintAccount(entry, mint) {
       details[name] = readExtension(name, data);
     }
   }
+  // Issuer powers: not refused. The mint is described and the trade needs the owner's approval each time (run.js).
+  const confirm = [];
   for (const name of extensions) {
     const why = TOKEN_2022_EXTENSION_POLICY.refuse[name];
     if (why) refusals.push(refuse("solana_swap.token_extension_refused", `the mint has the Token-2022 ${name} extension: ${why}`));
+    const confirmWhy = TOKEN_2022_EXTENSION_POLICY.confirm[name];
+    if (confirmWhy) confirm.push({ extension: name, why: confirmWhy });
   }
   if (details.DefaultAccountState?.state === "frozen") {
     refusals.push(refuse("solana_swap.token_extension_refused", "the mint has the Token-2022 DefaultAccountState extension set to frozen: every new account for it starts frozen, so the agent could not sell what it buys"));
@@ -342,6 +352,7 @@ export function parseMintAccount(entry, mint) {
   }
 
   // Reported to the owner, in plain words (no verdict).
+  for (const c of confirm) notes.push(`This mint has the Token-2022 ${c.extension} extension: ${c.why}. The owner approves each trade of it.`);
   if (freezeAuthority) notes.push(`A freeze authority is set (${freezeAuthority}): it can freeze the agent's account for this token, and a frozen account cannot sell.`);
   else notes.push("No freeze authority is set on this mint.");
   if (mintAuthority) notes.push(`A mint authority is set (${mintAuthority}): it can create more of this token.`);
@@ -369,6 +380,7 @@ export function parseMintAccount(entry, mint) {
     symbol: null,
     major: null,
     onchain: true,
+    confirm,
     notes,
     refusals,
   };
@@ -376,7 +388,7 @@ export function parseMintAccount(entry, mint) {
 
 const majorToken = (s) => ({
   mint: s.mint, symbol: s.symbol, major: s.symbol, decimals: s.decimals, program: TOKEN_PROGRAM_ADDRESS, program_name: "Token",
-  extensions: [], extension_details: {}, transfer_fee: null, onchain: false, notes: [], refusals: [],
+  extensions: [], extension_details: {}, transfer_fee: null, onchain: false, confirm: [], notes: [], refusals: [],
 });
 
 /**
@@ -387,7 +399,8 @@ const majorToken = (s) => ({
  * mint is read from the chain through `deps.rpc` (one getAccountInfo): `major` is null, `program` is the
  * Token or Token-2022 program that owns it, and `extensions` are the Token-2022 extension names
  * (details in `extension_details`, a transfer fee also in `transfer_fee`). `notes` are plain-word
- * lines for the owner; `refusals` is empty unless the mint cannot be traded
+ * lines for the owner; `confirm` is `[{ extension, why }]` for each issuer power the owner must approve per trade;
+ * `refusals` is empty unless the mint cannot be traded
  * (`assertSolanaTokenTradable` throws them). It throws Refused (`solana_swap.token_not_a_mint`)
  * when the address is not a readable mint, and an Error for something that is not an address.
  */

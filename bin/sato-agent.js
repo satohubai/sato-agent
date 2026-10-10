@@ -19,7 +19,7 @@ import * as solana from "../src/solana.js";
 import { RESERVED_HEADERS, pay, quoteX402, resolvePayChain } from "../src/x402.js";
 import { MCP_URL, checkInstall, customEndpoint, gateRefusals, recommend, runCheck } from "../src/satohub.js";
 import { usdcUnits, unitsToUsd } from "../src/amount.js";
-import { prepareSwap, sizeSwap } from "../src/swap/run.js";
+import { describeToken, renderTokenCard, runSwap, swapLines } from "../src/swap/run.js";
 import { checkBuilds, renderReceipts } from "../src/build-check.js";
 import { normalizeCluster } from "../src/receipts.js";
 import { clean, cleanBody, cleanStrings } from "../src/text.js";
@@ -35,8 +35,18 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
              [--on-check-unavailable allow|refuse] [--approval auto|ask]
              [--swaps on|off] [--swap-slippage-bps <1-500>|none] [--max-trades-per-day <n|none>]
                                          the owner's choices; nothing is spent until chains and both limits are set
-  swap --chain base|solana --from <USDC|ETH|WETH|SOL> --to <...> --amount <n> [--slippage-bps <n>] [--dry-run]
-                                         swap with USDC on one side; off until the owner sets swap caps; checked against an independent price
+  swap --chain base|solana --from <asset> --to <asset> --amount <n|all> [--slippage-bps <n>] [--approve <code>] [--dry-run]
+                                         swap with a major on one side: USDC, ETH or WETH on Base; USDC or SOL on Solana. The other
+                                         side can be any token, by its 0x address (Base), its mint (Solana) or a link; Sato Hub's
+                                         resolver reads a link and the chain is re-read for decimals and program. USDC <-> ETH and
+                                         USDC <-> SOL are checked against an independent price; a token has none, so its size is
+                                         measured from the quote. --amount all sells the whole balance of a token. Slippage is picked
+                                         per trade (50 bps between majors, 150 with a token; --slippage-bps overrides, at most 500).
+                                         A trade with high slippage, a large price impact, a poor sell-back test or an issuer power
+                                         over the token needs the owner's approval (exit 5) even when the agent acts on its own.
+  token <address|mint|link> [--chain base|solana]
+                                         what is at an address: name, decimals, program, price and liquidity (dated), a Solana token's
+                                         authorities and extensions, and Sato Hub's token check. Read-only; spends nothing.
   send --chain base|solana --to <address> --amount <usdc> [--approve <code>]
                                          send USDC (Sato Hub checks the recipient first)
   pay <url> [--chain base|solana] [--method POST --data <body> --header 'k: v' ...] [--approve <code>]
@@ -378,7 +388,7 @@ async function main() {
     case "swap": {
       const chain = (flags.chain || "").toLowerCase();
       if (!["base", "solana"].includes(chain) || !flags.from || !flags.to || !flags.amount) {
-        throw new UsageError("swap --chain base|solana --from <USDC|ETH|WETH|SOL> --to <...> --amount <n> [--slippage-bps <n>] [--dry-run]");
+        throw new UsageError("swap --chain base|solana --from <asset> --to <asset> --amount <n|all> [--slippage-bps <n>] [--approve <code>] [--dry-run]");
       }
       let slippageBps;
       if (flags["slippage-bps"] !== undefined) {
@@ -386,37 +396,36 @@ async function main() {
         slippageBps = Number(flags["slippage-bps"]);
       }
       const req = { chain, from: flags.from, to: flags.to, amount: flags.amount, slippageBps };
-      // The owner's choices and an independent price first (refuses before anything is quoted)...
-      const sized = await sizeSwap(req);
-      // ...then the owner's approval of this exact swap, before any quote is built
-      // (a quote lives about a minute; an approval can take longer).
-      await beforeSpend({
-        chain,
-        intent: { cmd: "swap", chain, from: sized.from, to: sized.to, amount: sized.amount, slippage_bps: sized.slippageBps, price: "the quote must sit within the oracle tolerance; the minimum out is set by the slippage" },
-        checkArgs: null,
-        usd: sized.usd,
-      });
-      const prepared = await prepareSwap(req);
+      // Sized and checked against the owner's choices and an independent price (where one exists); the owner's approval where it is due
+      // (before the quote in ask mode, and for a reason known up front; after the quote for a reason only the quote shows); then the
+      // quote, the chain module's verification and its simulation. Nothing is signed in here. (src/swap/run.js has the order.)
+      const { prepared } = await runSwap(req, { approve: flags.approve, dryRun: Boolean(flags["dry-run"]), skipCheck: Boolean(flags["skip-check"]) });
       const d = prepared.display;
-      const lines = [
-        `${d.chain === "base" ? "Base" : "Solana"} swap via ${d.venue}: sell ${d.sell.amount} ${d.sell.asset} for about ${d.buy.quoted} ${d.buy.asset} (at least ${d.buy.minimum}, slippage ${d.buy.slippage_bps} bps)`,
-        ...(d.buy.minimum_in_transaction ? [`The transaction itself refuses to pay less than ${d.buy.minimum_in_transaction} ${d.buy.asset} (written into it and checked by the kit).`] : []),
-        `Independent price: ${d.oracle.source} says $${d.oracle.usd} (${d.oracle.age_s}s old); the quote is ${d.oracle.deviation_pct}% from it.`,
-        `Held to your limits as $${d.usd_held_to_limits}.`,
-        `Sato Hub fee: ${d.sato_fee.bps} bps. ${d.sato_fee.disclosure ?? ""}`.trim(),
-        ...(d.approval ? [`Approval first: exactly ${d.approval.amount} ${d.approval.token} to the pinned router ${d.approval.spender} (never unlimited).`] : []),
-        ...(Array.isArray(d.disclosure) ? d.disclosure : []),
-        `The kit's own simulation passed: ${JSON.stringify(d.simulation)}`,
-      ];
-      // Route labels (Jupiter) and the fee sentence (Sato Hub) are server text: one cleaned line each.
-      const shown = lines.map((l) => clean(l, 1000)).join("\n");
+      // Route labels (Jupiter), token names and the fee sentence (Sato Hub) are outside text: one cleaned line each.
+      const shown = swapLines(d).map((l) => clean(l, 1000)).join("\n");
       if (flags["dry-run"]) {
-        return out(`DRY RUN: every check passed. Nothing was signed or sent, and nothing counts against the limits.\n${shown}`, { dry_run: true, ...d });
+        const would = d.confirm_reasons?.length ? "\nThis swap would stop for the owner's approval when run for real (exit 5)." : "";
+        return out(`DRY RUN: every check passed. Nothing was signed or sent, and nothing counts against the limits.\n${shown}${would}`, { dry_run: true, would_need_approval: Boolean(d.confirm_reasons?.length), ...d });
       }
       say(shown);
       const r = await prepared.execute();
       const rebuilt = r.rebuilt ? `\nNote: ${r.rebuilt.note}. New quote: about ${r.rebuilt.quoted} ${d.buy.asset}, at least ${r.rebuilt.minimum}.` : "";
       return out(`Swapped. ${r.explorer}${rebuilt}${r.received ? `\nReceived ${r.received.amount} ${r.received.asset}.` : r.amount_out ? `\nReceived ${r.amount_out} base units of ${d.buy.asset}.` : ""}${r.warnings?.length ? `\nNote: ${r.warnings.join("; ")}` : ""}`, { ...r, plan: d });
+    }
+    case "token": {
+      const input = rest[0];
+      if (!input || rest.length > 1) throw new UsageError("token <address|mint|link> [--chain base|solana]");
+      const chain = flags.chain === undefined ? undefined : flags.chain.toLowerCase();
+      if (chain !== undefined && !["base", "solana"].includes(chain)) throw new UsageError("--chain must be base or solana");
+      const card = await describeToken(input, { chain });
+      if (flags.json) {
+        // Names, symbols and resolver fields are outside text: cleaned. Sato Hub's evidence text keeps its lines (control characters dropped).
+        const { sato_hub_check: hubCheck, ...rest2 } = card;
+        console.log(json({ ...cleanStrings(rest2), sato_hub_check: { ...cleanStrings({ ...hubCheck, text: undefined }), text: cleanBody(hubCheck.text ?? "") } }));
+        return;
+      }
+      console.log(renderTokenCard(card).join("\n"));
+      return;
     }
     case "register": {
       const services = (flags.service ?? []).map((s) => {
@@ -555,7 +564,7 @@ main().catch((err) => {
     process.exit(4);
   }
   if (err instanceof NeedsApproval) {
-    if (flags.json) console.log(json({ needs_approval: { code: err.approval.code, expires_at: err.approval.expires_at, intent: err.intent } }));
+    if (flags.json) console.log(json({ needs_approval: { code: err.approval.code, expires_at: err.approval.expires_at, intent: err.intent, ...(err.reasons ? { reasons: err.reasons } : {}) } }));
     else console.error(err.message);
     process.exit(5);
   }

@@ -82,3 +82,41 @@ export function gateRefusals(policy, check, { skipped = false } = {}) {
   }
   return [];
 }
+
+// ---------------------------------------------------------------- token resolver
+
+/** True for something that is a link (the kit never parses one itself: only Sato Hub's resolver turns a link into a token). */
+export const looksLikeLink = (input) => /^\s*(https?:\/\/|[a-z0-9-]+(\.[a-z0-9-]+)+\/)/i.test(String(input ?? ""));
+
+/**
+ * Ask Sato Hub what is at an address, a mint or a link (`onchain_agent_resolve_token`). Never throws.
+ * Returns { ok: true, token, signature: { ok } | { ok: false, error } } or { ok: false, reason, error? }:
+ *   reason "unavailable"   the tool is missing (an older Sato Hub), errored, timed out or sent something unusable
+ *   reason "not_resolved"  Sato Hub answered, but could not say what the input is (`error` is its own sentence, `code` its code)
+ *
+ * The answer is a HINT, not the truth: the caller re-reads decimals and the token program from the chain, and the chain wins.
+ * Its price and liquidity are one pool's listing, dated by `sources`; they are shown as such and never used to size a trade.
+ */
+export async function resolveTokenViaHub(input, { chain, call = callTool, verifySignature } = {}) {
+  const args = { input: String(input), ...(chain ? { chain } : {}), response_format: "json" };
+  let r;
+  try {
+    r = await call("onchain_agent_resolve_token", args);
+  } catch (err) {
+    return { ok: false, reason: "unavailable", error: err.message };
+  }
+  const s = r?.structured;
+  if (r?.isError || !s || typeof s !== "object") return { ok: false, reason: "unavailable", error: String(r?.text ?? "no answer").slice(0, 300) };
+  if (s.resolved === false) return { ok: false, reason: "not_resolved", code: s.code ?? null, error: String(s.error ?? "Sato Hub could not resolve this").slice(0, 300) };
+  const chainName = String(s.chain ?? "").toLowerCase();
+  if (typeof s.address !== "string" || !s.address || !["base", "solana"].includes(chainName)) return { ok: false, reason: "unavailable", error: "the answer names no token" };
+  let signature = { ok: false, error: "not checked" };
+  try {
+    const v = verifySignature ?? (await import("./hub-signature.js")).verifyHubSignature;
+    await v(s, { maxAgeMs: 10 * 60 * 1000 });
+    signature = { ok: true };
+  } catch (err) {
+    signature = { ok: false, error: err.message };
+  }
+  return { ok: true, token: { ...s, chain: chainName }, signature };
+}

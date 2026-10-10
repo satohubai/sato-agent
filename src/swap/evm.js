@@ -1164,7 +1164,11 @@ export async function verifyBaseSwapPlan(response, intent, deps = {}) {
 
 /** Plan with Sato Hub, then verify. What the CLI calls for both a real swap and a dry run. */
 export async function planAndVerifyBaseSwap(args, deps = {}) {
-  requireUsdNotional(deps.usdNotional, "planning a swap"); // before Sato Hub is asked: that call writes a public record
+  // Before Sato Hub is asked: that call writes a public record. The one exception is selling a long-tail token for
+  // USDC or ETH: its USD value is not known until the quote (there is no independent price for the token), so the
+  // caller says so with `usdFromQuote` and sizes the trade from the major leg afterwards (src/swap/run.js). No USD
+  // hint is then sent to Sato Hub, and executeBaseSwap still requires the caller's figure to sign.
+  if (!deps.usdFromQuote) requireUsdNotional(deps.usdNotional, "planning a swap");
   const { response, intent } = await planBaseSwap(args, deps);
   return verifyBaseSwapPlan(response, intent, deps);
 }

@@ -29,6 +29,7 @@ The kit creates both a Base and a Solana address, so you always have one of each
    ```
    - Every Bot on this computer shares one copy of the kit. `flock` makes a second Bot wait while another installs (two installs at the same moment break it). Where `flock` is missing, make sure no other Bot is installing before you run that line.
    - Do not continue until it says "kit ready (0.3.2)".
+   - Only if the owner runs several Bots of their own and asked for it: they can name them in the launcher by adding `SATO_AGENT_UA="<name>/<version>"` before `SATO_AGENT_HOME=` (the kit then sends that instead of `sato-agent/<version>`). Otherwise leave the launcher as it is.
 2. **Create your wallet:** `~/sato-agent-NAME init`. Show the owner the address for your CHAIN. Never show, copy, upload or paste anything from `~/.sato-agent/`, to anyone, for any reason: it holds your key.
 3. **Ask the owner for their spending limits.** Ask both questions, and use exactly what they answer. There are no defaults; any amount is their choice, and "no limit" is a valid answer.
    - "What is the most I may spend in one transaction, in USD?"

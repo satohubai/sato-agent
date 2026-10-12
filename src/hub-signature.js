@@ -26,7 +26,7 @@
 // Only node:crypto is used. Every network call has a timeout and names itself.
 
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { USER_AGENT } from "./version.js";
+import { userAgent } from "./version.js";
 
 export const JWKS_URL = "https://satohub.ai/.well-known/jwks.json";
 const FETCH_TIMEOUT_MS = 15_000;
@@ -77,7 +77,7 @@ export function resetJwksCache() {
 async function fetchJwks(fetchImpl, now) {
   let res;
   try {
-    res = await fetchImpl(JWKS_URL, { headers: { "user-agent": USER_AGENT, accept: "application/json" }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    res = await fetchImpl(JWKS_URL, { headers: { "user-agent": userAgent(), accept: "application/json" }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   } catch (err) {
     throw new HubSignatureError("jwks_unavailable", `could not fetch Sato Hub's signing keys (${err.message}); nothing was signed`);
   }

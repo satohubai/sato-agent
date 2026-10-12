@@ -28,7 +28,7 @@ import { actions, record, release, reserve } from "./ledger.js";
 import { Pending, Refused, Rejected } from "./errors.js";
 import { addresses } from "./wallet.js";
 import { clean } from "./text.js";
-import { USER_AGENT } from "./version.js";
+import { userAgent } from "./version.js";
 import { loadSettings, scrubAddress } from "./settings.js";
 import { checkLimits, purchaseChain, purchaseGate, refuse } from "./purchase.js";
 import { SIM_GAS, decodeBaseTx, simulateBasePurchase } from "./purchase-evm.js";
@@ -116,7 +116,7 @@ export const recipientSha256 = (recipient) => createHash("sha256").update(canoni
 async function hubFetch(url, init, d) {
   let res;
   try {
-    res = await d.fetchImpl(url, { ...init, headers: { "user-agent": USER_AGENT, accept: "application/json", ...(init.headers ?? {}) }, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
+    res = await d.fetchImpl(url, { ...init, headers: { "user-agent": userAgent(), accept: "application/json", ...(init.headers ?? {}) }, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
   } catch (err) {
     throw new Error(`Sato Hub did not answer (${err.name === "TimeoutError" ? `timed out after ${HTTP_TIMEOUT_MS / 1000} s` : clean(err.message, 120)}); nothing was ordered or paid`);
   }
@@ -144,7 +144,7 @@ export async function ordersAvailable(deps = {}) {
   const d = { fetchImpl: globalThis.fetch, ...deps };
   let res;
   try {
-    res = await d.fetchImpl(`${d.origin ?? commerceOrigin()}${ORDER_PATH}`, { method: "GET", headers: { "user-agent": USER_AGENT, accept: "application/json", "cache-control": "no-cache" }, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
+    res = await d.fetchImpl(`${d.origin ?? commerceOrigin()}${ORDER_PATH}`, { method: "GET", headers: { "user-agent": userAgent(), accept: "application/json", "cache-control": "no-cache" }, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
   } catch (err) {
     throw new Error(`Sato Hub did not answer (${err.name === "TimeoutError" ? `timed out after ${HTTP_TIMEOUT_MS / 1000} s` : clean(err.message, 120)}); whether Amazon orders are on is unknown`);
   }

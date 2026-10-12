@@ -35,7 +35,7 @@ import { evmAccount } from "./wallet.js";
 import { USDC_BASE } from "./base.js";
 import { unitsToUsd } from "./amount.js";
 import { clean, cleanOrNull } from "./text.js";
-import { USER_AGENT } from "./version.js";
+import { userAgent } from "./version.js";
 
 export const BASE_NETWORK = "eip155:8453";
 export const MAX_AUTH_WINDOW_S = 300;
@@ -283,7 +283,7 @@ async function prepare({ chain: requestedChain, headers, account, signer, scheme
 }
 
 // The request, built the same way for the quote and for the payment.
-const requestInit = ({ method, body, headers, timeoutMs }) => ({ method, body, headers: { ...headers, "user-agent": USER_AGENT }, signal: AbortSignal.timeout(timeoutMs) });
+const requestInit = ({ method, body, headers, timeoutMs }) => ({ method, body, headers: { ...headers, "user-agent": userAgent() }, signal: AbortSignal.timeout(timeoutMs) });
 
 const MAX_OFFERS = 20; // a server's list is capped: only this many offers are read
 const MAX_REFUSALS = 10;

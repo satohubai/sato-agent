@@ -35,7 +35,7 @@ import { evmAccount } from "./wallet.js";
 import { home, ensureHome, readJson, writePrivate } from "./store.js";
 import { usdcUnits, unitsToUsd } from "./amount.js";
 import { clean } from "./text.js";
-import { USER_AGENT } from "./version.js";
+import { userAgent } from "./version.js";
 import { pay } from "./x402.js";
 import { USDC_BASE } from "./base.js";
 import { checkLimits, purchaseGate, refuse } from "./purchase.js";
@@ -174,7 +174,7 @@ function challengeOf(res) {
 
 /** One request to Bitrefill. Never throws with the body in the message. Returns { status, json, headers }. */
 async function request(d, method, path, { body, token, siwx } = {}) {
-  const headers = { "user-agent": USER_AGENT, accept: "application/json" };
+  const headers = { "user-agent": userAgent(), accept: "application/json" };
   if (body !== undefined) headers["content-type"] = "application/json";
   if (token) headers["x-access-token"] = token;
   if (siwx) headers["sign-in-with-x"] = siwx;

@@ -10,7 +10,7 @@
 // refuses on `caution` or `no`, unset/"off" only informs. A `go` never means
 // the spend is safe; it means nothing on record stood in the way.
 
-import { USER_AGENT } from "./version.js";
+import { userAgent } from "./version.js";
 
 export const DEFAULT_MCP_URL = "https://satohub.ai/api/mcp";
 export const MCP_URL = process.env.SATO_AGENT_MCP_URL || DEFAULT_MCP_URL;
@@ -20,7 +20,7 @@ export const customEndpoint = () => MCP_URL !== DEFAULT_MCP_URL;
 export async function callTool(name, args, { timeoutMs = 30_000 } = {}) {
   const res = await fetch(MCP_URL, {
     method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "user-agent": USER_AGENT },
+    headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "user-agent": userAgent() },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
     signal: AbortSignal.timeout(timeoutMs),
   });

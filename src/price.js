@@ -20,7 +20,7 @@
 
 import { createPublicClient, formatUnits, http } from "viem";
 import { base } from "viem/chains";
-import { USER_AGENT } from "./version.js";
+import { userAgent } from "./version.js";
 
 const RPC_TIMEOUT_MS = 20_000;
 
@@ -72,7 +72,7 @@ const aggregatorAbi = [
 // Same transport pattern as base.js: the owner's RPC, a timeout, our name.
 function defaultClient() {
   const url = process.env.SATO_AGENT_BASE_RPC || "https://mainnet.base.org";
-  return createPublicClient({ chain: base, transport: http(url, { timeout: RPC_TIMEOUT_MS, fetchOptions: { headers: { "user-agent": USER_AGENT } } }) });
+  return createPublicClient({ chain: base, transport: http(url, { timeout: RPC_TIMEOUT_MS, fetchOptions: { headers: { "user-agent": userAgent() } } }) });
 }
 
 /**

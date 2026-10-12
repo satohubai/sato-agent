@@ -62,7 +62,7 @@ import { record, release, reserve } from "../ledger.js";
 import { withLock } from "../store.js";
 import { callTool as satoCallTool } from "../satohub.js";
 import { unitsToUsd } from "../amount.js";
-import { USER_AGENT } from "../version.js";
+import { userAgent } from "../version.js";
 import { FEE_CEILING_BPS, feePercent, feeTierRefusals, pairTier } from "./fee-tier.js";
 import { readReferral, referralView, referrerRefusalMessage } from "./referral.js";
 
@@ -982,7 +982,7 @@ export class SellBackError extends Error {
 export async function buildKyberSellBack({ tokenIn, tokenOut, amountIn, taker, slippageBps = SELL_BACK_SLIPPAGE_BPS }, deps = {}) {
   const f = deps.kyberFetch ?? fetch;
   const base = deps.kyberApi ?? KYBER_API_BASE;
-  const headers = { "user-agent": USER_AGENT, "x-client-id": "satohub", accept: "application/json" };
+  const headers = { "user-agent": userAgent(), "x-client-id": "satohub", accept: "application/json" };
   const sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const call = async (what, url, init = {}) => {
     let res;
@@ -1038,7 +1038,7 @@ export async function kyberPublicOut({ tokenIn, tokenOut, amountIn }, deps = {})
   const f = deps.kyberFetch ?? fetch;
   const q = new URLSearchParams({ tokenIn: tokenIn.address, tokenOut: tokenOut.address, amountIn: amountIn.toString() });
   try {
-    const res = await f(`${deps.kyberApi ?? KYBER_API_BASE}/routes?${q}`, { headers: { "user-agent": USER_AGENT, "x-client-id": "satohub", accept: "application/json" }, signal: AbortSignal.timeout(KYBER_TIMEOUT_MS) });
+    const res = await f(`${deps.kyberApi ?? KYBER_API_BASE}/routes?${q}`, { headers: { "user-agent": userAgent(), "x-client-id": "satohub", accept: "application/json" }, signal: AbortSignal.timeout(KYBER_TIMEOUT_MS) });
     if (!res.ok) return null;
     const body = await res.json();
     const out = uintOf(body?.data?.routeSummary?.amountOut);

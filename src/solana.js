@@ -34,7 +34,7 @@ import { record, release, reserve } from "./ledger.js";
 import { Pending, Refused, Rejected } from "./errors.js";
 import { usdcUnits } from "./amount.js";
 import { loadWallet, solanaSecret } from "./wallet.js";
-import { USER_AGENT } from "./version.js";
+import { userAgent } from "./version.js";
 
 export const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 // From @solana-program/token-2022 0.19.0 (TOKEN_2022_PROGRAM_ADDRESS); confirmed
@@ -46,7 +46,7 @@ export const explorer = (sig) => `https://solscan.io/tx/${sig}`;
 
 export function rpc() {
   const url = process.env.SATO_AGENT_SOLANA_RPC || "https://api.mainnet-beta.solana.com";
-  return createSolanaRpc(url, { headers: { "user-agent": USER_AGENT } });
+  return createSolanaRpc(url, { headers: { "user-agent": userAgent() } });
 }
 
 const withTimeout = (p, ms = 20_000) =>

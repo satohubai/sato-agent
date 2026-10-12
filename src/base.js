@@ -25,7 +25,7 @@ import { entries, record, release, reserve } from "./ledger.js";
 import { Pending, Rejected } from "./errors.js";
 import { withLock } from "./store.js";
 import { evmAccount, loadWallet } from "./wallet.js";
-import { USER_AGENT } from "./version.js";
+import { userAgent } from "./version.js";
 
 export const USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 // ERC-8004 IdentityRegistry on Base mainnet (github.com/erc-8004/erc-8004-contracts).
@@ -42,7 +42,7 @@ const explorer = (hash) => `https://basescan.org/tx/${hash}`;
 
 function transport() {
   const url = process.env.SATO_AGENT_BASE_RPC || "https://mainnet.base.org";
-  return http(url, { timeout: RPC_TIMEOUT_MS, fetchOptions: { headers: { "user-agent": USER_AGENT } } });
+  return http(url, { timeout: RPC_TIMEOUT_MS, fetchOptions: { headers: { "user-agent": userAgent() } } });
 }
 
 export function clients(account = evmAccount()) {

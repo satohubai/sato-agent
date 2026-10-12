@@ -82,6 +82,11 @@ const MAJORS = {
  * long-tail token is always shown with its short address beside its symbol, so it can never pass for one.
  */
 const isStableAsset = (chain, asset) => isStableSymbol(chain, asset.symbol);
+/**
+ * The assets named in "--amount all ... give an amount". On Base and Solana this is the line v0.3 printed ("USDC, ETH, WETH or SOL"),
+ * kept as it was; every other chain names its own.
+ */
+const amountAllAssets = (chain) => orList(chain === DEFAULT_EVM_CHAIN || chain === "solana" ? ["USDC", "ETH", "WETH", "SOL"] : Object.keys(MAJORS[chain]));
 /** The options an oracle read takes on this chain: an EVM chain reads its own feeds; Solana's SOL/USD is read where Chainlink publishes it. */
 const oracleOpts = (chain) => (isEvm(chain) ? { chain } : {});
 /** Symbols a token must not be shown under without its address: a scam token can call itself USDC. */
@@ -301,14 +306,14 @@ export async function sizeSwap({ chain, from, to, amount, slippageBps }, deps = 
   const tailOut = toAsset.kind === "token";
   if (tailIn && tailOut) throw refuse("token_to_token", `one side of a swap must be ${orList(Object.keys(table))}; swapping one token straight for another is not supported yet`);
   const longTail = tailIn ? "in" : tailOut ? "out" : null;
-  if (!longTail && !isStableAsset(chain, fromAsset) && !isStableAsset(chain, toAsset)) throw new Error("one side of a swap must be USDC (this version)");
+  if (!longTail && !isStableAsset(chain, fromAsset) && !isStableAsset(chain, toAsset)) throw new Error(`one side of a swap must be ${orList(Object.keys(getChain(chain).stables))} (this version)`);
   const tail = tailIn ? fromAsset : tailOut ? toAsset : null;
 
   // The amount: a number, or `all` for the whole balance of a token being sold (read from the chain).
   let amountText = String(amount);
   let amountIsAll = false;
   if (/^all$/i.test(amountText)) {
-    if (!tailIn) throw new Error("--amount all sells the whole balance of a token; for USDC, ETH, WETH or SOL give an amount");
+    if (!tailIn) throw new Error(`--amount all sells the whole balance of a token; for ${amountAllAssets(chain)} give an amount`);
     let units;
     try {
       units = await (deps.tokenBalance ?? defaultTokenBalance)(chain, fromAsset, deps);
@@ -715,7 +720,7 @@ async function needsApproval(intent, reasons) {
   // The approval comes before the quote, so the owner sees the fee in plain words here: the published rate for this pair and
   // the most this approval allows (the intent binds fee_tier and fee_max_bps).
   if (intent.fee_tier) {
-    err.fee_line = approvalFeeLine(intent.fee_tier);
+    err.fee_line = approvalFeeLine(intent.fee_tier, intent.chain);
     err.message = `${err.message}\n${err.fee_line}`;
   }
   return err;
@@ -800,9 +805,16 @@ export function swapLines(d) {
     if (typeof m.price_impact_pct === "number") lines.push(`Price impact reported by the route: ${m.price_impact_pct}%.`);
   }
   if (d.sell_back) lines.push(`Sell-back test (simulated only, nothing sent): buying and selling straight back returns ${d.sell_back.returned} ${d.sell_back.asset} for ${d.sell_back.asset === d.sell.asset ? d.sell.amount : "the amount sold"}, a loss of ${d.sell_back.loss_bps / 100}% (the kit allows up to ${d.sell_back.allowed_loss_bps / 100}%).`);
-  const basis = { usdc_amount: "the USDC amount", oracle: "the Chainlink price of what you sell", usdc_received: "the USDC the quote returns for the token", oracle_on_received: "the Chainlink price of the ETH or SOL the quote returns" }[d.usd_basis];
+  // The stablecoin and the volatile coin are this swap's own (USDC and "ETH or SOL" on Base and Solana, as in v0.3).
+  const legacy = d.chain === DEFAULT_EVM_CHAIN || d.chain === "solana" || !isKnownChain(d.chain);
+  const basis = {
+    usdc_amount: `the ${d.sell.asset} amount`,
+    oracle: "the Chainlink price of what you sell",
+    usdc_received: `the ${d.buy.asset} the quote returns for the token`,
+    oracle_on_received: `the Chainlink price of the ${legacy ? "ETH or SOL" : getChain(d.chain).native.symbol} the quote returns`,
+  }[d.usd_basis];
   lines.push(`Held to your limits as $${d.usd_held_to_limits}${basis ? ` (from ${basis})` : ""}.`);
-  lines.push(`Sato Hub fee: ${feeText(d.sato_fee.bps, d.sato_fee.tier)}${d.sato_fee.asset ? `, taken in ${d.sato_fee.asset}` : ""}, never in the token. ${d.sato_fee.disclosure ?? ""}${referralFeeSentence(d.referral)}`.trim());
+  lines.push(`Sato Hub fee: ${feeText(d.sato_fee.bps, d.sato_fee.tier, d.chain)}${d.sato_fee.asset ? `, taken in ${d.sato_fee.asset}` : ""}, never in the token. ${d.sato_fee.disclosure ?? ""}${referralFeeSentence(d.referral)}`.trim());
   // A referrer was sent but Sato Hub's signed answer does not name it: a warning for the owner, never a block.
   if (d.referral && !d.referral.recorded) lines.push(`Note: ${d.referral.warning}`);
   if (d.approval) lines.push(`Approval first: exactly ${d.approval.amount} ${d.approval.token} to the pinned router ${d.approval.spender} (never unlimited).`);
@@ -820,7 +832,7 @@ export function swapLines(d) {
  * program and authorities (the chain wins where they differ), then Sato Hub's token check. Read-only: no wallet, no policy.
  * deps: resolveHub, resolveBaseToken, resolveSolanaToken, runCheck, baseDeps, solDeps.
  */
-export async function describeToken(input, { chain } = {}, deps = {}) {
+export async function describeToken(input, { chain, evmChain: evmHint } = {}, deps = {}) {
   const raw = String(input ?? "").trim();
   if (!raw) throw new Error("token needs an address, a mint or a link");
   if (chain !== undefined && !isKnownChain(chain)) throw new Error(`--chain must be ${orList(chainKeys())}`);
@@ -839,8 +851,9 @@ export async function describeToken(input, { chain } = {}, deps = {}) {
         : "Sato Hub could not resolve this link right now; send the contract address instead",
     );
   }
-  // A 0x address is on whichever EVM chain `--chain` names, else on the default EVM chain (Base).
-  const guessed = isEvmAddress(raw) ? (isEvm(chain) ? chain : DEFAULT_EVM_CHAIN) : isSolanaMint(raw) ? "solana" : null;
+  // A 0x address is on whichever EVM chain `--chain` names, else the bot's own EVM chain (`evmChain`, which the CLI works out from the
+  // owner's policy), else the default EVM chain (Base).
+  const guessed = isEvmAddress(raw) ? (isEvm(chain) ? chain : isEvm(evmHint) ? evmHint : DEFAULT_EVM_CHAIN) : isSolanaMint(raw) ? "solana" : null;
   const where = link ? hub.chain : guessed ?? chain ?? (hub ? hub.chain : null);
   if (!where) throw new Error("token needs a 0x contract address (Base), a Solana mint or a link; for USDC, ETH or SOL by name, add --chain");
   if (chain && chain !== where) throw new Error(`that is a ${where} address, but --chain is ${chain}`);

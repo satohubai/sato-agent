@@ -619,16 +619,16 @@ test("readReferral / referralView / referralFeeSentence", () => {
 test("v0.3.2: the version is the same everywhere, and the docs say what the contract says", () => {
   const pkg = JSON.parse(readFileSync(ROOT("package.json"), "utf8"));
   const lock = JSON.parse(readFileSync(ROOT("npm-shrinkwrap.json"), "utf8"));
-  assert.equal(pkg.version, "0.3.2");
-  assert.equal(lock.version, "0.3.2");
-  assert.equal(lock.packages[""].version, "0.3.2");
-  assert.equal(VERSION, "0.3.2");
+  assert.equal(pkg.version, "0.4.0");
+  assert.equal(lock.version, "0.4.0");
+  assert.equal(lock.packages[""].version, "0.4.0");
+  assert.equal(VERSION, "0.4.0");
 
   const bot = readFileSync(ROOT("BOT.md"), "utf8");
   const readme = readFileSync(ROOT("README.md"), "utf8");
   const skill = readFileSync(ROOT("skills/sato-agent/SKILL.md"), "utf8");
-  assert.match(bot, /github:satohubai\/sato-agent#v0\.3\.2/);
-  assert.match(bot, /grep -q ' 0\.3\.2:' && echo "kit ready \(0\.3\.2\)"/);
+  assert.match(bot, /github:satohubai\/sato-agent#v0\.4\.0/);
+  assert.match(bot, /grep -q ' 0\.4\.0:' && echo "kit ready \(0\.4\.0\)"/);
   assert.doesNotMatch(bot, /0\.3\.[01]/);
   // the setup question comes after funding, and reads a Referral memory or a REFERRER line
   const fund = bot.indexOf("**Ask the owner to fund the wallet");

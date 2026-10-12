@@ -1,0 +1,72 @@
+{
+ "code": 0,
+ "message": "successfully",
+ "data": {
+  "routeSummary": {
+   "tokenIn": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+   "amountIn": "50188153626674520064",
+   "amountInUsd": "9.931576070567647",
+   "tokenOut": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+   "amountOut": "9924185",
+   "amountOutUsd": "9.932311471723084",
+   "gas": "330498",
+   "gasPrice": "20016000",
+   "gasUsd": "0.016944851240182177",
+   "l1FeeUsd": "0.00016431653253572186",
+   "extraFee": {
+    "feeAmount": "",
+    "chargeFeeBy": "",
+    "isInBps": false,
+    "feeReceiver": ""
+   },
+   "route": [
+    [
+     {
+      "pool": "0xb0f6ca40411360c03d41c5ffc5f179b8403cdcf8",
+      "tokenIn": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+      "tokenOut": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+      "swapAmount": "50188153626674520064",
+      "amountOut": "9924185",
+      "exchange": "uniswapv3",
+      "poolType": "uniswapv3",
+      "poolExtra": {
+       "swapFee": 500,
+       "priceLimit": "4295558253",
+       "blockNumber": 514024335
+      },
+      "extra": {
+       "_cs": "17759333347405701029",
+       "_ss": {
+        "pool": "0x716aa091d30a88a3e1874d56e99fbf1487cbc65a",
+        "tokenIn": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+        "tokenOut": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+        "swapAmount": "50188153626674520064",
+        "amountOut": "9910993",
+        "exchange": "dodo-dpp",
+        "poolType": "dodo-dpp",
+        "poolExtra": {
+         "type": "DPP",
+         "baseToken": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+         "quoteToken": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+         "blockNumber": 514024633
+        },
+        "extra": null
+       },
+       "_ts": "1791782769",
+       "nSqrtRx96": "35236942814539568693102",
+       "nT": -292530,
+       "rAI": "0",
+       "ri": "63ed93faOeZGUZnl"
+      }
+     }
+    ]
+   ],
+   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+   "routeID": "63ed93faOeZGUZnl",
+   "checksum": "17759333347405701029",
+   "timestamp": 1791782769
+  },
+  "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
+ },
+ "requestId": "63ed93fa-39e6-4651-99e5-20d3ab46dc3d"
+}

@@ -60,7 +60,7 @@ const eip681Shape = (token = "<token>") => `ethereum:${token}@${eip681Chains()[0
 
 export const BUY_ACCEPTS = [
   "a Solana Pay request (solana:...): a transfer request or a transaction request link",
-  `an Ethereum payment link for ${orList(eip681Targets().map((t) => `${t.stable.symbol} on ${t.chain.label}`))} (${eip681Shape(`${eip681Targets()[0].stable.address.slice(0, 6)}...`)})`,
+  `an Ethereum payment link for ${orList([...new Set(eip681Targets().map((t) => t.stable.symbol))])} on ${orList(eip681Chains().map((c) => c.label))} (${eip681Shape(`${eip681Targets()[0].stable.address.slice(0, 6)}...`)})`,
   "an Amazon US product link (amazon.com/.../dp/<ASIN>) or an ASIN",
   "an x402 link, including a Coinbase Business checkout's x402_url",
 ];
@@ -418,7 +418,10 @@ export function parseEip681(uri) {
     throw refuse("checkout_checksum", "the link's recipient address has a wrong checksum (mixed upper and lower case that does not match): it may have been mistyped or altered; nothing was paid");
   }
   const units = params.uint256 === undefined ? null : uintOf(params.uint256);
-  if (units === null || units <= 0n || units > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("the link's amount (uint256) is not a positive whole number of USDC units");
+  // At most what converts to dollars exactly: 2^53 units for a 6-decimal stable (as in v0.3), and the same number of dollars
+  // (about nine billion) for a stable with more decimals (BNB's 18), whose units would otherwise cap at under a cent.
+  const maxUnits = hit.stable.decimals <= 6 ? BigInt(Number.MAX_SAFE_INTEGER) : 9_007_199_254n * 10n ** BigInt(hit.stable.decimals);
+  if (units === null || units <= 0n || units > maxUnits) throw new Error(`the link's amount (uint256) is not a positive whole number of ${hit.stable.symbol} units`);
   const isDefault = hit.stable.symbol === hit.chain.defaultStable;
   return { chain: hit.chain.key, to: getAddress(params.address), units, amount: unitsToText(units, hit.stable.decimals), ...(isDefault ? {} : { symbol: hit.stable.symbol }) };
 }

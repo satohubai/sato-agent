@@ -1,5 +1,5 @@
 // Gift cards, eSIMs and top-ups from Bitrefill, paid by the agent's own wallet with
-// x402 in USDC on Base. No Bitrefill account and no key: Bitrefill's wallet-only path.
+// x402 in USDC on Base, Arbitrum or Polygon (the bot's own chain). No Bitrefill account and no key: Bitrefill's wallet-only path.
 //
 //   sign in   POST /x402/connect answers 402 with a "sign-in-with-x" challenge. The kit
 //             signs it ONLY if it is an EIP-4361 message for api.bitrefill.com, on Base
@@ -34,7 +34,7 @@ import { Refused } from "./errors.js";
 import { evmAccount } from "./wallet.js";
 import { home, ensureHome, readJson, writePrivate } from "./store.js";
 import { usdcUnits, unitsToText, unitsToUsd } from "./amount.js";
-import { chainsWith, evmChain, labelList } from "./chains.js";
+import { chainKeys, chainsWith, evmChain, isKnownChain, labelList, labelOf, orList } from "./chains.js";
 import { clean } from "./text.js";
 import { USER_AGENT } from "./version.js";
 import { pay } from "./x402.js";
@@ -50,9 +50,18 @@ export const BITREFILL_PAY_TO = "0x480CD46E6faDe651a0437DeaddA53D5c8e7D846A";
  * yet. When Bitrefill documents one for this path, it is added here and only where they document it.
  */
 export const BITREFILL_REF = "";
-/** The chain Bitrefill's agent API takes (the registry's chain with the `giftcards` feature; Base today). */
-const GIFT = evmChain(chainsWith("giftcards")[0]);
-/** The one chain a Bitrefill sign-in is signed for. */
+/**
+ * The chains Bitrefill's agent API takes: the registry's chains with the `giftcards` feature (Base, Arbitrum, Polygon; its
+ * challenges list no others, SPIKES.md section 7). The first is the default for a caller that names none (Base, as in v0.3).
+ * One sign-in is signed for ONE of them, and the invoice is paid on that same chain.
+ */
+export const GIFT_CHAINS = chainsWith("giftcards");
+const GIFT = evmChain(GIFT_CHAINS[0]);
+const giftChain = (key) => {
+  if (!GIFT_CHAINS.includes(key)) throw new Error(`Bitrefill takes ${labelList(GIFT_CHAINS)}, not ${isKnownChain(key) ? labelOf(key) : String(key).slice(0, 40)}`);
+  return evmChain(key);
+};
+/** The sign-in chain of the default gift-card chain (Base), under its v0.3 names. */
 export const SIWX_CHAIN = GIFT.caip2;
 export const SIWX_CHAIN_ID = GIFT.chainId;
 /** The latest expiry the kit accepts on a sign-in message. */
@@ -72,6 +81,7 @@ function defaults(deps = {}) {
     ...deps,
     fetchImpl: deps.fetchImpl ?? globalThis.fetch,
     base: deps.base ?? BITREFILL_API,
+    chain: deps.chain ?? GIFT.key,
     now: deps.now ?? Date.now,
     sleep: deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
     // Shared by reference across every call one command makes (each helper re-applies defaults to the same object).
@@ -97,7 +107,10 @@ const badText = (s) => typeof s !== "string" || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.te
  * own resources, and a sane expiry. Returns { message, payload } (payload: the fields Bitrefill expects back, without the
  * signature). Pure: no network, no key.
  */
-export function checkSiwxChallenge(challenge, { address, now = Date.now() }) {
+export function checkSiwxChallenge(challenge, { address, now = Date.now(), chain = GIFT.key }) {
+  const g = giftChain(chain);
+  const SIWX_CHAIN = g.caip2; // this sign-in's chain, not the default's
+  const SIWX_CHAIN_ID = g.chainId;
   const problems = [];
   const info = challenge?.info;
   if (!info || typeof info !== "object") throw refuse("siwx_refused", "Bitrefill's sign-in challenge could not be read; nothing was signed");
@@ -107,8 +120,8 @@ export function checkSiwxChallenge(challenge, { address, now = Date.now() }) {
   if (info.version !== undefined && String(info.version) !== "1") problems.push(`its version is ${clean(info.version, 20)}, not 1`);
   const chains = challenge.supportedChains ?? info.supportedChains ?? [];
   const base = Array.isArray(chains) && chains.find((c) => c && c.chainId === SIWX_CHAIN && (c.type === undefined || c.type === "eip191"));
-  if (!base) problems.push(`it does not offer ${GIFT.label} (${SIWX_CHAIN}) with a personal_sign (eip191) signature`);
-  if (info.chainId !== undefined && !(info.chainId === SIWX_CHAIN || String(info.chainId) === String(SIWX_CHAIN_ID))) problems.push(`it names chain ${clean(info.chainId, 40)}, not ${GIFT.label}`);
+  if (!base) problems.push(`it does not offer ${g.label} (${SIWX_CHAIN}) with a personal_sign (eip191) signature`);
+  if (info.chainId !== undefined && !(info.chainId === SIWX_CHAIN || String(info.chainId) === String(SIWX_CHAIN_ID))) problems.push(`it names chain ${clean(info.chainId, 40)}, not ${g.label}`);
   if (info.address !== undefined && (typeof info.address !== "string" || info.address.toLowerCase() !== me.toLowerCase())) problems.push("it names an address that is not this agent's");
   if (typeof info.nonce !== "string" || !/^[A-Za-z0-9]{8,128}$/.test(info.nonce)) problems.push("its nonce is not 8 or more letters and digits");
   if (info.statement !== undefined && info.statement !== null && (badText(info.statement) || info.statement.length > 500)) problems.push("its statement is not one plain line");
@@ -123,7 +136,7 @@ export function checkSiwxChallenge(challenge, { address, now = Date.now() }) {
   const resources = info.resources ?? [];
   if (!Array.isArray(resources) || resources.length > 10) problems.push("its resources are not a short list");
   else for (const r of resources) if (typeof r !== "string" || badText(r) || !isHttpsBitrefill(r)) problems.push(`it lists a resource outside ${BITREFILL_DOMAIN} (${clean(r, 120)})`);
-  if (problems.length) throw new Refused([{ rule: "siwx_refused", limit: `an EIP-4361 sign-in for ${BITREFILL_DOMAIN} on ${GIFT.label}, for this agent's address`, observed: clean(problems.join("; "), 400), message: `refused to sign Bitrefill's sign-in message: ${problems.join("; ")}. Nothing was signed.` }]);
+  if (problems.length) throw new Refused([{ rule: "siwx_refused", limit: `an EIP-4361 sign-in for ${BITREFILL_DOMAIN} on ${g.label}, for this agent's address`, observed: clean(problems.join("; "), 400), message: `refused to sign Bitrefill's sign-in message: ${problems.join("; ")}. Nothing was signed.` }]);
 
   const lines = [`${info.domain} wants you to sign in with your Ethereum account:`, me, ""];
   if (info.statement) lines.push(info.statement, "");
@@ -202,9 +215,10 @@ const reasonOf = (r) => {
   return typeof e === "string" ? `: ${clean(e, 120)}` : "";
 };
 
-function loadSession(address, now) {
+function loadSession(address, now, chain = GIFT.key) {
   const s = readJson(sessionFile());
-  if (!s || typeof s.token !== "string" || s.address !== address) return null;
+  // A token is for the address AND the chain it was signed in on (a session saved by v0.3 has no chain: it was Base).
+  if (!s || typeof s.token !== "string" || s.address !== address || (s.chain ?? GIFT.key) !== chain) return null;
   return Date.parse(s.expires_at) - now > 2 * 60 * 1000 ? s.token : null;
 }
 function clearSession() {
@@ -223,15 +237,16 @@ export async function signIn(deps = {}, { fresh = false } = {}) {
   const d = defaults(deps);
   const account = d.account ?? evmAccount();
   const address = getAddress(account.address);
+  const g = giftChain(d.chain);
   if (!fresh) {
-    const t = loadSession(address, d.now());
+    const t = loadSession(address, d.now(), g.key);
     if (t) return t;
   }
   const first = await request(d, "POST", "/x402/connect", { body: {} });
   if (first.status !== 402) throw new Error(`Bitrefill's sign-in answered HTTP ${first.status} instead of asking for a signature${reasonOf(first)}; nothing was signed`);
   const challenge = challengeOf(first);
   if (!challenge) throw refuse("siwx_refused", "Bitrefill's sign-in did not include a sign-in-with-x challenge; nothing was signed");
-  const { message, payload } = checkSiwxChallenge(challenge, { address, now: d.now() });
+  const { message, payload } = checkSiwxChallenge(challenge, { address, now: d.now(), chain: g.key });
   // The kit's only message signature: an EIP-4361 sign-in that passed every check above.
   const signature = await account.signMessage({ message });
   const header = Buffer.from(JSON.stringify({ ...payload, signature }), "utf8").toString("base64");
@@ -242,9 +257,9 @@ export async function signIn(deps = {}, { fresh = false } = {}) {
     throw new Error(`Bitrefill did not accept the sign-in (HTTP ${second.status}${reasonOf(second)}); nothing was paid`);
   }
   const expiresAt = new Date(d.now() + (Number.isFinite(ttl) && ttl > 0 ? Math.min(ttl, 24 * 3600) : 3600) * 1000).toISOString();
-  writePrivate(sessionFile(), JSON.stringify({ service: "bitrefill", address, token, expires_at: expiresAt }, null, 2) + "\n", { atomic: true });
+  writePrivate(sessionFile(), JSON.stringify({ service: "bitrefill", address, chain: g.key, token, expires_at: expiresAt }, null, 2) + "\n", { atomic: true });
   // The signature is in the ledger as an event (what was signed in to, and until when); the token never is.
-  record({ kind: "signin", status: "signed_in", service: "bitrefill", domain: BITREFILL_DOMAIN, chain_id: SIWX_CHAIN, address, message_expires_at: payload.expirationTime, session_expires_at: expiresAt });
+  record({ kind: "signin", status: "signed_in", service: "bitrefill", domain: BITREFILL_DOMAIN, chain_id: g.caip2, chain: g.key, address, message_expires_at: payload.expirationTime, session_expires_at: expiresAt });
   return token;
 }
 
@@ -400,7 +415,9 @@ export async function invoiceTerms(invoiceId, token, d) {
     req = r.json;
   }
   const offers = Array.isArray(req?.accepts) ? req.accepts : [];
-  const base = offers.find((o) => o && o.scheme === "exact" && (o.network === GIFT.x402.caip2 || o.network === GIFT.x402.v1Name) && String(o.asset).toLowerCase() === USDC.address.toLowerCase());
+  // The offer on the chain this command pays on, in that chain's Circle USDC (not the bridged USDC.e, not another chain's).
+  const g = giftChain(d.chain ?? GIFT.key);
+  const base = offers.find((o) => o && o.scheme === "exact" && (o.network === g.x402.caip2 || o.network === g.x402.v1Name) && String(o.asset).toLowerCase() === g.stables.USDC.address.toLowerCase());
   const amount = String(base?.amount ?? base?.maxAmountRequired ?? "");
   if (!/^[1-9]\d{0,15}$/.test(amount)) return null;
   return { units: BigInt(amount), pay_to: typeof base.payTo === "string" ? base.payTo : null };
@@ -493,24 +510,54 @@ export async function waitForDelivery(invoiceId, deps = {}) {
 
 // ---------------------------------------------------------------- buy
 
-/** Gift cards are paid on Base. A Solana-only agent gets a plain explanation (exit 3). */
+/**
+ * Gift cards are paid on Base, Arbitrum and Polygon (GIFT_CHAINS). An agent that works on none of them (Solana only, BNB Chain only)
+ * gets a plain explanation (exit 3), and is pointed at the Base bot: it is never offered cards on its own chain.
+ */
+function noGiftcardChain(chains) {
+  return refuse(
+    "giftcards_base_only",
+    `gift cards, eSIMs and top-ups are paid in USDC on ${labelList(GIFT_CHAINS)}, and this agent works on ${labelList(chains)} only. Nothing was bought. Gift cards are available through the Sato Base Bot.`,
+    GIFT_CHAINS,
+    chains,
+  );
+}
 export function assertBaseAgent(policy = loadPolicy()) {
-  if (policy && Array.isArray(policy.chains) && !policy.chains.includes(GIFT.key)) {
-    throw refuse("giftcards_base_only", `gift cards, eSIMs and top-ups are paid in USDC on ${GIFT.label} for now, and this agent works on ${labelList(policy.chains)} only. Nothing was bought.`, [GIFT.key], policy.chains);
-  }
+  if (policy && Array.isArray(policy.chains) && !policy.chains.some((c) => GIFT_CHAINS.includes(c))) throw noGiftcardChain(policy.chains);
 }
 
+/**
+ * The chain a gift-card command runs on. `--chain` when given (it must be one Bitrefill takes); else the owner's one gift-card
+ * chain; a bot that works on two of them must say which (a sign-in and a payment are for ONE chain); no policy at all reads as Base,
+ * as in v0.3. Throws Refused (exit 3) / Error.
+ */
+export function giftcardChain(requested, policy = loadPolicy()) {
+  const chains = policy && Array.isArray(policy.chains) ? policy.chains : null;
+  const wanted = requested === undefined || requested === null ? undefined : String(requested).toLowerCase();
+  if (wanted !== undefined) {
+    if (!isKnownChain(wanted)) throw new Error(`--chain must be ${orList(GIFT_CHAINS)}`);
+    if (!GIFT_CHAINS.includes(wanted)) throw refuse("giftcards_not_on_chain", `Bitrefill takes ${labelList(GIFT_CHAINS)}, not ${labelOf(wanted)}. Gift cards are available through the Sato Base Bot.`, GIFT_CHAINS, wanted);
+    return wanted;
+  }
+  if (!chains) return GIFT.key;
+  const usable = chains.filter((c) => GIFT_CHAINS.includes(c));
+  if (usable.length === 1) return usable[0];
+  if (usable.length > 1) throw new Error(`this agent may buy gift cards on ${labelList(usable)}: say which with --chain ${usable.join("|")}`);
+  throw noGiftcardChain(chains);
+}
 
 /**
  * Buy one package of one product. Returns the outcome; the caller prints it (and the codes, on one line, last).
  * `refill`: the phone number or account a top-up goes to (only where Bitrefill says the product needs one).
+ * `chain`: which of Bitrefill's chains to sign in on and pay on (see giftcardChain).
  * deps: fetchImpl, base, account, now, sleep, pollMs, maxPolls, payImpl (tests).
  */
-export async function buyGiftcard({ product, value, refill, approve, dryRun = false }, deps = {}) {
-  const d = defaults(deps);
+export async function buyGiftcard({ product, value, refill, approve, dryRun = false, chain: requested }, deps = {}) {
   const policy = loadPolicy();
-  assertBaseAgent(policy); // a Solana-only agent gets the plain reason, not a chain refusal
-  checkLimits({ usd: undefined, chain: GIFT.key }, policy); // limits and chains first, before any network
+  const chain = giftcardChain(requested ?? deps.chain, policy); // a Solana-only agent gets the plain reason, not a chain refusal
+  const d = defaults({ ...deps, chain });
+  const g = giftChain(chain);
+  checkLimits({ usd: undefined, chain }, policy); // limits and chains first, before any network
   if (!slugOk(product)) throw new Error(`"${clean(product, 60)}" is not a Bitrefill product id (use the id from \`giftcard search\`)`);
   if (typeof value !== "string" || !/^\d+(\.\d+)?$/.test(value)) throw new Error("--value must be one of the product's package values, like 25");
   if (refill !== undefined && (badText(refill) || refill.length > 100)) throw new Error("--refill must be one plain line");
@@ -526,25 +573,25 @@ export async function buyGiftcard({ product, value, refill, approve, dryRun = fa
     throw refuse("payee_changed", `Bitrefill's payment terms name ${clean(inv.terms_pay_to, 60)}, not its known payee ${BITREFILL_PAY_TO}; nothing was paid`, BITREFILL_PAY_TO, clean(inv.terms_pay_to, 60));
   }
   // Dollars, never base units: inv.usd is what the limits see.
-  checkLimits({ usd: inv.usd, chain: GIFT.key, to: BITREFILL_PAY_TO }, policy);
+  checkLimits({ usd: inv.usd, chain, to: BITREFILL_PAY_TO }, policy);
   const currency = pkg.currency ?? detail.currency ?? "";
   const card = [
     `Gift card: ${detail.name} (${detail.id}), value ${pkg.value}${currency ? ` ${currency}` : ""}${detail.recipient_required ? " (goes to the number or account given)" : ""}`,
-    `Price: ${inv.price_usdc} USDC on ${GIFT.label}, paid to Bitrefill (${BITREFILL_PAY_TO}). No Sato Hub fee.`,
+    `Price: ${inv.price_usdc} USDC on ${g.label}, paid to Bitrefill (${BITREFILL_PAY_TO}). No Sato Hub fee.`,
     `Price held until ${inv.expires_at.replace(/\.\d+Z$/, "Z")} (invoice ${inv.invoice_id}).`,
     "The code is shown to you once Bitrefill delivers it, and kept in a private file on this computer.",
   ];
   // The owner approves this product, value and price, paid to this payee. The price is bound in USDC base units, so "25.5"
   // and "25.50" are the same price; a new run that gets another price asks again. A top-up's number is bound by a keyed
   // hash (src/settings.js localHmac): the intent is written to the ledger, and a plain hash of a phone number is guessable.
-  const intent = { cmd: "giftcard", chain: GIFT.key, product: detail.id, value: pkg.value, price_units: inv.units.toString(), pay_to: BITREFILL_PAY_TO, ...(refill ? { refill_hmac: localHmac(refill) } : {}) };
+  const intent = { cmd: "giftcard", chain, product: detail.id, value: pkg.value, price_units: inv.units.toString(), pay_to: BITREFILL_PAY_TO, ...(refill ? { refill_hmac: localHmac(refill) } : {}) };
   if (dryRun) return { dry_run: true, card, invoice_id: inv.invoice_id, price_usdc: inv.price_usdc, usd: inv.usd, expires_at: inv.expires_at, product: detail.id, value: pkg.value };
   await purchaseGate(intent, { approve, card }, policy);
 
   // Paid through the kit's own x402 payer: the price is bound to the invoice and the payee pinned. The access token goes
   // in its own header (Bitrefill's), never in the ledger.
   const r = await (d.payImpl ?? pay)(`${d.base}/x402/invoice/pay`, {
-    chain: GIFT.key,
+    chain,
     method: "POST",
     body: JSON.stringify({ invoice_id: inv.invoice_id }),
     headers: { "content-type": "application/json", "x-access-token": inv.token },
@@ -582,5 +629,5 @@ export async function buyGiftcard({ product, value, refill, approve, dryRun = fa
   } catch {
     /* the payment itself is already in the ledger; a lost note about delivery must not end the command */
   }
-  return { card, invoice_id: inv.invoice_id, product: detail.id, value: pkg.value, price_usdc: inv.price_usdc, payment: r, delivery: st, codes_path: codesPath, codes_save_error: saveError };
+  return { card, chain, invoice_id: inv.invoice_id, product: detail.id, value: pkg.value, price_usdc: inv.price_usdc, payment: r, delivery: st, codes_path: codesPath, codes_save_error: saveError };
 }

@@ -1,0 +1,113 @@
+{
+ "code": 0,
+ "message": "successfully",
+ "data": {
+  "routeSummary": {
+   "tokenIn": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+   "amountIn": "5000000000000000",
+   "amountInUsd": "12.807419557172809",
+   "tokenOut": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+   "amountOut": "12774869",
+   "amountOutUsd": "12.78681601500424",
+   "gas": "630842",
+   "gasPrice": "20054000",
+   "gasUsd": "0.032405090821361525",
+   "l1FeeUsd": "0.00016431653253572186",
+   "extraFee": {
+    "feeAmount": "15",
+    "chargeFeeBy": "currency_in",
+    "isInBps": true,
+    "feeReceiver": "0xcee53eb001d4d1743ef9df333dcf45bc38622be9"
+   },
+   "route": [
+    [
+     {
+      "pool": "pmm_5_0x82af49447d8a07e3bd95bd0d56f35241523fbab1_0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+      "tokenIn": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+      "tokenOut": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+      "swapAmount": "4992500000000000",
+      "amountOut": "12774869",
+      "exchange": "pmm-5/pancake-v3",
+      "poolType": "orderbook",
+      "poolExtra": {
+       "approvalAddress": "",
+       "blockNumber": 0
+      },
+      "extra": {
+       "_ce": {
+        "prCnt": 1,
+        "tgtAmtOut": "12774869",
+        "ces": [
+         {
+          "pool": "0x20cdea535dcf2b93bce5e4db8786ac5163e28d81",
+          "tokenIn": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+          "tokenOut": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+          "swapAmount": "4992500000000000",
+          "amountOut": "12777362",
+          "exchange": "camelot-v4",
+          "poolType": "algebra-integral",
+          "poolExtra": {
+           "blockNumber": 514024450,
+           "priceLimit": "4295558252"
+          },
+          "extra": {
+           "Liquidity": "10049981040928705",
+           "Price": "4008276046846131829146908",
+           "Tick": -197845
+          }
+         }
+        ]
+       },
+       "_cs": "3312197399430040125",
+       "_fr": {
+        "amountOut": "12776578",
+        "amountOutUsd": 12.788526613255357
+       },
+       "_fs": {
+        "pool": "0x7fcdc35463e3770c2fb992716cd070b63540b947",
+        "tokenIn": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+        "tokenOut": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+        "swapAmount": "4992500000000000",
+        "amountOut": "12776578",
+        "exchange": "pancake-v3",
+        "poolType": "pancake-v3",
+        "poolExtra": {
+         "swapFee": 100,
+         "priceLimit": "4295128740",
+         "blockNumber": 514024528
+        },
+        "extra": {
+         "rAI": "0",
+         "nSqrtRx96": "4008180610953484546612590",
+         "nT": -197845
+        }
+       },
+       "_ss": {
+        "pool": "0x71cb8a26f2c4eb68288bcc2ebaba4f72b065f076",
+        "tokenIn": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+        "tokenOut": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+        "swapAmount": "4992500000000000",
+        "amountOut": "12777283",
+        "exchange": "maverick-v2",
+        "poolType": "maverick-v2",
+        "poolExtra": {
+         "approvalAddress": "",
+         "blockNumber": 514024123
+        },
+        "extra": {}
+       },
+       "_ts": "1791782747",
+       "ri": "68e26ec1IfxN9YBQ"
+      }
+     }
+    ]
+   ],
+   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+   "routeID": "68e26ec1IfxN9YBQ",
+   "checksum": "3312197399430040125",
+   "timestamp": 1791782747
+  },
+  "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
+ },
+ "requestId": "68e26ec1-21fc-4df5-8050-8241697be7c4"
+}

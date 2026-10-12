@@ -1,0 +1,116 @@
+{
+ "code": 0,
+ "message": "successfully",
+ "data": {
+  "routeSummary": {
+   "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
+   "amountIn": "58743575794570120",
+   "amountInUsd": "9.932106790181518",
+   "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+   "amountOut": "9915804",
+   "amountOutUsd": "9.944521845822605",
+   "gas": "492835",
+   "gasPrice": "210981752082",
+   "gasUsd": "0.010805074763518767",
+   "l1FeeUsd": "0",
+   "extraFee": {
+    "feeAmount": "",
+    "chargeFeeBy": "",
+    "isInBps": false,
+    "feeReceiver": ""
+   },
+   "route": [
+    [
+     {
+      "pool": "0x141688f5eab27cba15b5588f011bdefc25f9eae6",
+      "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
+      "tokenOut": "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6",
+      "swapAmount": "58743575794570120",
+      "amountOut": "11861",
+      "exchange": "uniswapv3",
+      "poolType": "uniswapv3",
+      "poolExtra": {
+       "swapFee": 3000,
+       "priceLimit": "1457652066949847389969617340386294118487833376467",
+       "blockNumber": 95385288
+      },
+      "extra": {
+       "_cs": "195994132069991813",
+       "_ss": {
+        "pool": "0x415747ee98d482e6dd9b431fa76ad5553744f247",
+        "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
+        "tokenOut": "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6",
+        "swapAmount": "58743575794570120",
+        "amountOut": "10899",
+        "exchange": "balancer-v2-weighted",
+        "poolType": "balancer-v2-weighted",
+        "poolExtra": {
+         "vault": "0xba12222222228d8ba445958a75a0704d566bf2c8",
+         "poolId": "0x415747ee98d482e6dd9b431fa76ad5553744f24700010000000000000000007d",
+         "tokenOutIndex": 1,
+         "blockNumber": 95382558,
+         "approvalAddress": "0xba12222222228d8ba445958a75a0704d566bf2c8"
+        },
+        "extra": {}
+       },
+       "_ts": "1791783278",
+       "nSqrtRx96": "176061539625065523832091278070328921",
+       "nT": 292294,
+       "rAI": "0",
+       "ri": "fdf45657NN1Kd7g-"
+      }
+     },
+     {
+      "pool": "0xcb43e7be737de625e6799cd593d9ec2c1285a64261dc715ea1bdcd42735f6cbc",
+      "tokenIn": "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6",
+      "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+      "swapAmount": "11861",
+      "amountOut": "9915804",
+      "exchange": "uniswap-v4",
+      "poolType": "uniswap-v4",
+      "poolExtra": {
+       "blockNumber": 95385223,
+       "router": "0x1095692a6237d83c6a72f3f5efedb9a670c49223",
+       "permit2Addr": "0x000000000022d473030f116ddee9f6b43ac78ba3",
+       "tokenIn": "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6",
+       "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+       "fee": 500,
+       "tickSpacing": 10,
+       "hookAddress": "0x0000000000000000000000000000000000000000",
+       "hookData": "",
+       "priceLimit": "4295558253"
+      },
+      "extra": {
+       "HookSwapInfo": null,
+       "_ss": {
+        "pool": "0x4b2d96a6b63609ce629888e0829673c577aa97eb",
+        "tokenIn": "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6",
+        "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+        "swapAmount": "11861",
+        "amountOut": "9910901",
+        "exchange": "dodo-dpp",
+        "poolType": "dodo-dpp",
+        "poolExtra": {
+         "type": "DPP",
+         "baseToken": "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6",
+         "quoteToken": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+         "blockNumber": 95385291
+        },
+        "extra": null
+       },
+       "nSqrtRx96": "2291435373250402957568826441128",
+       "nT": 67295,
+       "rAI": "0"
+      }
+     }
+    ]
+   ],
+   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+   "routeID": "fdf45657NN1Kd7g-",
+   "checksum": "195994132069991813",
+   "timestamp": 1791783278
+  },
+  "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
+ },
+ "requestId": "fdf45657-34dd-4a77-b83e-12af65ebb21a"
+}

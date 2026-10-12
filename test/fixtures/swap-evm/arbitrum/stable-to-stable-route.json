@@ -1,0 +1,73 @@
+{
+ "code": 0,
+ "message": "successfully",
+ "data": {
+  "routeSummary": {
+   "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+   "amountIn": "10000000",
+   "amountInUsd": "10.00818855323947",
+   "tokenOut": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+   "amountOut": "10007859",
+   "amountOutUsd": "10.00506122589074",
+   "gas": "320197",
+   "gasPrice": "20062000",
+   "gasUsd": "0.016454440406559603",
+   "l1FeeUsd": "0.00016431653253572186",
+   "extraFee": {
+    "feeAmount": "3",
+    "chargeFeeBy": "currency_in",
+    "isInBps": true,
+    "feeReceiver": "0xcee53eb001d4d1743ef9df333dcf45bc38622be9"
+   },
+   "route": [
+    [
+     {
+      "pool": "0xfc43aaf89a71acaa644842ee4219e8eb77657427",
+      "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+      "tokenOut": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+      "swapAmount": "9997000",
+      "amountOut": "10007859",
+      "exchange": "traderjoe-v21",
+      "poolType": "liquiditybook-v21",
+      "poolExtra": {
+       "approvalAddress": "",
+       "blockNumber": 514016307
+      },
+      "extra": {
+       "_cs": "12855574448710780154",
+       "_ss": {
+        "pool": "0x19b001e6bc2d89154c18e2216eec5c8c6047b6d8",
+        "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+        "tokenOut": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+        "swapAmount": "9997000",
+        "amountOut": "10008152",
+        "exchange": "balancer-v3-stable",
+        "poolType": "balancer-v3-stable",
+        "poolExtra": {
+         "buffIn": "0x7f6501d3b98ee91f9b9535e4b0ac710fb0f9e0bc",
+         "buffOut": "0xa6d12574efb239fc1d2099732bd8b5dc6306897f",
+         "approvalAddress": "0xad89051bed8d96f045e8912ae1672c6c0bf8a85e",
+         "blockNumber": 514024717
+        },
+        "extra": {
+         "Buffers": null,
+         "AggregateFee": 12,
+         "AmountInBeforeConvert": null,
+         "AmountOutBeforeConvert": 8114469
+        }
+       },
+       "_ts": "1791782758",
+       "ri": "50cbde53POlPlpgR"
+      }
+     }
+    ]
+   ],
+   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+   "routeID": "50cbde53POlPlpgR",
+   "checksum": "12855574448710780154",
+   "timestamp": 1791782758
+  },
+  "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
+ },
+ "requestId": "50cbde53-3ce9-4f96-9811-320e6b427988"
+}

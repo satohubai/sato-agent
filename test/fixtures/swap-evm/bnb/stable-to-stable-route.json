@@ -1,0 +1,52 @@
+{
+ "code": 0,
+ "message": "successfully",
+ "data": {
+  "routeSummary": {
+   "tokenIn": "0x55d398326f99059ff775485246999027b3197955",
+   "amountIn": "10000000000000000000",
+   "amountInUsd": "9.996329968654454",
+   "tokenOut": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+   "amountOut": "9986134535039254432",
+   "amountOutUsd": "9.99398030884164",
+   "gas": "193831",
+   "gasPrice": "50000000",
+   "gasUsd": "0.007303147630290729",
+   "l1FeeUsd": "0",
+   "extraFee": {
+    "feeAmount": "3",
+    "chargeFeeBy": "currency_in",
+    "isInBps": true,
+    "feeReceiver": "0xcee53eb001d4d1743ef9df333dcf45bc38622be9"
+   },
+   "route": [
+    [
+     {
+      "pool": "0x1e40450f8e21bb68490d7d91ab422888fb3d60f1",
+      "tokenIn": "0x55d398326f99059ff775485246999027b3197955",
+      "tokenOut": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+      "swapAmount": "9997000000000000000",
+      "amountOut": "9986134535039254432",
+      "exchange": "nomiswap-stable",
+      "poolType": "nomiswap-stable",
+      "poolExtra": {
+       "approvalAddress": "",
+       "blockNumber": 127154586
+      },
+      "extra": {
+       "_cs": "15955128460439626501",
+       "_ts": "1791782722",
+       "ri": "1197f0c2crFDmLpT"
+      }
+     }
+    ]
+   ],
+   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+   "routeID": "1197f0c2crFDmLpT",
+   "checksum": "15955128460439626501",
+   "timestamp": 1791782722
+  },
+  "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
+ },
+ "requestId": "1197f0c2-72b1-4398-ba53-4a70fbc69e2c"
+}

@@ -41,9 +41,9 @@ const V03 = {
   solanaUsdcMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
 };
 
-test("the registry today: base and solana, in that order, base the default EVM chain", () => {
-  assert.deepEqual(chainKeys(), ["base", "solana"]);
-  assert.deepEqual(evmChainKeys(), ["base"]);
+test("the registry today: base, bnb, arbitrum, polygon and solana, in that order, base the default EVM chain", () => {
+  assert.deepEqual(chainKeys(), ["base", "bnb", "arbitrum", "polygon", "solana"]);
+  assert.deepEqual(evmChainKeys(), ["base", "bnb", "arbitrum", "polygon"]);
   assert.equal(DEFAULT_EVM_CHAIN, "base");
   assert.equal(isEvm("base"), true);
   assert.equal(isEvm("solana"), false);
@@ -60,7 +60,7 @@ test("every EVM entry has the full shape", () => {
     assert.equal(c.viem.id, c.chainId, "viem's chain id is the entry's");
     assert.equal(c.caip2, `eip155:${c.chainId}`);
     assert.equal(c.x402.caip2, c.caip2);
-    assert.ok(c.x402.v1Name);
+    assert.ok(c.x402.v1Name || !c.features.x402, "a chain with x402 on names its x402 v1 network");
     assert.ok(c.hubName);
     assert.match(c.rpcEnv, /^SATO_AGENT_[A-Z]+_RPC$/);
     assert.ok(c.rpcDefaults.length >= 1 && c.rpcDefaults.every((u) => /^https:\/\//.test(u)));
@@ -188,8 +188,8 @@ test("the names every module still exports for Base are the registry's values", 
   assert.deepEqual(price.FEEDS, { ETH: { address: V03.ethFeed, maxAgeS: 7200 }, SOL: { address: V03.solFeed, maxAgeS: 93_600 } });
   assert.deepEqual(price.ORACLE_TOLERANCE_PCT, { ETH: 3, SOL: 5 });
   assert.equal(x402.BASE_NETWORK, V03.caip2);
-  assert.deepEqual(x402.PAY_CHAINS, ["base", "solana"]);
-  assert.deepEqual(policy.CHAINS, ["base", "solana"]);
+  assert.deepEqual(x402.PAY_CHAINS, ["base", "arbitrum", "polygon", "solana"], "no x402 on BNB Chain");
+  assert.deepEqual(policy.CHAINS, ["base", "bnb", "arbitrum", "polygon", "solana"]);
   assert.equal(bitrefill.SIWX_CHAIN, V03.caip2);
   assert.equal(bitrefill.SIWX_CHAIN_ID, V03.chainId);
 });
@@ -204,6 +204,98 @@ test("a v0.1 policy with no chains still means exactly base and solana, whatever
 test("lock names keep v0.3's, so a running v0.3 bot interlocks with this one", () => {
   assert.equal(lockName("base", "nonce"), "base-nonce");
   assert.equal(lockName("base", "swap"), "base-swap");
+});
+
+// ---------------------------------------------------------------- BNB Chain, Arbitrum, Polygon: the SPIKES.md pins, typed again
+
+/** What the 2026-10-12 spikes found (SPIKES.md sections 1-6), written out here once more: the registry is checked against it, not itself. */
+const SPIKES = {
+  bnb: {
+    chainId: 56, label: "BNB Chain", hub: "BNB Chain", slug: "bsc", native: ["BNB", 18], wrapped: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c", wrappedSymbol: "WBNB",
+    stables: { USDT: ["0x55d398326f99059fF775485246999027B3197955", 18, false], USDC: ["0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", 18, false] }, defaultStable: "USDT",
+    feed: "0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE", sequencer: null, x402: false, giftcards: false, env: "SATO_AGENT_BNB_RPC", explorer: "https://bscscan.com",
+    rpc: ["bsc-dataseed.bnbchain.org", "bsc-dataseed1.defibit.io", "bsc-dataseed1.ninicoin.io", "bsc.drpc.org"], timed: false, zeroBaseFee: true,
+  },
+  arbitrum: {
+    chainId: 42161, label: "Arbitrum", hub: "Arbitrum", slug: "arbitrum", native: ["ETH", 18], wrapped: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1", wrappedSymbol: "WETH",
+    stables: { USDC: ["0xaf88d065e77c8cC2239327C5EDb3A432268e5831", 6, true], USDT: ["0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", 6, true] }, defaultStable: "USDC",
+    feed: "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612", sequencer: "0xFdB631F5EE196F0ed6FAa767959853A9F217697D", x402: "arbitrum", giftcards: true, env: "SATO_AGENT_ARBITRUM_RPC", explorer: "https://arbiscan.io",
+    rpc: ["arb1.arbitrum.io", "arbitrum-one-rpc.publicnode.com", "arbitrum.drpc.org"], timed: false, zeroBaseFee: false,
+  },
+  polygon: {
+    chainId: 137, label: "Polygon", hub: "Polygon", slug: "polygon", native: ["POL", 18], wrapped: "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270", wrappedSymbol: "WPOL",
+    stables: { USDC: ["0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", 6, true], USDT: ["0xc2132D05D31c914a87C6611C10748AEb04B58e8F", 6, false] }, defaultStable: "USDC",
+    feed: "0xAB594600376Ec9fD91F8e885dADF0CE036862dE0", sequencer: null, x402: "polygon", giftcards: true, env: "SATO_AGENT_POLYGON_RPC", explorer: "https://polygonscan.com",
+    rpc: ["polygon.api.onfinality.io"], timed: false, zeroBaseFee: false,
+  },
+};
+const SPIKE_ROUTER = "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5";
+const SPIKE_EXECUTOR = "0x8F10B468b06c6FD214B65F87778827F7D113f996";
+/** The bridged USDC.e: never the stable on these chains. */
+const USDC_E = { polygon: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", arbitrum: "0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8" };
+
+test("bnb, arbitrum, polygon: every pin equals what the spikes found, by address", () => {
+  for (const [key, s] of Object.entries(SPIKES)) {
+    const c = evmChain(key);
+    assert.equal(c.chainId, s.chainId, key);
+    assert.equal(c.caip2, `eip155:${s.chainId}`);
+    assert.equal(c.label, s.label);
+    assert.equal(c.hubName, s.hub);
+    assert.equal(c.kyber.slug, s.slug);
+    assert.equal(c.kyber.router, SPIKE_ROUTER);
+    assert.equal(c.kyber.executor, SPIKE_EXECUTOR);
+    assert.equal(c.erc8004Registry, V03.identityRegistry, "the same registry address on every chain");
+    assert.deepEqual([c.native.symbol, c.native.decimals], s.native);
+    assert.equal(c.wrappedNative.address, s.wrapped);
+    assert.equal(c.wrappedNative.symbol, s.wrappedSymbol);
+    assert.equal(c.wrappedNative.decimals, 18);
+    assert.deepEqual(Object.keys(c.stables), Object.keys(s.stables), `${key}: the stables, in order`);
+    for (const [sym, [address, decimals, eip3009]] of Object.entries(s.stables)) assert.deepEqual([c.stables[sym].address, c.stables[sym].decimals, c.stables[sym].eip3009], [address, decimals, eip3009], `${key} ${sym}`);
+    assert.equal(c.defaultStable, s.defaultStable);
+    assert.equal(c.chainlink.native.address, s.feed);
+    assert.equal(c.chainlink.sequencer?.address ?? null, s.sequencer);
+    assert.equal(c.rpcEnv, s.env);
+    assert.equal(c.explorer.url, s.explorer);
+    for (const host of s.rpc) assert.ok(c.rpcDefaults.some((u) => u.includes(host)), `${key}: ${host} is in the default list`);
+    assert.equal(c.simulation.timedBlocks, s.timed, `${key}: block number / time overrides`);
+    assert.equal(c.simulation.zeroBaseFee, s.zeroBaseFee);
+    assert.equal(c.simulation.prevRandao, false, "mixHash is zero on all three");
+    assert.equal(c.features.x402, Boolean(s.x402));
+    if (s.x402) assert.deepEqual({ ...c.x402 }, { v1Name: s.x402, caip2: `eip155:${s.chainId}` });
+    assert.equal(c.features.giftcards, s.giftcards);
+    assert.equal(c.features.amazon, false);
+    assert.deepEqual([c.features.send, c.features.swap, c.features.register, c.features.checkout], [true, true, true, true]);
+    // the bridged USDC.e is never listed as a stable
+    for (const addr of Object.values(USDC_E)) assert.equal(stableByAddress(key, addr), null);
+  }
+  // sequencer grace, heartbeats
+  assert.equal(evmChain("arbitrum").chainlink.sequencer.graceS, 3600);
+  assert.equal(evmChain("arbitrum").chainlink.native.maxAgeS, 7200);
+  assert.equal(evmChain("bnb").chainlink.native.maxAgeS, 300);
+  assert.equal(evmChain("polygon").chainlink.native.maxAgeS, 300);
+  assert.equal(evmChain("polygon").native.oracle, "POL");
+});
+
+test("registry invariants: what a feature needs of the default stable is true wherever the feature is on", () => {
+  for (const key of evmChainKeys()) {
+    const c = evmChain(key);
+    const d = c.stables[c.defaultStable];
+    if (c.features.x402) assert.equal(d.eip3009, true, `${key}: x402 signs EIP-3009 authorizations`);
+    if (c.features.giftcards) assert.deepEqual([d.symbol, d.decimals, d.eip3009], ["USDC", 6, true], `${key}: Bitrefill is paid in 6-decimal Circle USDC`);
+    // gas coin and oracle: the swap code prices the volatile major through chainlinkFeed(chain, native.oracle)
+    assert.ok(chainlinkFeed(key, c.native.oracle), `${key}: a feed for ${c.native.oracle}`);
+    // majors never collide with each other, and the native placeholder is no stable
+    const syms = Object.keys(majorTokens(key));
+    assert.equal(new Set(syms).size, syms.length, `${key}: major symbols are unique`);
+  }
+  // BNB Chain is the 18-decimal chain, and the only one
+  assert.deepEqual(evmChainKeys().filter((k) => Object.values(evmChain(k).stables).some((s) => s.decimals === 18)), ["bnb"]);
+});
+
+test("a chain whose default stable cannot sign an EIP-3009 authorization cannot have x402 switched on", async () => {
+  // the sanity check at the bottom of chains.js is the guard: BNB Chain's entry is valid only because x402 is off there
+  assert.equal(evmChain("bnb").features.x402, false);
+  assert.equal(evmChain("bnb").stables[evmChain("bnb").defaultStable].eip3009, false);
 });
 
 // ---------------------------------------------------------------- helpers
@@ -232,12 +324,16 @@ test("evmChainById: a number or a digit string, and only a chain the registry ha
 });
 
 test("features: which chains offer what", () => {
-  assert.deepEqual(chainsWith("swap"), ["base", "solana"]);
-  assert.deepEqual(chainsWith("x402"), ["base", "solana"]);
-  assert.deepEqual(chainsWith("giftcards"), ["base"]);
-  assert.deepEqual(chainsWith("register"), ["base"]);
+  assert.deepEqual(chainsWith("swap"), ["base", "bnb", "arbitrum", "polygon", "solana"]);
+  assert.deepEqual(chainsWith("send"), ["base", "bnb", "arbitrum", "polygon", "solana"]);
+  assert.deepEqual(chainsWith("checkout"), ["base", "bnb", "arbitrum", "polygon", "solana"], "EIP-681 payment links on all three new chains");
+  assert.deepEqual(chainsWith("x402"), ["base", "arbitrum", "polygon", "solana"], "not BNB Chain: Binance-Peg USDC has no EIP-3009");
+  assert.deepEqual(chainsWith("giftcards"), ["base", "arbitrum", "polygon"], "Bitrefill takes no BNB");
+  assert.deepEqual(chainsWith("register"), ["base", "bnb", "arbitrum", "polygon"]);
+  assert.deepEqual(chainsWith("amazon"), ["base", "solana"], "Amazon stays Base and Solana");
   assert.deepEqual(chainsWith("nonsense"), []);
   assert.equal(hasFeature("solana", "giftcards"), false);
+  assert.equal(hasFeature("bnb", "giftcards"), false);
   assert.equal(hasFeature("base", "giftcards"), true);
   assert.equal(hasFeature("nope", "swap"), false);
 });
@@ -254,7 +350,11 @@ test("explorer links and sentences", () => {
   assert.equal(orList(["USDC", "ETH", "WETH"]), "USDC, ETH or WETH");
   assert.equal(orList(["base", "solana"]), "base or solana");
   assert.equal(orList(["base"]), "base");
-  assert.equal(pipeList(chainKeys()), "base|solana");
+  assert.equal(pipeList(chainKeys()), "base|bnb|arbitrum|polygon|solana");
+  assert.equal(explorerTx("bnb", h), `https://bscscan.com/tx/${h}`);
+  assert.equal(explorerTx("arbitrum", h), `https://arbiscan.io/tx/${h}`);
+  assert.equal(explorerTx("polygon", h), `https://polygonscan.com/tx/${h}`);
+  assert.equal(labelOf("bnb"), "BNB Chain");
 });
 
 test("rpcUrl: the owner's variable wins, the public default otherwise", () => {
@@ -270,12 +370,14 @@ test("stables: by address (any letter case) and by symbol, the symbols the fee t
   assert.equal(stableByAddress("base", V03.weth), null);
   assert.equal(stableByAddress("base", "not an address"), null);
   assert.equal(stableBySymbol("base", "usdc").decimals, 6);
-  assert.equal(stableBySymbol("base", "USDT"), null);
+  assert.equal(stableBySymbol("base", "USDT"), null, "Base has no USDT");
+  assert.equal(stableBySymbol("bnb", "USDT").decimals, 18);
   assert.equal(isStableSymbol("base", "USDC"), true);
   assert.equal(isStableSymbol("base", "WETH"), false);
   assert.equal(isStableSymbol("solana", "USDC"), true);
-  assert.deepEqual(stableSymbols(), ["USDC"]);
+  assert.deepEqual(stableSymbols().sort(), ["USDC", "USDT"]);
   assert.deepEqual(stableSymbols("base"), ["USDC"]);
+  assert.deepEqual(stableSymbols("bnb"), ["USDT", "USDC"]);
   assert.deepEqual(stablesOf("solana").map(([s]) => s), ["USDC"]);
   assert.equal(defaultStable("base").address, V03.usdc);
 });
@@ -397,4 +499,45 @@ test("guard: a 0x address in the source is a registry address or one of the few 
   assert.deepEqual(problems, []);
   // And the registry's own addresses are not repeated anywhere else (they would be the same literal, guarded above).
   assert.ok(registry.size >= 6);
+});
+
+// ---------------------------------------------------------------- the docs say what the registry says
+
+test("BOT.md, README.md and SKILL.md: the bots, each chain's gas token and stablecoin, what BNB Chain cannot do, the version and the upgrade note", () => {
+  const read = (f) => readFileSync(join(root, f), "utf8");
+  const bot = read("BOT.md");
+  const readme = read("README.md");
+  const skill = read("skills/sato-agent/SKILL.md");
+  for (const [name, key, gas, stable] of [["Sato Base Bot", "base", "ETH", "USDC"], ["Sato BNB Bot", "bnb", "BNB", "USDT"], ["Sato Arbitrum Bot", "arbitrum", "ETH", "USDC"], ["Sato Polygon Bot", "polygon", "POL", "USDC"], ["Sato Solana Bot", "solana", "SOL", "USDC"]]) {
+    assert.match(bot, new RegExp(`\\| ${name} \\| \`${key}\` \\| ${stable} on `), `${name} in BOT.md`);
+    assert.match(bot, new RegExp(`${name}[^\\n]*plus a little ${gas} (on |for fees)`), `${name}: its gas token`);
+    assert.ok(readme.includes(`**${name}**`) && readme.includes(`\`NAME = ${key}, CHAIN = ${key}\``), `${name} in README.md`);
+    assert.ok(skill.includes(name), `${name} in SKILL.md`);
+    // the registry agrees with the docs
+    const c = getChain(key);
+    assert.equal(c.native.symbol, gas);
+    assert.equal(c.defaultStable, stable);
+  }
+  assert.match(bot, /\*\*Not on BNB Chain:\*\* x402 payments .*and gift cards, eSIMs and top-ups .*Sato Base Bot.*never offer them on this chain/);
+  assert.match(bot, /BNB Chain's USDT and USDC have 18 decimals/);
+  assert.match(bot, /After upgrading to 0\.4\.0, nothing changes for a Base or Solana bot/);
+  assert.match(bot, /adding a chain lets you do more, so it is logged as a raise/);
+  assert.match(bot, /grep -q ' 0\.4\.0:' && echo "kit ready \(0\.4\.0\)"/);
+  assert.match(bot, /github:satohubai\/sato-agent#v0\.4\.0/);
+  assert.doesNotMatch(bot, /#v0\.3\.\d/);
+  assert.match(readme, /\*\*Upgrading to v0\.4\.0:\*\* nothing changes for a Base or Solana agent/);
+  assert.match(readme, /#v0\.4\.0/);
+  assert.match(skill, /\*\*No x402, no gift cards\*\*/);
+  // the feature table in the README matches the registry's features
+  for (const key of evmChainKeys()) {
+    const f = getChain(key).features;
+    const row = readme.split("\n").find((l) => l.startsWith(`| ${getChain(key).label} | \`${key}\` |`));
+    assert.ok(row, `${key} has a row in the README chain table`);
+    const cells = row.split("|").map((s) => s.trim());
+    const yes = (cell) => /^yes$/.test(cell.replace(/\*/g, ""));
+    // Swaps, x402, Gift cards, Payment links, ERC-8004 are the last five cells
+    const [swaps, x402, gifts, links, register] = cells.slice(-6, -1);
+    assert.deepEqual([yes(swaps), yes(x402), yes(gifts), yes(links), yes(register)], [f.swap, f.x402, f.giftcards, f.checkout, f.register], `${key}: README features equal the registry's`);
+  }
+  assert.match(readme, /Avalanche is not supported/);
 });

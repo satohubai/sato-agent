@@ -26,14 +26,14 @@
 
 import { wrapFetchWithPayment, x402Client, x402HTTPClient, decodePaymentResponseHeader } from "@x402/fetch";
 import { ExactEvmScheme } from "@x402/evm";
-import { ExactEvmSchemeV1 } from "@x402/evm/v1";
+import { EVM_NETWORK_CHAIN_ID_MAP, ExactEvmSchemeV1 } from "@x402/evm/v1";
 import { isAddress } from "viem";
 import { evaluate, loadPolicy } from "./policy.js";
 import { record, release, reserve, spentLast24h } from "./ledger.js";
 import { Pending, Refused } from "./errors.js";
 import { evmAccount } from "./wallet.js";
 import { USDC_DECIMALS, unitsToUsd, usdToUnits } from "./amount.js";
-import { chainsWith, evmChain, evmChainKeys, explorerAddress, explorerTx, getChain, isEvm, labelOf, stableByAddress } from "./chains.js";
+import { chainsWith, evmChain, evmChainKeys, explorerAddress, explorerTx, getChain, isEvm, isKnownChain, labelList, labelOf, stableByAddress } from "./chains.js";
 import { clean, cleanOrNull } from "./text.js";
 import { USER_AGENT } from "./version.js";
 
@@ -59,18 +59,29 @@ const CHAIN_RULES = ["limits_not_set", "chains_not_set", "chain_not_allowed"];
  */
 export function resolvePayChain(policy, requested) {
   let chain = requested === undefined || requested === null ? undefined : String(requested).toLowerCase();
-  if (chain !== undefined && !PAY_CHAINS.includes(chain)) throw new Error(`pay supports --chain ${PAY_CHAINS.join("|")} (got "${requested}")`);
+  if (chain !== undefined && !isKnownChain(chain)) throw new Error(`pay supports --chain ${PAY_CHAINS.join("|")} (got "${requested}")`);
   if (chain === undefined && policy && Array.isArray(policy.chains)) {
     if (policy.chains.length === 1) chain = policy.chains[0];
     else throw new Error(`this agent may spend on ${policy.chains.join(" and ")}: say which with --chain ${policy.chains.join("|")}`);
   }
   const refusals = evaluate(policy, { usd: 1e-6, chain }, { usd: 0, unreadable: [] }).filter((r) => CHAIN_RULES.includes(r.rule));
+  // A chain the owner chose that x402 does not run on (BNB Chain: its USDC cannot sign an EIP-3009 authorization, and no facilitator
+  // serves it) is a plain refusal, not a payment attempt on a chain the kit has no way to pay on.
+  if (chain !== undefined && isKnownChain(chain) && !PAY_CHAINS.includes(chain) && !refusals.length) {
+    refusals.push({ rule: "x402_not_on_chain", limit: PAY_CHAINS, observed: chain, message: `x402 payments are not available on ${labelOf(chain)}; they work on ${labelList(PAY_CHAINS)}. A bot on ${labelOf(chain)} pays with \`send\` or \`checkout\`.` });
+  }
   return { chain, refusals };
 }
 
 // x402 v1 servers say `maxAmountRequired` (not `amount`) and name networks by a short name ("base" / "solana").
 // Every check below runs on a normalized view, so v1 and v2 pass the SAME guard.
-const V1_NETWORKS = Object.fromEntries(PAY_CHAINS.map((k) => [getChain(k).x402.v1Name, getChain(k).x402.caip2]));
+// Only the v1 names the x402 library can SIGN for: its table of v1 networks has base and polygon but no arbitrum, so a v1 offer on
+// Arbitrum is refused (v2, the CAIP-2 form, works there).
+const v1Signable = (key) => {
+  const c = getChain(key);
+  return c.kind === "solana" || (Boolean(c.x402.v1Name) && EVM_NETWORK_CHAIN_ID_MAP[c.x402.v1Name] === c.chainId);
+};
+const V1_NETWORKS = Object.fromEntries(PAY_CHAINS.filter(v1Signable).map((k) => [getChain(k).x402.v1Name, getChain(k).x402.caip2]));
 
 /** The requirement as the guard sees it: canonical CAIP-2 network, atomic amount, same window/asset/payTo. */
 export function view(req, version) {
@@ -97,11 +108,14 @@ const unitsOf = (v) => {
   return units;
 };
 const usdOf = (v, decimals = USDC_DECIMALS) => unitsToUsd(unitsOf(v), decimals);
-/** Does this offer ask for an EIP-3009 stable of the EVM chain `key` (on that chain's x402 network)? */
+/**
+ * Does this offer ask for the chain's default stable (USDC) on that chain's x402 network? Only the default stable, even where
+ * another stable can sign an EIP-3009 authorization too (Arbitrum's USDT0): the ledger and the owner's card say USDC.
+ */
 const acceptsEvmStable = (key) => (v) => {
   const c = evmChain(key);
   const s = stableByAddress(key, String(v.asset));
-  return v.network === c.x402.caip2 && s !== null && s.eip3009 === true;
+  return v.network === c.x402.caip2 && s !== null && s.symbol === c.defaultStable && s.eip3009 === true;
 };
 
 // A settlement receipt names a transaction only in that chain's own form.
@@ -416,7 +430,9 @@ export async function pay(url, { chain: requestedChain, method = "GET", body, he
   const client = x402Client.fromConfig({
     schemes: [
       { network: chain.networkPattern, client: chain.scheme },
-      { x402Version: 1, network: chain.v1Network, client: chain.schemeV1 }, // v1 servers: same guard, same hooks
+      // v1 servers: same guard, same hooks. Where the x402 library has no v1 network of this name (Arbitrum) the guard still sees the
+      // offer first and refuses it (V1_NETWORKS has no such name), so the library is never asked to sign it.
+      { x402Version: 1, network: chain.v1Network, client: chain.schemeV1 },
     ],
     policies: [guard],
     // A quoted price is a price: when the owner approved one, the cheapest offer inside it is

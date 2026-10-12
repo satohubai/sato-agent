@@ -20,6 +20,7 @@ import { clean } from "./text.js";
 import { PlainError } from "./errors.js";
 import { record } from "./ledger.js";
 import { evmAccount, solanaSecret } from "./wallet.js";
+import { chainKeys, isEvm, isKnownChain, orList } from "./chains.js";
 import { isReferralName, loadSettings, normalizeAddress, normalizeReferralName, patchSettings, shortReferrer } from "./settings.js";
 
 /** The referrer's share of Sato Hub's swap fee, in percent. The ONE place the kit says it (BOT.md repeats it in words). */
@@ -77,6 +78,9 @@ export function makeSigner(chain, keys = {}) {
   }
   throw new PlainError("--chain must be base or solana");
 }
+
+/** The payout class of a chain: every EVM chain pays out as "base" (USDC on Base), Solana as "solana". */
+export const payoutClass = (chain) => (isEvm(chain) ? "base" : chain);
 
 /** "base" or "solana", from the shape of an address. */
 export const chainOfAddress = (address) => (/^0x/i.test(String(address)) ? "base" : "solana");
@@ -263,8 +267,11 @@ async function authorizePayout(deps, intent, ledgerIntent) {
  * wallet's own address needs the owner's approval first (`deps.authorize(intent, ledgerIntent)`, which throws until it is given).
  * deps: fetchImpl, origin, keys (see makeSigner), now (Date), timeoutMs, authorize.
  */
-export async function createReferralName({ chain, payout }, deps = {}) {
-  if (chain !== "base" && chain !== "solana") throw new PlainError("referral create needs --chain base or --chain solana.");
+export async function createReferralName({ chain: requested, payout }, deps = {}) {
+  if (!isKnownChain(requested)) throw new PlainError(`referral create needs --chain ${orList(chainKeys())}.`);
+  // Every EVM chain signs with the same key, so the name, the signing wallet and the payout class are "base" whichever EVM chain
+  // the owner names (Sato Hub's names registry keeps `base | solana`: the class, not the chain).
+  const chain = payoutClass(requested);
   const had = ownReferral();
   if (had.name && had.chain && had.chain !== chain) {
     throw new PlainError(`This bot already has the referral name ${had.name} (signed with its ${chainLabel(had.chain)} wallet). See \`referral show\`.`);

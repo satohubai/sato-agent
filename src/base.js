@@ -14,19 +14,18 @@ import {
   encodeFunctionData,
   erc20Abi,
   formatUnits,
-  http,
   isAddress,
   keccak256,
   parseEventLogs,
 } from "viem";
 import { usdcUnits, unitsToUsd } from "./amount.js";
-import { DEFAULT_EVM_CHAIN, defaultStable, evmChain, explorerTx, lockName, rpcUrl, stableBySymbol } from "./chains.js";
+import { DEFAULT_EVM_CHAIN, defaultStable, evmChain, explorerTx, lockName, stableBySymbol } from "./chains.js";
+import { chainTransport } from "./rpc.js";
 import { allowedChains, loadPolicy } from "./policy.js";
 import { entries, record, release, reserve } from "./ledger.js";
 import { Pending, Rejected } from "./errors.js";
 import { withLock } from "./store.js";
 import { evmAccount, loadWallet } from "./wallet.js";
-import { USER_AGENT } from "./version.js";
 
 // Kept under their v0.3 names for callers and tests pinned to Base; the values live in src/chains.js.
 export const USDC_BASE = evmChain("base").stables.USDC.address;
@@ -39,12 +38,10 @@ export const identityRegistryAbi = [
   { type: "event", name: "Registered", inputs: [{ name: "agentId", type: "uint256", indexed: true }, { name: "agentURI", type: "string", indexed: false }, { name: "owner", type: "address", indexed: true }] },
 ];
 
-const RPC_TIMEOUT_MS = 20_000;
 const explorer = (chain, hash) => explorerTx(chain, hash);
 
-function transport(chain) {
-  return http(rpcUrl(chain), { timeout: RPC_TIMEOUT_MS, fetchOptions: { headers: { "user-agent": USER_AGENT } } });
-}
+// The chain's endpoints, in order, moving on when one turns a call away (src/rpc.js): the owner's own, else the registry's list.
+const transport = (chain) => chainTransport(chain);
 
 /** Viem clients for an EVM chain. `chainKey` rides on the object so the helpers below know which chain they are on. */
 export function clients(account = evmAccount(), chain = DEFAULT_EVM_CHAIN) {

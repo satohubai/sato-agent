@@ -13,7 +13,7 @@
 
 import { evaluate, loadPolicy, purchasesAsk } from "./policy.js";
 import { spentLast24h } from "./ledger.js";
-import { chainKeys, chainsWith, isKnownChain, orList } from "./chains.js";
+import { chainKeys, chainsWith, isKnownChain, labelList, labelOf, orList } from "./chains.js";
 import { NeedsApproval, Refused } from "./errors.js";
 import { consumeApproval, requestApproval } from "./approvals.js";
 
@@ -45,6 +45,8 @@ export function purchaseChain(requested, allowed = chainsWith("checkout"), polic
   }
   if (!isKnownChain(chain)) throw new Error(`--chain must be ${orList(chainKeys())}`);
   if (!chains.includes(chain)) throw refuse("chain_not_allowed", `this agent is set to work on ${chains.join(" and ")} only`, chains, chain);
+  // A chain the owner allowed but this purchase does not exist on (Amazon orders are Base and Solana only): a plain refusal.
+  if (!allowed.includes(chain)) throw refuse("chain_not_supported", `this purchase is not available on ${labelOf(chain)}; it works on ${labelList(allowed)}`, allowed, chain);
   return chain;
 }
 

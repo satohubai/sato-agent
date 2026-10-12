@@ -1,0 +1,116 @@
+{
+ "code": 0,
+ "message": "successfully",
+ "data": {
+  "routeSummary": {
+   "tokenIn": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+   "amountIn": "10000000000000000000",
+   "amountInUsd": "1.9788685880823298",
+   "tokenOut": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+   "amountOut": "1961372",
+   "amountOutUsd": "1.9629367973094587",
+   "gas": "415912",
+   "gasPrice": "20030000",
+   "gasUsd": "0.021338998488348606",
+   "l1FeeUsd": "0.00016431653253572186",
+   "extraFee": {
+    "feeAmount": "75",
+    "chargeFeeBy": "currency_out",
+    "isInBps": true,
+    "feeReceiver": "0xcee53eb001d4d1743ef9df333dcf45bc38622be9"
+   },
+   "route": [
+    [
+     {
+      "pool": "pmm_5_0x912ce59144191c1204e64559fe8253a0e49e6548_0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+      "tokenIn": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+      "tokenOut": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+      "swapAmount": "10000000000000000000",
+      "amountOut": "1976193",
+      "exchange": "pmm-5/uniswapv3",
+      "poolType": "orderbook",
+      "poolExtra": {
+       "approvalAddress": "",
+       "blockNumber": 0
+      },
+      "extra": {
+       "_ce": {
+        "prCnt": 1,
+        "tgtAmtOut": "1976193",
+        "ces": [
+         {
+          "pool": "0xb0f6ca40411360c03d41c5ffc5f179b8403cdcf8",
+          "tokenIn": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+          "tokenOut": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+          "swapAmount": "10000000000000000000",
+          "amountOut": "1977664",
+          "exchange": "uniswapv3",
+          "poolType": "uniswapv3",
+          "poolExtra": {
+           "swapFee": 500,
+           "priceLimit": "4295558253",
+           "blockNumber": 514024335
+          },
+          "extra": {
+           "rAI": "0",
+           "nSqrtRx96": "35241724878299545154903",
+           "nT": -292527
+          }
+         }
+        ]
+       },
+       "_cs": "14044306969064564418",
+       "_fr": {
+        "amountOut": "1977664",
+        "amountOutUsd": 1.9792417951893948
+       },
+       "_fs": {
+        "pool": "0xb0f6ca40411360c03d41c5ffc5f179b8403cdcf8",
+        "tokenIn": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+        "tokenOut": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+        "swapAmount": "10000000000000000000",
+        "amountOut": "1977664",
+        "exchange": "uniswapv3",
+        "poolType": "uniswapv3",
+        "poolExtra": {
+         "swapFee": 500,
+         "priceLimit": "4295558253",
+         "blockNumber": 514024335
+        },
+        "extra": {
+         "rAI": "0",
+         "nSqrtRx96": "35241724878299545154903",
+         "nT": -292527
+        }
+       },
+       "_ss": {
+        "pool": "0x716aa091d30a88a3e1874d56e99fbf1487cbc65a",
+        "tokenIn": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+        "tokenOut": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+        "swapAmount": "10000000000000000000",
+        "amountOut": "1974769",
+        "exchange": "dodo-dpp",
+        "poolType": "dodo-dpp",
+        "poolExtra": {
+         "type": "DPP",
+         "baseToken": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+         "quoteToken": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+         "blockNumber": 514024633
+        },
+        "extra": null
+       },
+       "_ts": "1791782775",
+       "ri": "0ce3c3fbE21FnL4O"
+      }
+     }
+    ]
+   ],
+   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+   "routeID": "0ce3c3fbE21FnL4O",
+   "checksum": "14044306969064564418",
+   "timestamp": 1791782775
+  },
+  "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
+ },
+ "requestId": "0ce3c3fb-136d-459c-be0e-8fc0f2caac78"
+}

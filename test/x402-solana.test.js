@@ -253,7 +253,7 @@ test("no limits set: nothing is reserved or signed", async () => {
 });
 
 test("an unknown chain is refused", async () => {
-  await assert.rejects(pay(`${origin}/a`, { chain: "ethereum" }), /--chain base\|solana/);
+  await assert.rejects(pay(`${origin}/a`, { chain: "ethereum" }), /--chain base\|arbitrum\|polygon\|solana/);
 });
 
 test("wrong mint, wrong network, Base-only offers: refused with the rule, nothing signed", async () => {

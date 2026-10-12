@@ -1,0 +1,82 @@
+{
+ "code": 0,
+ "message": "successfully",
+ "data": {
+  "routeSummary": {
+   "tokenIn": "0x55d398326f99059ff775485246999027b3197955",
+   "amountIn": "10000000000000000000",
+   "amountInUsd": "9.998354951580314",
+   "tokenOut": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+   "amountOut": "13244806297057716",
+   "amountOutUsd": "9.980733290548653",
+   "gas": "287581",
+   "gasPrice": "50000000",
+   "gasUsd": "0.010835452010600153",
+   "l1FeeUsd": "0",
+   "extraFee": {
+    "feeAmount": "15",
+    "chargeFeeBy": "currency_in",
+    "isInBps": true,
+    "feeReceiver": "0xcee53eb001d4d1743ef9df333dcf45bc38622be9"
+   },
+   "route": [
+    [
+     {
+      "pool": "0xd37aa0f0d66ad670279f6b89325c88bdff17d0265144762fb01f54fca9779944",
+      "tokenIn": "0x55d398326f99059ff775485246999027b3197955",
+      "tokenOut": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+      "swapAmount": "9985000000000000000",
+      "amountOut": "13244806297057716",
+      "exchange": "pancake-infinity-cl",
+      "poolType": "pancake-infinity-cl",
+      "poolExtra": {
+       "blockNumber": 127154530,
+       "vault": "0x238a358808379702088667322f80ac48bad5e6c4",
+       "poolManager": "0xa0ffb9c1ce1fe56963b0321b32e7a0302114058b",
+       "permit2Addr": "0x31c2f6fcff4f8759b3bd5bf0e1084a055615c768",
+       "tokenIn": "0x55d398326f99059ff775485246999027b3197955",
+       "tokenOut": "0x0000000000000000000000000000000000000000",
+       "fee": 67,
+       "parameters": "0x0000000000000000000000000000000000000000000000000000000000010000",
+       "hookAddress": "0x0000000000000000000000000000000000000000",
+       "hookData": "",
+       "priceLimit": "1461446703485210103287273052203988822378723970341",
+       "swapFee": 99
+      },
+      "extra": {
+       "HookSwapInfo": null,
+       "_cs": "14228823526695418546",
+       "_ss": {
+        "pool": "0x00007904d186680c709519e71f4dc3e2df8f1b99",
+        "tokenIn": "0x55d398326f99059ff775485246999027b3197955",
+        "tokenOut": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+        "swapAmount": "9985000000000000000",
+        "amountOut": "13241950416597120",
+        "exchange": "lunarbase",
+        "poolType": "lunarbase",
+        "poolExtra": {
+         "blockHash": "0xa1ce9f6e2d9adc4999fb2bceb713a8e16111deb2a139a93807ff0415d0a48600",
+         "blockNumber": 127154575,
+         "approvalAddress": "0x00007904d186680c709519e71f4dc3e2df8f1b99",
+         "n": true
+        },
+        "extra": {}
+       },
+       "_ts": "1791782717",
+       "nSqrtRx96": "2175263035240195540558994263936",
+       "nT": 66254,
+       "rAI": "0",
+       "ri": "ca07e9ddXA5EMrCA"
+      }
+     }
+    ]
+   ],
+   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+   "routeID": "ca07e9ddXA5EMrCA",
+   "checksum": "14228823526695418546",
+   "timestamp": 1791782717
+  },
+  "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
+ },
+ "requestId": "ca07e9dd-5c0e-4432-b080-ef232cf9e769"
+}

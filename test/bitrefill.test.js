@@ -209,7 +209,8 @@ test("CLI: a Solana-only agent gets a plain explanation for gift cards", () => {
   run(["policy", "set", "--chains", "solana", "--per-tx", "50", "--per-day", "100"], { SATO_AGENT_HOME: h });
   const r = run(["giftcard", "buy", "amazon-us", "--value", "25"], { SATO_AGENT_HOME: h });
   assert.equal(r.status, 3);
-  assert.match(r.stderr, /paid in USDC on Base for now/);
+  assert.match(r.stderr, /paid in USDC on Base, Arbitrum and Polygon, and this agent works on Solana only/);
+  assert.match(r.stderr, /available through the Sato Base Bot/);
 });
 
 test("only the Bitrefill sign-in and the referral name request (v0.3.2) sign a message anywhere in the kit", () => {

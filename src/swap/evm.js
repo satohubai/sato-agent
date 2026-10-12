@@ -547,7 +547,8 @@ function staticChecks(response, intent) {
   if (!same(response.token_in, intent.tokenIn.address)) out.push(refusal("response_mismatch", "the response is about a different input token than the one asked for", intent.tokenIn.address, response.token_in ?? null));
   if (!same(response.token_out, intent.tokenOut.address)) out.push(refusal("response_mismatch", "the response is about a different output token than the one asked for", intent.tokenOut.address, response.token_out ?? null));
   if (String(response.amount_in) !== intent.amountIn.toString()) out.push(refusal("response_mismatch", "the response is about a different amount than the one asked for", intent.amountIn.toString(), response.amount_in ?? null));
-  if (typeof response.chain !== "string" || lc(response.chain) !== chain) out.push(refusal(`chain_not_${chain}`, `the response is not for ${ch.label}`, chain, response.chain ?? null));
+  // Sato Hub names the chain by its display name ("Base", "BNB Chain"); the kit's key ("bnb") is accepted too. Nothing else is.
+  if (typeof response.chain !== "string" || ![chain, lc(ch.hubName)].includes(lc(response.chain))) out.push(refusal(`chain_not_${chain}`, `the response is not for ${ch.label}`, chain, response.chain ?? null));
 
   if (!tx || typeof tx !== "object") {
     out.push(refusal("tx_withheld", `Sato Hub returned no transaction${response.withheld?.reason ? `: ${String(response.withheld.reason).slice(0, 300)}` : ""}`, null, response.withheld?.rule ?? null));
@@ -765,13 +766,17 @@ export const laterBlocks = (chain = DEFAULT_EVM_CHAIN) => {
 /** Base's (a block every 2 s): [{ blocks: 1, seconds: 2 }, { blocks: 2, seconds: 4 }]. */
 export const LATER_BLOCK = laterBlocks();
 
-export function buildSimulationRequest({ taker, calls, baseFeePerGas, maxPriorityFeePerGas, prevRandao, blockNumber, timestamp, splitAt, chain = DEFAULT_EVM_CHAIN }) {
+export function buildSimulationRequest({ taker, calls, baseFeePerGas, maxPriorityFeePerGas, legacyGasPrice, prevRandao, blockNumber, timestamp, splitAt, chain = DEFAULT_EVM_CHAIN }) {
   const later = laterBlocks(chain);
   const realistic = typeof baseFeePerGas === "bigint" && baseFeePerGas > 0n;
   const tip = typeof maxPriorityFeePerGas === "bigint" && maxPriorityFeePerGas >= 0n ? maxPriorityFeePerGas : 0n;
-  const fees = realistic ? { maxFeePerGas: toHex((baseFeePerGas * 12n) / 10n + tip), maxPriorityFeePerGas: toHex(tip) } : {};
+  // A chain with a zero base fee (BNB) prices by a plain gas price: the calls carry one, so tx.gasprice is not zero there either.
+  const legacy = !realistic && typeof legacyGasPrice === "bigint" && legacyGasPrice > 0n;
+  const fees = realistic ? { maxFeePerGas: toHex((baseFeePerGas * 12n) / 10n + tip), maxPriorityFeePerGas: toHex(tip) } : legacy ? { gasPrice: toHex(legacyGasPrice) } : {};
   const randao = typeof prevRandao === "string" && /^0x[0-9a-fA-F]{64}$/.test(prevRandao) && !/^0x0{64}$/.test(prevRandao) ? prevRandao : null;
-  const timed = typeof blockNumber === "bigint" && typeof timestamp === "bigint";
+  // Block number / time overrides only where the chain tolerates them: on a chain with blocks under about a second the node refuses
+  // them as out of order (-38020), and the same request with none passes (SPIKES.md section 1).
+  const timed = typeof blockNumber === "bigint" && typeof timestamp === "bigint" && evmChain(chain).simulation.timedBlocks;
   const encode = (c) => ({ from: taker, to: c.to, data: c.data, ...(c.value ? { value: toHex(c.value) } : {}), ...(c.gas ? { gas: toHex(c.gas) } : {}), ...fees });
   const overrides = (k) => ({
     ...(realistic ? { baseFeePerGas: toHex(baseFeePerGas) } : {}),
@@ -798,20 +803,35 @@ async function simulationFees(c, chain = DEFAULT_EVM_CHAIN) {
   const sim = evmChain(chain).simulation;
   const block = await c.pub.getBlock({ blockTag: "latest" });
   const baseFeePerGas = block?.baseFeePerGas;
-  if (typeof baseFeePerGas !== "bigint" || baseFeePerGas <= 0n) throw new Error("the latest block has no base fee to simulate with");
+  const zero = typeof baseFeePerGas === "bigint" && baseFeePerGas === 0n && sim.zeroBaseFee === true;
+  // A zero base fee is normal on BNB (legacy gas pricing) and is a broken answer anywhere else; a missing one is always refused.
+  if (typeof baseFeePerGas !== "bigint" || (baseFeePerGas <= 0n && !zero)) throw new Error("the latest block has no base fee to simulate with");
   let tip = sim.tipFallbackWei; // Base's usual tip is 0.001 gwei: used if the node cannot say
-  try {
-    const t = await c.pub.estimateMaxPriorityFeePerGas();
-    if (typeof t === "bigint" && t >= 0n) tip = t;
-  } catch {
-    /* keep the fallback */
+  let legacyGasPrice;
+  if (zero) {
+    // The price the network quotes (BNB: 0.05 gwei); the calls then carry it as a plain gas price.
+    legacyGasPrice = sim.tipFallbackWei;
+    try {
+      const g = await c.pub.getGasPrice();
+      if (typeof g === "bigint" && g > 0n) legacyGasPrice = g;
+    } catch {
+      /* keep the fallback */
+    }
+  } else {
+    try {
+      const t = await c.pub.estimateMaxPriorityFeePerGas();
+      if (typeof t === "bigint" && t >= 0n) tip = t;
+    } catch {
+      /* keep the fallback */
+    }
   }
   return {
     baseFeePerGas,
     maxPriorityFeePerGas: tip,
+    ...(legacyGasPrice !== undefined ? { legacyGasPrice } : {}),
     prevRandao: sim.prevRandao ? block.mixHash ?? undefined : undefined,
-    blockNumber: typeof block.number === "bigint" ? block.number : undefined,
-    timestamp: typeof block.timestamp === "bigint" ? block.timestamp : undefined,
+    blockNumber: typeof block.number === "bigint" && sim.timedBlocks ? block.number : undefined,
+    timestamp: typeof block.timestamp === "bigint" && sim.timedBlocks ? block.timestamp : undefined,
   };
 }
 

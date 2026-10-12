@@ -17,7 +17,7 @@
 // kit's own is used. The fee side is always decided by the kit's own majors (USDC / ETH / WETH / SOL), whatever the tier.
 // Where the fee is taken is unchanged: always on the major side, never in the long-tail token (checked elsewhere).
 
-import { stableSymbols } from "../chains.js";
+import { DEFAULT_EVM_CHAIN, getChain, orList, stableSymbols } from "../chains.js";
 
 export const FEE_CEILING_BPS = 100;
 export const MAJOR_FEE_CEILING_BPS = 15;
@@ -39,9 +39,19 @@ export function pairTier(a, b) {
 /** The fee as the owner reads it: "0.75%". */
 export const feePercent = (bps) => `${(Number(bps) / 100).toFixed(2)}%`;
 
-/** "0.75% (75 bps, any other token)": the percent first, then the bps and the tier in words. */
-export function feeText(bps, tier) {
-  const words = { stable: "stablecoin pair", major: "ETH/SOL with USDC", token: "a token trade" }[tier];
+/**
+ * What the "major" tier is, in words, on a chain: "ETH/SOL with USDC" is what v0.3 said on its two chains and still is (their
+ * output is unchanged); any other chain says its own: "BNB with USDT or USDC".
+ */
+function majorTierWords(chain, joiner) {
+  if (chain === undefined || chain === DEFAULT_EVM_CHAIN || chain === "solana") return null;
+  const c = getChain(chain);
+  return `${c.native.symbol}${joiner === "/" ? "/" : " or "}${c.wrappedNative.symbol} with ${orList(Object.keys(c.stables))}`;
+}
+
+/** "0.75% (75 bps, any other token)": the percent first, then the bps and the tier in words. `chain` makes the words that chain's. */
+export function feeText(bps, tier, chain) {
+  const words = { stable: "stablecoin pair", major: majorTierWords(chain, "/") ?? "ETH/SOL with USDC", token: "a token trade" }[tier];
   return `${feePercent(bps)} (${bps} bps${words ? `, ${words}` : ""})`;
 }
 
@@ -82,9 +92,10 @@ export const approvalFeeCeiling = (tier) => (tier === "token" ? FEE_CEILING_BPS 
  * The plain line an approval request carries for a swap (approved before the quote, so the rate is the published one and
  * the ceiling is what the approval allows): "Sato Hub fee: 0.75% for a token trade (this approval allows up to 1%)".
  */
-export function approvalFeeLine(tier) {
+export function approvalFeeLine(tier, chain) {
   const pct = (bps) => `${Number((bps / 100).toFixed(2))}%`;
-  const words = { stable: " for a stablecoin pair", major: " for ETH or SOL with USDC", token: " for a token trade" }[tier] ?? "";
+  const own = majorTierWords(chain, "or");
+  const words = { stable: " for a stablecoin pair", major: own ? ` for ${own}` : " for ETH or SOL with USDC", token: " for a token trade" }[tier] ?? "";
   return `Sato Hub fee: ${pct(PUBLISHED_FEE_BPS[tier] ?? approvalFeeCeiling(tier))}${words} (this approval allows up to ${pct(approvalFeeCeiling(tier))}).`;
 }
 

@@ -18,11 +18,9 @@
 //   - A stale, zero or unreadable feed throws PriceUnavailable. The caller
 //     decides what to do without a check; this module never invents a price.
 
-import { createPublicClient, formatUnits, http } from "viem";
-import { DEFAULT_EVM_CHAIN, chainlinkFeed, evmChain, rpcUrl } from "./chains.js";
-import { USER_AGENT } from "./version.js";
-
-const RPC_TIMEOUT_MS = 20_000;
+import { createPublicClient, formatUnits } from "viem";
+import { DEFAULT_EVM_CHAIN, chainlinkFeed, evmChain, sequencerFeed } from "./chains.js";
+import { chainTransport } from "./rpc.js";
 
 // The feeds themselves (addresses, how stale one may be, the tolerance) are pinned per chain in src/chains.js.
 // This table is the Base reading of them, kept under its v0.3 name: ETH/USD (heartbeat 20 min, deviation 0.15%) and
@@ -75,9 +73,9 @@ const aggregatorAbi = [
   },
 ];
 
-// Same transport pattern as base.js: the owner's RPC for the chain, a timeout, our name.
+// Same transport as base.js: the chain's endpoints (the owner's, else the registry's), a timeout, our name.
 function defaultClient(chain) {
-  return createPublicClient({ chain: evmChain(chain).viem, transport: http(rpcUrl(chain), { timeout: RPC_TIMEOUT_MS, fetchOptions: { headers: { "user-agent": USER_AGENT } } }) });
+  return createPublicClient({ chain: evmChain(chain).viem, transport: chainTransport(chain) });
 }
 
 /**
@@ -92,6 +90,24 @@ export async function oraclePrice(asset, { publicClient, now = Date.now(), chain
   if (!feed) throw new PriceUnavailable(`no price feed for ${asset}; only ETH and SOL are supported`, { asset });
   const source = `chainlink:${chain}:${feed.address}`;
   const c = publicClient ?? defaultClient(chain);
+
+  // An L2 whose sequencer is down (or has just come back) can show a price that is not the market's: Chainlink's own guidance is to
+  // read the sequencer uptime feed first, and not to trust a price until a grace period after it restarts.
+  const seq = sequencerFeed(chain);
+  if (seq) {
+    let s;
+    try {
+      s = await c.readContract({ address: seq.address, abi: aggregatorAbi, functionName: "latestRoundData" });
+    } catch (err) {
+      throw new PriceUnavailable(`could not read the ${evmChain(chain).label} sequencer uptime feed (${err.shortMessage || err.message}), so its ${asset} price is not trusted`, { asset, source });
+    }
+    const startedAt = Number(s[2]);
+    if (BigInt(s[1]) !== 0n) throw new PriceUnavailable(`the ${evmChain(chain).label} sequencer is reported down, so its ${asset} price is not trusted`, { asset, source, sequencer: "down" });
+    const up_s = Math.round(now / 1000 - startedAt);
+    if (!Number.isFinite(startedAt) || startedAt <= 0 || up_s <= seq.graceS) {
+      throw new PriceUnavailable(`the ${evmChain(chain).label} sequencer came back up ${Number.isFinite(up_s) && startedAt > 0 ? `${Math.max(0, up_s)} s ago` : "at a time that could not be read"}; its ${asset} price is not trusted until ${seq.graceS} s have passed`, { asset, source, sequencer: "restarted", up_s });
+    }
+  }
 
   let round;
   let decimals;

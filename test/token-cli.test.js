@@ -358,7 +358,7 @@ test("swap: a token that stops a sale is refused before anything is asked; high 
 
 test("help lists the token command, the swap forms and the per-trade rules", async () => {
   const r = await run(["help"]);
-  assert.match(r.stdout, /token <address\|mint\|link> \[--chain base\|solana\]/);
+  assert.match(r.stdout, /token <address\|mint\|link> \[--chain base\|bnb\|arbitrum\|polygon\|solana\]/);
   assert.match(r.stdout, /--amount <n\|all>/);
   assert.match(r.stdout, /Slippage is picked\s+per trade/);
 });

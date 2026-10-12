@@ -12,7 +12,7 @@
 // chain is read from the chain itself or the project's own docs and observed live, never
 // copied from another chain's entry.
 
-import { base } from "viem/chains";
+import { arbitrum, base, bsc, polygon } from "viem/chains";
 
 /** The placeholder KyberSwap (and Sato Hub's gate) use for a chain's native coin. */
 export const NATIVE_PLACEHOLDER = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
@@ -27,6 +27,13 @@ const deepFreeze = (o) => {
 };
 
 const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+
+// Pins KyberSwap and the ERC-8004 project publish ONE address for on every EVM chain they serve. Each chain below still lists them in
+// its own entry, and each was re-observed per chain (2026-10-12, SPIKES.md section 2 and 3): 28 of 28 live builds named this router and
+// executor on BNB, Arbitrum and Polygon; the router is Sourcify-verified on each; the executor's runtime code is identical on all.
+const KYBER_ROUTER = "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5";
+const KYBER_EXECUTOR = "0x8F10B468b06c6FD214B65F87778827F7D113f996";
+const ERC8004_REGISTRY = "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432";
 
 const REGISTRY = deepFreeze({
   base: {
@@ -65,9 +72,116 @@ const REGISTRY = deepFreeze({
     erc8004Registry: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
     x402: { v1Name: "base", caip2: "eip155:8453" },
     /** What the kit's own eth_simulateV1 needs to look like this chain: block time, and the tip used when the node cannot say. */
-    simulation: { blockTimeS: 2, tipFallbackWei: 1_000_000n, prevRandao: true },
+    simulation: { blockTimeS: 2, tipFallbackWei: 1_000_000n, prevRandao: true, timedBlocks: true, zeroBaseFee: false },
     // amazon: Crossmint orders (dark until switched on); giftcards: Bitrefill's agent API takes this chain.
     features: { send: true, swap: true, x402: true, giftcards: true, register: true, checkout: true, amazon: true },
+  },
+  bnb: {
+    key: "bnb",
+    label: "BNB Chain",
+    kind: "evm",
+    viem: bsc,
+    chainId: 56,
+    caip2: "eip155:56",
+    hubName: "BNB Chain",
+    // The public endpoints that answered eth_simulateV1 on 2026-10-12 (SPIKES.md section 1). dataseed rate-limits after about ten quick
+    // calls, so a call that is turned away moves to the next one (src/rpc.js). An owner's own endpoint replaces the list.
+    rpcEnv: "SATO_AGENT_BNB_RPC",
+    rpcDefaults: ["https://bsc-dataseed.bnbchain.org", "https://bsc-dataseed1.defibit.io", "https://bsc-dataseed1.ninicoin.io", "https://bsc.drpc.org"],
+    explorer: { url: "https://bscscan.com", tx: "/tx/", address: "/address/" },
+    native: { symbol: "BNB", name: "BNB", decimals: 18, oracle: "BNB" },
+    wrappedNative: { symbol: "WBNB", name: "Wrapped BNB", address: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c", decimals: 18 },
+    // BOTH stablecoins have 18 decimals here (everywhere else 6). Neither is Circle's: the USDC is Binance-Peg, no EIP-3009, so no x402.
+    // Neither needs approve(0) first (the verified USDT source sets the allowance directly).
+    stables: {
+      USDT: { symbol: "USDT", name: "Tether USD", address: "0x55d398326f99059fF775485246999027B3197955", decimals: 18, eip3009: false },
+      USDC: { symbol: "USDC", name: "USD Coin", address: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", decimals: 18, eip3009: false },
+    },
+    defaultStable: "USDT",
+    chainlink: {
+      // BNB/USD: heartbeat 27 s, deviation 0.1%, rounds about every 33 s. Five minutes without an update is stale.
+      native: { address: "0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE", maxAgeS: 300, tolerancePct: 3 },
+      other: {},
+    },
+    kyber: { slug: "bsc", router: KYBER_ROUTER, executor: KYBER_EXECUTOR },
+    erc8004Registry: ERC8004_REGISTRY,
+    // No x402 here (owner ruling): no general facilitator, and Binance-Peg USDC cannot sign an EIP-3009 authorization.
+    x402: { v1Name: null, caip2: "eip155:56" },
+    // Blocks come every 0.45 s, so a +1 block / +2 s override is refused (-38020); the latest block's baseFeePerGas is 0 (legacy gas
+    // pricing, 0.05 gwei) and its mixHash is zero.
+    simulation: { blockTimeS: 1, tipFallbackWei: 50_000_000n, prevRandao: false, timedBlocks: false, zeroBaseFee: true },
+    features: { send: true, swap: true, x402: false, giftcards: false, register: true, checkout: true, amazon: false },
+  },
+  arbitrum: {
+    key: "arbitrum",
+    label: "Arbitrum",
+    kind: "evm",
+    viem: arbitrum,
+    chainId: 42161,
+    caip2: "eip155:42161",
+    hubName: "Arbitrum",
+    rpcEnv: "SATO_AGENT_ARBITRUM_RPC",
+    rpcDefaults: ["https://arb1.arbitrum.io/rpc", "https://arbitrum-one-rpc.publicnode.com", "https://arbitrum.drpc.org"],
+    explorer: { url: "https://arbiscan.io", tx: "/tx/", address: "/address/" },
+    native: { symbol: "ETH", name: "Ether", decimals: 18, oracle: "ETH" },
+    wrappedNative: { symbol: "WETH", name: "Wrapped Ether", address: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1", decimals: 18 },
+    // Native Circle USDC is the default. USDT here is USDT0 (symbol "USD₮0" on chain; typed USDT). The bridged USDC.e is NOT listed:
+    // it is not Circle's, and the kit never treats it as the stable.
+    stables: {
+      USDC: { symbol: "USDC", name: "USD Coin", address: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", decimals: 6, eip3009: true },
+      USDT: { symbol: "USDT", name: "Tether USD (USDT0)", address: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", decimals: 6, eip3009: true },
+    },
+    defaultStable: "USDC",
+    chainlink: {
+      // ETH/USD: heartbeat 1755 s (29 min), deviation 0.05%. Two hours matches Base's ETH feed.
+      native: { address: "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612", maxAgeS: 2 * 3600, tolerancePct: 3 },
+      other: {},
+      // L2 Sequencer Uptime feed (Chainlink's guidance for L2 prices): an answer of 1 is "down", and for graceS after it comes back up
+      // the price is not trusted. Read before every price on this chain.
+      sequencer: { address: "0xFdB631F5EE196F0ed6FAa767959853A9F217697D", graceS: 3600 },
+    },
+    kyber: { slug: "arbitrum", router: KYBER_ROUTER, executor: KYBER_EXECUTOR },
+    erc8004Registry: ERC8004_REGISTRY,
+    x402: { v1Name: "arbitrum", caip2: "eip155:42161" },
+    // Blocks of 0.25 to 0.3 s: block-number / time overrides fail here too. Base fee 0.02 gwei, tip 0.
+    simulation: { blockTimeS: 1, tipFallbackWei: 0n, prevRandao: false, timedBlocks: false, zeroBaseFee: false },
+    features: { send: true, swap: true, x402: true, giftcards: true, register: true, checkout: true, amazon: false },
+  },
+  polygon: {
+    key: "polygon",
+    label: "Polygon",
+    kind: "evm",
+    viem: polygon,
+    chainId: 137,
+    caip2: "eip155:137",
+    hubName: "Polygon",
+    // From the researched list. The first three failed their TLS handshake from the research Mac (a path problem there, retest from the
+    // deploy host); OnFinality answered but rate-limits about every second call; ZAN simulates but blocks eth_call without an account
+    // ("cu limit exceeded", which moves the call on). A keyed provider (SATO_AGENT_POLYGON_RPC) is the dependable route: swaps need
+    // eth_simulateV1 and refuse without it.
+    rpcEnv: "SATO_AGENT_POLYGON_RPC",
+    rpcDefaults: ["https://polygon-bor-rpc.publicnode.com", "https://polygon-rpc.com", "https://polygon.drpc.org", "https://polygon.api.onfinality.io/public", "https://api.zan.top/polygon-mainnet"],
+    explorer: { url: "https://polygonscan.com", tx: "/tx/", address: "/address/" },
+    native: { symbol: "POL", name: "Polygon Ecosystem Token", decimals: 18, oracle: "POL" },
+    wrappedNative: { symbol: "WPOL", name: "Wrapped Polygon Ecosystem Token", address: "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270", decimals: 18 },
+    // Native Circle USDC is the default; USDC.e (0x2791…4174, bridged) is never the stable. USDT is USDT0: no EIP-3009 here.
+    stables: {
+      USDC: { symbol: "USDC", name: "USD Coin", address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", decimals: 6, eip3009: true },
+      USDT: { symbol: "USDT", name: "Tether USD (USDT0)", address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", decimals: 6, eip3009: false },
+    },
+    defaultStable: "USDC",
+    chainlink: {
+      // The POL price is Chainlink's MATIC/USD feed (no separate POL/USD): heartbeat 27 s, deviation 0.25%. POL is thinner than ETH, so
+      // the quote may sit 5% from the feed.
+      native: { address: "0xAB594600376Ec9fD91F8e885dADF0CE036862dE0", maxAgeS: 300, tolerancePct: 5 },
+      other: {},
+    },
+    kyber: { slug: "polygon", router: KYBER_ROUTER, executor: KYBER_EXECUTOR },
+    erc8004Registry: ERC8004_REGISTRY,
+    x402: { v1Name: "polygon", caip2: "eip155:137" },
+    // Blocks of about 1.5 s on load-balanced nodes that lag: overrides fail (-38020). Base fee about 248 gwei, tip about 30 gwei.
+    simulation: { blockTimeS: 2, tipFallbackWei: 30_000_000_000n, prevRandao: false, timedBlocks: false, zeroBaseFee: false },
+    features: { send: true, swap: true, x402: true, giftcards: true, register: true, checkout: true, amazon: false },
   },
   solana: {
     key: "solana",
@@ -145,11 +259,17 @@ export const explorerAddress = (key, address) => {
 
 // ---------------------------------------------------------------- RPC
 
-/** The RPC url an EVM chain is read and written through: the owner's (rpcEnv) or the first public default. */
-export function rpcUrl(key, env = process.env) {
+/**
+ * The RPC endpoints an EVM chain is read and written through, in order: the owner's (rpcEnv: one url, or several separated by
+ * commas), else the registry's public list. src/rpc.js moves to the next one when an endpoint turns a call away.
+ */
+export function rpcUrls(key, env = process.env) {
   const c = evmChain(key);
-  return env[c.rpcEnv] || c.rpcDefaults[0];
+  const own = String(env[c.rpcEnv] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  return own.length ? own : [...c.rpcDefaults];
 }
+/** The first endpoint of `rpcUrls`. */
+export const rpcUrl = (key, env = process.env) => rpcUrls(key, env)[0];
 
 // ---------------------------------------------------------------- tokens
 
@@ -185,6 +305,12 @@ export function majorTokens(key) {
   return Object.freeze(out);
 }
 
+/** A chain's major assets as symbols, in the order prose lists them: its stables, its native coin, its wrapped native ("USDC", "ETH", "WETH"). */
+export function majorSymbols(key) {
+  const c = getChain(key);
+  return [...Object.keys(c.stables), c.native.symbol, ...(c.wrappedNative ? [c.wrappedNative.symbol] : [])];
+}
+
 /** The Chainlink feed for `asset` ("ETH", "SOL", ...) read through chain `key`: its native feed, or one of its `other` feeds. Null if none. */
 export function chainlinkFeed(key, asset) {
   const c = evmChain(key);
@@ -192,6 +318,9 @@ export function chainlinkFeed(key, asset) {
   const o = c.chainlink?.other?.[asset];
   return o ? { asset, ...o } : null;
 }
+
+/** An L2's sequencer uptime feed ({ address, graceS }), or null on a chain without one. */
+export const sequencerFeed = (key) => evmChain(key).chainlink?.sequencer ?? null;
 
 /** KyberSwap's public aggregator API on an EVM chain (used only to build the simulated sell-back leg and to presize a sale). */
 export const kyberApiBase = (key) => `https://aggregator-api.kyberswap.com/${evmChain(key).kyber.slug}/api/v1`;
@@ -206,7 +335,13 @@ export const lockName = (key, what) => `${getChain(key).key}-${what}`;
 /** Checked at load: a malformed entry stops the kit rather than being used. */
 for (const key of evmChainKeys()) {
   const c = REGISTRY[key];
-  const addrs = [c.wrappedNative.address, c.kyber.router, c.kyber.executor, c.erc8004Registry, ...Object.values(c.stables).map((s) => s.address), ...Object.values(c.chainlink.other ?? {}).map((f) => f.address), c.chainlink.native.address];
+  const addrs = [c.wrappedNative.address, c.kyber.router, c.kyber.executor, c.erc8004Registry, ...Object.values(c.stables).map((s) => s.address), ...Object.values(c.chainlink.other ?? {}).map((f) => f.address), c.chainlink.native.address, ...(c.chainlink.sequencer ? [c.chainlink.sequencer.address] : [])];
   for (const a of addrs) if (!EVM_ADDRESS.test(a)) throw new Error(`chains.js: ${key} has a malformed address ${String(a).slice(0, 50)}`);
   if (c.caip2 !== `eip155:${c.chainId}` || c.viem.id !== c.chainId || c.x402.caip2 !== c.caip2) throw new Error(`chains.js: ${key}'s chain id disagrees with its caip2 / viem chain / x402 network`);
+  if (!c.stables[c.defaultStable]) throw new Error(`chains.js: ${key}'s defaultStable is not one of its stables`);
+  // A feature that depends on a property of the default stable cannot be switched on where the stable lacks it.
+  const d = c.stables[c.defaultStable];
+  if (c.features.x402 && (d.eip3009 !== true || !c.x402.v1Name)) throw new Error(`chains.js: ${key} has x402 on, but its default stable cannot sign an EIP-3009 authorization (or it has no v1 network name)`);
+  if (c.features.giftcards && (d.symbol !== "USDC" || d.eip3009 !== true || d.decimals !== 6)) throw new Error(`chains.js: ${key} has gift cards on, but Bitrefill is paid in 6-decimal Circle USDC`);
+  if (!c.rpcDefaults.length) throw new Error(`chains.js: ${key} has no RPC endpoint`);
 }

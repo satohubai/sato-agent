@@ -7,8 +7,8 @@
 import { parseArgs } from "node:util";
 import { createHash } from "node:crypto";
 import { addressFor, addresses, initWallet, walletExists } from "../src/wallet.js";
-import { DEFAULT_EVM_CHAIN, chainKeys, chainsWith, defaultStable, evmChain, explorerAddress, getChain, isEvm, isKnownChain, labelOf, orList, pipeList, stableBySymbol, stablesOf } from "../src/chains.js";
-import { allowedChains, evaluate, isLegacySwapsOff, loadPolicy, purchasesAsk, setPolicy, swapsEnabled } from "../src/policy.js";
+import { DEFAULT_EVM_CHAIN, chainKeys, chainsWith, defaultStable, evmChain, evmChainKeys, explorerAddress, getChain, isEvm, isKnownChain, labelList, labelOf, majorSymbols, orList, pipeList, stableBySymbol, stablesOf } from "../src/chains.js";
+import { allowedChains, evaluate, evmChainFor, isLegacySwapsOff, loadPolicy, purchasesAsk, setPolicy, swapsEnabled } from "../src/policy.js";
 import { NeedsApproval, Pending, PlainError, Refused } from "../src/errors.js";
 import { VALUE_KINDS, actions, read, recordCheckEvent, spentLast24h } from "../src/ledger.js";
 import { purchaseChain, purchaseGate } from "../src/purchase.js";
@@ -16,7 +16,7 @@ import { SHIP_FIELDS, clearShipTo, isReferralName, parseReferrerInput, referrer 
 import { reportSettlement, settlementLine } from "../src/swap/referral.js";
 import { REFERRAL_SHARE_PERCENT, createReferralName, declineOffer, lookupReferralName, ownReferral, referralShow, setReferralPayout, shareTextLines, shareTexts, swapOffer, takeOffer } from "../src/referral-names.js";
 import { readFileSync } from "node:fs";
-import { assertBaseAgent, buyGiftcard, codesLine, invoiceStatus, productDetail, saveCodes, savedCodes, searchProducts } from "../src/bitrefill.js";
+import { buyGiftcard, giftcardChain, codesLine, invoiceStatus, productDetail, saveCodes, savedCodes, searchProducts } from "../src/bitrefill.js";
 import { localOrders, orderStatus, ordersAvailable, placeOrder, statusLines } from "../src/commerce.js";
 import { BUY_ACCEPTS, classifyBuy, parseEip681, parseSolanaPay, prepareSolanaPayTransaction, prepareSolanaPayTransfer } from "../src/checkout.js";
 import { consumeApproval, requestApproval } from "../src/approvals.js";
@@ -41,12 +41,27 @@ const CHAIN_PAY = pipeList(chainsWith("x402"));
 const CHAIN_BUY = pipeList(chainsWith("checkout"));
 const CHAIN_ORDER = pipeList(chainsWith("amazon"));
 const CHAIN_SET = `${CHAIN_ALL}|${chainKeys().join(",")}`; // policy set --chains: one chain, or a comma-separated list
+const CHAIN_REGISTER = pipeList(chainsWith("register"));
+const SWAP_MAJORS = chainsWith("swap").map((k) => `${orList(majorSymbols(k))} on ${labelOf(k)}`).join("; "); // "USDC, ETH or WETH on Base; …"
+// The stablecoin a send uses where it is not USDC: "USDC (USDT on BNB Chain)".
+const SEND_STABLE = `USDC${chainsWith("send").filter((k) => getChain(k).defaultStable !== "USDC").map((k) => ` (${getChain(k).defaultStable} on ${labelOf(k)})`).join("")}`;
+
+/**
+ * One line telling the owner the Base address is the address on every other EVM chain too, and what to fund it with there
+ * (empty when the registry has only one EVM chain). "  Same address on BNB Chain (USDT, a little BNB for gas), Arbitrum (…) …"
+ */
+function evmSameAddressLine() {
+  const others = evmChainKeys().filter((k) => k !== DEFAULT_EVM_CHAIN);
+  if (!others.length) return "";
+  const fund = (k) => `${labelOf(k)} (${getChain(k).defaultStable}, a little ${getChain(k).native.symbol} for gas)`;
+  return `  The Base address is the same address on ${orList(others.map(fund))}.\n`;
+}
 
 const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, with the owner's limits
 
   init                                   create this agent's own wallet (never replaces one)
   address                                the wallet address(es) for this agent's chain(s)
-  balance                                USDC + gas balance on this agent's chain(s)
+  balance                                stablecoin + gas balance on this agent's chain(s)
   policy show
   policy set --chains <${CHAIN_SET}> --per-tx <usd|none> --per-day <usd|none>
              [--allow <addr,addr> | --allow any] [--check-gate off|no|caution]
@@ -69,7 +84,7 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
                                          weekly in USDC. It does not change what the owner pays. With one set, each swap request
                                          carries it, and after a confirmed swap the kit reports the transaction to Sato Hub
                                          (once, never retried; Sato Hub keeps it private). "none" clears it
-  referral create --chain base|solana [--payout <address>] [--approve <code>]
+  referral create --chain ${CHAIN_ALL} [--payout <address>] [--approve <code>]
   referral set-payout <address> [--approve <code>]
   referral show | referral share-text
   referral offer --when setup|swap | referral decline
@@ -89,7 +104,8 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
   giftcard detail <product id>           the exact values a product can be bought for
   giftcard buy <product id> --value <n> [--refill <number>] [--wait <0-240 s>] [--approve <code>] [--dry-run]
   giftcard status <invoice id>
-                                         gift cards, eSIMs and top-ups from Bitrefill, paid in USDC on Base (x402). The price
+                                         gift cards, eSIMs and top-ups from Bitrefill, paid in USDC on ${labelList(chainsWith("giftcards"))} (x402; --chain
+                                         says which when the owner chose more than one; not on the other chains). The price
                                          card comes first; the code is shown once delivered, and kept in a private file.
                                          Paid but not delivered within --wait (default 240 s) exits 4: do not buy again.
                                          search and buy (a dry run too) sign in to Bitrefill: a sign-in message, not a payment
@@ -100,14 +116,14 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
                                          it on). Shows item, tax, shipping and total; the payment is decoded and simulated first
   checkout <solana:...|ethereum:...> [--approve <code>] [--dry-run]
   checkout --to <address> --amount <usdc> --chain ${CHAIN_SEND} [--approve <code>] [--dry-run]
-                                         pay a Solana Pay request (USDC or SOL), a USDC-on-Base payment link (EIP-681), or an
+                                         pay a Solana Pay request (USDC or SOL), a stablecoin payment link on an EVM chain (EIP-681), or an
                                          exact amount to a deposit address (a Stripe crypto deposit address)
   swap --chain ${CHAIN_SWAP} --from <asset> --to <asset> --amount <n|all> [--slippage-bps <n>] [--no-referrer] [--approve <code>] [--dry-run]
                                          (--no-referrer: leave the saved referral address out of this one swap)
-                                         swap with a major on one side: USDC, ETH or WETH on Base; USDC or SOL on Solana. The other
-                                         side can be any token, by its 0x address (Base), its mint (Solana) or a link; Sato Hub's
-                                         resolver reads a link and the chain is re-read for decimals and program. USDC <-> ETH and
-                                         USDC <-> SOL are checked against an independent price; a token has none, so its size is
+                                         swap with a major on one side: ${SWAP_MAJORS}. The other
+                                         side can be any token, by its 0x address (on --chain), its mint (Solana) or a link; Sato Hub's
+                                         resolver reads a link and the chain is re-read for decimals and program. A stablecoin <-> the
+                                         chain's coin (ETH, SOL, BNB, POL) is checked against an independent price; a token has none, so its size is
                                          measured from the quote. --amount all sells the whole balance of a token. Slippage is picked
                                          per trade (50 bps between majors, 150 with a token; --slippage-bps overrides, at most 500).
                                          A trade with high slippage, a large price impact, a poor sell-back test or an issuer power
@@ -116,16 +132,17 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
                                          what is at an address: name, decimals, program, price and liquidity (dated), a Solana token's
                                          authorities and extensions, and Sato Hub's token check. Read-only; spends nothing.
   send --chain ${CHAIN_SEND} --to <address> --amount <usdc> [--approve <code>]
-                                         send USDC (Sato Hub checks the recipient first)
+                                         send ${SEND_STABLE} (Sato Hub checks the recipient first)
   pay <url> [--chain ${CHAIN_PAY}] [--method POST --data <body> --header 'k: v' ...] [--approve <code>]
                                          pay for an x402 resource in USDC on this agent's chain (--chain is
-                                         needed when the owner chose both chains). It asks the server's price
+                                         needed when the owner chose more than one chain; x402 runs on ${labelList(chainsWith("x402"))}). It asks the server's price
                                          first (one unpaid request); the owner approves that price and payee,
                                          and a higher price at pay time is refused. A server that does not
                                          ask for payment is not paid.
   register --name <name> --description <text> [--image <url>] [--service name=endpoint ...]
-           [--x402-support] [--again | --resume <agent id>]
-                                         register in the ERC-8004 registry on Base (gas only)
+           [--x402-support] [--again | --resume <agent id>] [--chain ${CHAIN_REGISTER}]
+                                         register in the ERC-8004 registry on this agent's EVM chain (gas only; --chain is needed
+                                         when the owner chose more than one)
   check "<install command>" [--cluster mainnet-beta|devnet] [--skip-check]
                                          Solana build receipts for the npm packages in an install command (read
                                          from the chain, no call to Sato Hub), then what the install does with
@@ -319,7 +336,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
       }
       const a = initWallet();
       return out(
-        `Created this agent's wallet. Fund only the address for your chain, with what you are willing to let it spend.\n  Base:   ${a.base}  (USDC for payments, a little ETH for gas)\n  Solana: ${a.solana}  (USDC, a little SOL for fees)\nNext: \`sato-agent policy set --chains <base|solana> --per-tx <usd|none> --per-day <usd|none>\`.`,
+        `Created this agent's wallet. Fund only the address for your chain, with what you are willing to let it spend.\n  Base:   ${a.base}  (USDC for payments, a little ETH for gas)\n  Solana: ${a.solana}  (USDC, a little SOL for fees)\n${evmSameAddressLine()}Next: \`sato-agent policy set --chains <${CHAIN_SET}> --per-tx <usd|none> --per-day <usd|none>\`.`,
         { created: true, ...a },
       );
     }
@@ -537,7 +554,17 @@ async function main(command = cmd, args = positionals.slice(1)) {
       if (!input || rest.length > 1) throw new UsageError(`token <address|mint|link> [--chain ${CHAIN_ALL}]`);
       const chain = flags.chain === undefined ? undefined : flags.chain.toLowerCase();
       if (chain !== undefined && !isKnownChain(chain)) throw new UsageError(`--chain must be ${orList(chainKeys())}`);
-      const card = await describeToken(input, { chain });
+      // A bare 0x address is on the bot's own EVM chain (the owner's policy); a bot that works on several EVM chains must say which.
+      let evmHint;
+      if (chain === undefined && /^0x[0-9a-fA-F]{40}$/.test(input.trim())) {
+        try {
+          evmHint = evmChainFor(undefined);
+        } catch (err) {
+          if (err instanceof Refused) throw err;
+          throw new UsageError(`${err.message} (a 0x address is on one of them)`);
+        }
+      }
+      const card = await describeToken(input, { chain, evmChain: evmHint });
       if (flags.json) {
         // Names, symbols and resolver fields are outside text: cleaned. Sato Hub's evidence text keeps its lines (control characters dropped).
         const { sato_hub_check: hubCheck, ...rest2 } = card;
@@ -555,8 +582,16 @@ async function main(command = cmd, args = positionals.slice(1)) {
       });
       // Registration spends gas only, so it is not limit-gated, but "ask before
       // every payment" covers it too.
+      // The chain: `--chain`, else the owner's one EVM chain that has an ERC-8004 registry (a bot on two says which).
+      let regChain;
+      try {
+        regChain = evmChainFor(flags.chain, "register");
+      } catch (err) {
+        if (err instanceof Refused) throw err;
+        throw new UsageError(err.message);
+      }
       if (loadPolicy()?.approval === "ask") {
-        const intent = { cmd: "register", name: flags.name ?? null, description: flags.description ?? null, image: flags.image ?? null, services, x402_support: Boolean(flags["x402-support"]), again: Boolean(flags.again), resume: flags.resume ?? null };
+        const intent = { cmd: "register", ...(regChain === DEFAULT_EVM_CHAIN ? {} : { chain: regChain }), name: flags.name ?? null, description: flags.description ?? null, image: flags.image ?? null, services, x402_support: Boolean(flags["x402-support"]), again: Boolean(flags.again), resume: flags.resume ?? null };
         if (!flags.approve) throw new NeedsApproval(intent, await requestApproval(intent));
         await consumeApproval(flags.approve, intent);
       }
@@ -568,9 +603,9 @@ async function main(command = cmd, args = positionals.slice(1)) {
         x402Support: Boolean(flags["x402-support"]),
         again: flags.again,
         resume: flags.resume,
-        chain: DEFAULT_EVM_CHAIN,
+        chain: regChain,
       });
-      return out(`Registered as ERC-8004 agent ${r.agent_id} on ${labelOf(DEFAULT_EVM_CHAIN)} (${r.registry}), registration file stored onchain.\n  ${r.explorer}`, r);
+      return out(`Registered as ERC-8004 agent ${r.agent_id} on ${labelOf(regChain)} (${r.registry}), registration file stored onchain.\n  ${r.explorer}`, r);
     }
     case "check": {
       const command = rest.join(" ");
@@ -733,11 +768,12 @@ async function main(command = cmd, args = positionals.slice(1)) {
         if (!flags.approve) throw new NeedsApproval(intent, await requestApproval(intent, { ledgerIntent }));
         await consumeApproval(flags.approve, intent);
       };
-      const usage = "referral create --chain base|solana [--payout <address>] | referral set-payout <address> | referral show | referral share-text | referral offer --when setup|swap | referral decline";
+      const usage = `referral create --chain ${CHAIN_ALL} [--payout <address>] | referral set-payout <address> | referral show | referral share-text | referral offer --when setup|swap | referral decline`;
       if (sub === "create") {
         if (rest.length > 1) throw new UsageError(usage);
         const chain = (flags.chain || "").toLowerCase();
-        if (!["base", "solana"].includes(chain)) throw new UsageError("referral create --chain base|solana [--payout <address>]");
+        // Any EVM chain signs with the same key, so it is the same name and the same payout class (base): the chain only says which wallet.
+        if (!isKnownChain(chain)) throw new UsageError(`referral create --chain ${CHAIN_ALL} [--payout <address>]`);
         const r = await createReferralName({ chain, payout: flags.payout }, { authorize: authorizePayout });
         const texts = shareTexts(r.name);
         const where = r.payout
@@ -866,27 +902,26 @@ async function main(command = cmd, args = positionals.slice(1)) {
       if (sub === "search") {
         const q = rest.slice(1).join(" ");
         if (!q) throw new UsageError("giftcard search <words> [--country US] [--kind giftcard|esim|topup]");
-        assertBaseAgent();
-        const list = await searchProducts(q, { country: flags.country, kind: flags.kind ?? "giftcard" });
+        const gc = giftcardChain(flags.chain); // Base, Arbitrum or Polygon; a bot that cannot buy cards here is told so (exit 3)
+        const list = await searchProducts(q, { country: flags.country, kind: flags.kind ?? "giftcard" }, { chain: gc });
         // The values on offer for the first few in-stock results, so the next step picks a value that exists.
         let looked = 0;
         for (const p of list) {
           if (!p.in_stock || looked >= 3) continue;
           looked++;
           try {
-            p.values = (await productDetail(p.slug)).packages.map((x) => x.value);
+            p.values = (await productDetail(p.slug, { chain: gc })).packages.map((x) => x.value);
           } catch {
             p.values = null;
           }
         }
         const line = (p) => `  ${p.slug.padEnd(28)} ${p.name}${p.country ? ` (${p.country})` : ""}${p.in_stock ? "" : " (out of stock)"}${p.values?.length ? `\n${" ".repeat(31)}values: ${p.values.join(", ")}` : ""}`;
-        return out(list.length ? `Bitrefill (paid in USDC on Base; product id, then name):\n${list.map(line).join("\n")}\nNext: \`giftcard buy <product id> --value <one of its values>\` (\`giftcard detail <product id>\` lists the values; the price is shown before anything is paid).` : "Bitrefill found nothing for that.", { products: list });
+        return out(list.length ? `Bitrefill (paid in USDC on ${labelOf(gc)}; product id, then name):\n${list.map(line).join("\n")}\nNext: \`giftcard buy <product id> --value <one of its values>\` (\`giftcard detail <product id>\` lists the values; the price is shown before anything is paid).` : "Bitrefill found nothing for that.", { products: list });
       }
       if (sub === "detail") {
         const product = rest[1];
         if (!product || rest.length > 2) throw new UsageError("giftcard detail <product id>");
-        assertBaseAgent();
-        const d = await productDetail(product);
+        const d = await productDetail(product, { chain: giftcardChain(flags.chain) });
         const lines = [`${d.name} (${d.id})${d.in_stock ? "" : " (out of stock)"}`, `values: ${d.packages.map((p) => `${p.value}${p.currency ? ` ${p.currency}` : ""}`).join(", ") || "none right now"}`, ...(d.recipient_required ? ["needs --refill <the number or account it goes to>"] : []), `Next: \`giftcard buy ${d.id} --value <one of the values>\` (the price is shown before anything is paid).`];
         return out(lines.join("\n"), d);
       }
@@ -898,13 +933,13 @@ async function main(command = cmd, args = positionals.slice(1)) {
           if (!/^\d+$/.test(flags.wait) || Number(flags.wait) > 240) throw new UsageError("--wait must be a whole number of seconds from 0 to 240");
           waitS = Number(flags.wait);
         }
-        const r = await buyGiftcard({ product, value: flags.value, refill: flags.refill, approve: flags.approve, dryRun: Boolean(flags["dry-run"]) }, waitS === undefined ? {} : { waitMs: waitS * 1000 });
+        const r = await buyGiftcard({ product, value: flags.value, refill: flags.refill, approve: flags.approve, dryRun: Boolean(flags["dry-run"]), chain: flags.chain }, waitS === undefined ? {} : { waitMs: waitS * 1000 });
         if (r.dry_run) return out(`${r.card.join("\n")}\nDRY RUN: nothing was paid and no payment was signed (the kit did sign in to Bitrefill: a sign-in message, not a payment). Bitrefill holds an unpaid invoice for the price above; it expires on its own.`, r);
         // A payment is signed from here on: whatever happens below ends as exit 4 ("do not buy again"), never exit 1.
         const notYet = `Paid, not delivered yet — do not buy again; check with \`giftcard status ${r.invoice_id}\`.`;
         try {
           const p = r.payment;
-          const paid = p.settled ? `Paid ${p.usd} USDC on Base to Bitrefill.\n  ${p.explorer}` : `Signed a payment of ${p.usd} USDC on Base to Bitrefill (HTTP ${p.status}), with no settlement receipt yet. It stays counted against the limits.${p.explorer ? `\n  Check: ${p.explorer}` : ""}`;
+          const paid = p.settled ? `Paid ${p.usd} USDC on ${labelOf(r.chain)} to Bitrefill.\n  ${p.explorer}` : `Signed a payment of ${p.usd} USDC on ${labelOf(r.chain)} to Bitrefill (HTTP ${p.status}), with no settlement receipt yet. It stays counted against the limits.${p.explorer ? `\n  Check: ${p.explorer}` : ""}`;
           const st = r.delivery;
           const delivered = Boolean(st?.state === "delivered" && st.codes?.length);
           // No code in hand, or a code that could not be kept: exit 4, so nothing retries the purchase and pays twice.
@@ -918,7 +953,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
               : st?.state === "delivered"
                 ? `${notYet} Bitrefill says it is delivered but sent no code yet.`
                 : notYet;
-          if (flags.json) return out("", { invoice_id: r.invoice_id, product: r.product, value: r.value, price_usdc: r.price_usdc, payment: { ...p, body: undefined }, delivery: { state: st?.state, invoice_status: st?.invoice_status, delivery_status: st?.delivery_status }, codes_file: r.codes_path, ...(r.codes_save_error ? { codes_save_error: r.codes_save_error } : {}), ...(delivered ? { secret_codes: st.codes } : {}) });
+          if (flags.json) return out("", { invoice_id: r.invoice_id, chain: r.chain, product: r.product, value: r.value, price_usdc: r.price_usdc, payment: { ...p, body: undefined }, delivery: { state: st?.state, invoice_status: st?.invoice_status, delivery_status: st?.delivery_status }, codes_file: r.codes_path, ...(r.codes_save_error ? { codes_save_error: r.codes_save_error } : {}), ...(delivered ? { secret_codes: st.codes } : {}) });
           // The code is the last line of the output, and the only place it is printed.
           console.log([...r.card, paid, deliveryText, ...(delivered ? [codesLine(st.codes)] : [])].join("\n"));
         } catch (err) {
@@ -930,8 +965,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
       if (sub === "status") {
         const invoice = rest[1];
         if (!invoice || rest.length > 2) throw new UsageError("giftcard status <invoice id>");
-        assertBaseAgent();
-        const st = await invoiceStatus(invoice);
+        const st = await invoiceStatus(invoice, { chain: giftcardChain(flags.chain) });
         let codes = st.state === "delivered" && st.codes.length ? st.codes : null;
         if (codes && !savedCodes(invoice)) {
           try {

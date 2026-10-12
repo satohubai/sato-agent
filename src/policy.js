@@ -18,7 +18,8 @@ import { isAddress as isEvmAddress } from "viem";
 import { isAddress as isSolanaAddress } from "@solana/kit";
 import { paths, readJson, writePrivate } from "./store.js";
 import { entries, recordPolicyChange } from "./ledger.js";
-import { chainKeys } from "./chains.js";
+import { DEFAULT_EVM_CHAIN, chainKeys, chainsWith, evmChainKeys, hasFeature, isEvm, labelList, labelOf, orList } from "./chains.js";
+import { Refused } from "./errors.js";
 
 export { Refused } from "./errors.js";
 
@@ -205,6 +206,31 @@ export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, a
 
 /** The chains this policy allows (a v1 policy with no `chains` allows both). */
 export const allowedChains = (policy) => (policy && Array.isArray(policy.chains) ? policy.chains : LEGACY_CHAINS);
+
+/**
+ * Which EVM chain a command is about when the owner may have chosen several: `requested` (`--chain`) if given, else the owner's one
+ * EVM chain that has `feature` (a registry feature: "register", "swap", ...; none = any EVM chain). A bot that works on two EVM
+ * chains must say which; one that works on no EVM chain, or has no policy yet, gets the default (Base), as in v0.3.
+ * Throws a plain Error (a usage problem) or Refused (the owner's choices, or the chain, rule it out).
+ */
+export function evmChainFor(requested, feature, policy = loadPolicy()) {
+  const has = (k) => isEvm(k) && (feature === undefined || hasFeature(k, feature));
+  const chains = policy && Array.isArray(policy.chains) ? policy.chains : null;
+  const wanted = requested === undefined || requested === null ? undefined : String(requested).toLowerCase();
+  if (wanted !== undefined) {
+    if (!isEvm(wanted)) throw new Error(`--chain must be ${orList(evmChainKeys())} here`);
+    if (!has(wanted)) throw new Refused([{ rule: "chain_no_feature", limit: chainsWith(feature), observed: wanted, message: `${feature} is not available on ${labelOf(wanted)}; it works on ${labelList(chainsWith(feature).filter(isEvm))}` }]);
+    if (chains && !chains.includes(wanted)) throw new Refused([{ rule: "chain_not_allowed", limit: chains, observed: wanted, message: `this agent is set to work on ${chains.join(" and ")} only` }]);
+    return wanted;
+  }
+  if (!chains) return DEFAULT_EVM_CHAIN;
+  const mine = chains.filter(isEvm);
+  const usable = mine.filter(has);
+  if (usable.length === 1) return usable[0];
+  if (usable.length > 1) throw new Error(`this agent works on ${labelList(usable)}: say which with --chain ${usable.join("|")}`);
+  if (mine.length) throw new Refused([{ rule: "chain_no_feature", limit: chainsWith(feature), observed: mine, message: `${feature} is not available on ${labelList(mine)}; it works on ${labelList(chainsWith(feature).filter(isEvm))}` }]);
+  return DEFAULT_EVM_CHAIN; // an agent with no EVM chain: the command's own check says so
+}
 
 /**
  * Check one spend against the limits. Returns the refusals (empty = allowed).

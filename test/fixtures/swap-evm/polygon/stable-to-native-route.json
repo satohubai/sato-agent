@@ -1,0 +1,71 @@
+{
+ "code": 0,
+ "message": "successfully",
+ "data": {
+  "routeSummary": {
+   "tokenIn": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+   "amountIn": "10000000",
+   "amountInUsd": "10.03239116845711",
+   "tokenOut": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+   "amountOut": "96183853558055698432",
+   "amountOutUsd": "10.009684456084905",
+   "gas": "330498",
+   "gasPrice": "280764708831",
+   "gasUsd": "0.009656718407242184",
+   "l1FeeUsd": "0",
+   "extraFee": {
+    "feeAmount": "15",
+    "chargeFeeBy": "currency_in",
+    "isInBps": true,
+    "feeReceiver": "0xcee53eb001d4d1743ef9df333dcf45bc38622be9"
+   },
+   "route": [
+    [
+     {
+      "pool": "0xb6e57ed85c4c9dbfef2a68711e9d6f36c56e0fcb",
+      "tokenIn": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+      "tokenOut": "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270",
+      "swapAmount": "9985000",
+      "amountOut": "96183853558055698432",
+      "exchange": "uniswapv3",
+      "poolType": "uniswapv3",
+      "poolExtra": {
+       "swapFee": 500,
+       "priceLimit": "1461300573427867316570072651998408279850435624080",
+       "blockNumber": 95385179
+      },
+      "extra": {
+       "_cs": "12341498587405963469",
+       "_ss": {
+        "pool": "0x6d9e8dbb2779853db00418d4dcf96f3987cfc9d2",
+        "tokenIn": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+        "tokenOut": "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270",
+        "swapAmount": "9985000",
+        "amountOut": "94169464689800975313",
+        "exchange": "quickswap",
+        "poolType": "uniswap-v2",
+        "poolExtra": {
+         "fee": 3,
+         "feePrecision": 1000,
+         "blockNumber": 95384795
+        },
+        "extra": null
+       },
+       "_ts": "1791783069",
+       "nSqrtRx96": "25521122427061793419783",
+       "nT": -298982,
+       "rAI": "0",
+       "ri": "b7441db7dtpG1IXZ"
+      }
+     }
+    ]
+   ],
+   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+   "routeID": "b7441db7dtpG1IXZ",
+   "checksum": "12341498587405963469",
+   "timestamp": 1791783069
+  },
+  "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
+ },
+ "requestId": "b7441db7-76da-46d4-85d9-22f0b06f9833"
+}

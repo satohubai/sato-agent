@@ -1,0 +1,88 @@
+{
+ "code": 0,
+ "message": "successfully",
+ "data": {
+  "routeSummary": {
+   "tokenIn": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+   "amountIn": "20000000000000000000",
+   "amountInUsd": "2.081364820768623",
+   "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+   "amountOut": "2079194",
+   "amountOutUsd": "2.085926954430647",
+   "gas": "426201",
+   "gasPrice": "280764708831",
+   "gasUsd": "0.01245303463828836",
+   "l1FeeUsd": "0",
+   "extraFee": {
+    "feeAmount": "15",
+    "chargeFeeBy": "currency_in",
+    "isInBps": true,
+    "feeReceiver": "0xcee53eb001d4d1743ef9df333dcf45bc38622be9"
+   },
+   "route": [
+    [
+     {
+      "pool": "0x5e58e0ced3a272caeb8ba00f4a4c2805df6be495",
+      "tokenIn": "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270",
+      "tokenOut": "0x2791bca1f2de4661ed88a30c99a7a9449aa84174",
+      "swapAmount": "19970000000000000000",
+      "amountOut": "2079244",
+      "exchange": "jetswap",
+      "poolType": "uniswap-v2",
+      "poolExtra": {
+       "fee": 1,
+       "feePrecision": 1000,
+       "blockNumber": 95384740
+      },
+      "extra": {
+       "_cs": "9716794092010503861",
+       "_ts": "1791783063",
+       "ri": "f311e162bgJOo6Ta"
+      }
+     },
+     {
+      "pool": "0x7bcd99ae248e86ecab7a5b23451d73825117f54d",
+      "tokenIn": "0x2791bca1f2de4661ed88a30c99a7a9449aa84174",
+      "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+      "swapAmount": "2079244",
+      "amountOut": "2079194",
+      "exchange": "ramses-v3",
+      "poolType": "ramses-v2",
+      "poolExtra": {
+       "swapFee": 14,
+       "priceLimit": "74733970120164610881392692080",
+       "blockNumber": 95385135
+      },
+      "extra": {
+       "_ss": {
+        "pool": "0x105825f35b3b3d45c527e0a5ce01a8d9f34e9be5",
+        "tokenIn": "0x2791bca1f2de4661ed88a30c99a7a9449aa84174",
+        "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+        "swapAmount": "2079244",
+        "amountOut": "2079199",
+        "exchange": "dodo-dpp",
+        "poolType": "dodo-dpp",
+        "poolExtra": {
+         "type": "DPP",
+         "baseToken": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+         "quoteToken": "0x2791bca1f2de4661ed88a30c99a7a9449aa84174",
+         "blockNumber": 95385124
+        },
+        "extra": null
+       },
+       "nSqrtRx96": "79227663137681359536863572633",
+       "nT": -1,
+       "rAI": "0"
+      }
+     }
+    ]
+   ],
+   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+   "routeID": "f311e162bgJOo6Ta",
+   "checksum": "9716794092010503861",
+   "timestamp": 1791783063
+  },
+  "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
+ },
+ "requestId": "f311e162-6e02-4ea3-a4da-dbdc6fd1d751"
+}

@@ -20,7 +20,7 @@ import {
 } from "viem";
 import { usdcUnits, unitsToUsd } from "./amount.js";
 import { DEFAULT_EVM_CHAIN, defaultStable, evmChain, explorerTx, lockName, stableBySymbol } from "./chains.js";
-import { chainTransport, hostsTried } from "./rpc.js";
+import { chainTransport, sendAttempts } from "./rpc.js";
 import { CHAINS_USAGE, allowedChains, loadPolicy } from "./policy.js";
 import { entries, record, release, reserve } from "./ledger.js";
 import { Pending, Rejected } from "./errors.js";
@@ -119,11 +119,11 @@ export async function signAndSend(c, { to, data, value = 0n, gas, nonce }, onSig
         await c.pub.sendRawTransaction({ serializedTransaction: signedTx });
       } catch (err) {
         const msg = `${err.shortMessage || ""} ${err.details || ""} ${err.message || ""}`;
-        // A send that reached more than one endpoint (the first turned it away with a rate limit or no connection) cannot say that
-        // a "nonce too low" or an "already known" is a refusal: an earlier endpoint may have passed ours on and it landed. Pending.
-        const multiHost = hostsTried(err) > 1;
+        // A send attempted more than once in total (another endpoint, or the same one again) cannot say that a "nonce too low" or an
+        // "already known" is a refusal: an earlier attempt may have landed and this is the answer to the repeat. Pending.
+        const repeated = sendAttempts(err) > 1;
         // "already known" means the node already has it: treat as sent, not rejected.
-        if (!multiHost && DEFINITE_REJECTION.test(msg) && !/already known/i.test(msg)) throw new Rejected(`the node refused ${h}: ${err.shortMessage || err.message}`);
+        if (!repeated && DEFINITE_REJECTION.test(msg) && !/already known/i.test(msg)) throw new Rejected(`the node refused ${h}: ${err.shortMessage || err.message}`);
         throw new Pending(`broadcast of ${h} reported an error (${err.shortMessage || err.message}).`, { tx: h, explorer: explorer(chain, h), counted });
       }
       return { signed: signedTx, hash: h, sentNonce: prepared.nonce };

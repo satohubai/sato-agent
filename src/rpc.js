@@ -12,8 +12,9 @@
 //            A timeout, a 5xx or a dropped connection after the request left may mean the node took the transaction; those are thrown
 //            as they are, and the caller's "do not retry" handling applies.
 // A node's real answer to a send (a revert, "nonce too low") is never retried: it is the answer. And because a send that has touched
-// more than one endpoint may have landed on the first, the error carries how many it touched (`hostsTried`), and the caller reads
-// "nonce too low" or "already known" after more than one as "may have landed" (Pending), never as a refusal (src/base.js).
+// more than once (on another endpoint, or the same one) may have landed the first time, the error carries how many attempts it made
+// (`sendAttempts`), and the caller reads a refusal ("nonce too low", "already known") after more than one as "may have landed"
+// (Pending), never as a refusal (src/base.js). A send is also never retried by viem itself, with one endpoint or several.
 //
 // WHICH CHAIN. Before an endpoint is first used it is asked `eth_chainId` once, and one that answers with another chain is skipped
 // (a mislabelled or hijacked URL, or an owner's SATO_AGENT_<CHAIN>_RPC pointing at the wrong network). If none answers with this
@@ -68,16 +69,22 @@ export function isRetryable(err, method) {
   return typeof code === "number" || /Rpc|Http|Unknown|Internal/.test(err?.name ?? "");
 }
 
-/** How many endpoints a failed SEND touched, read off the error or its causes (0 when it carries none). */
-export function hostsTried(err) {
+/**
+ * How many times a failed SEND was attempted in total (one per endpoint it reached; viem never re-sends it), read off the error or its
+ * causes (0 when it carries none). More than one means an earlier attempt may have landed.
+ */
+export function sendAttempts(err) {
   let n = 0;
-  for (let e = err, i = 0; e && i < 8; e = e.cause, i++) if (typeof e.satoHostsTried === "number") n = Math.max(n, e.satoHostsTried);
+  for (let e = err, i = 0; e && i < 8; e = e.cause, i++) if (typeof e.satoSendAttempts === "number") n = Math.max(n, e.satoSendAttempts);
   return n;
 }
 
-const markTried = (err, n) => {
+/** The name this had before it counted same-endpoint repeats too. */
+export const hostsTried = sendAttempts;
+
+const markAttempts = (err, n) => {
   try {
-    Object.defineProperty(err, "satoHostsTried", { value: n, configurable: true, enumerable: false });
+    Object.defineProperty(err, "satoSendAttempts", { value: n, configurable: true, enumerable: false });
   } catch {
     // a frozen or primitive error: it simply carries no count
   }
@@ -116,9 +123,12 @@ export function rotatingTransport(urls, { timeout = RPC_TIMEOUT_MS, headers = { 
   // client built from this transport, so the check runs once per endpoint, not once per client.
   const checked = new Map();
   return ({ chain, retryCount: _ignored, timeout: t }) => {
-    // With several endpoints the next one is the retry. A single endpoint (an owner's own) keeps viem's own retries, as in v0.3.
+    // READS: with several endpoints the next one is the retry; a single endpoint (an owner's own) keeps viem's own retries, as in v0.3.
     const own = urls.length > 1 ? { retryCount: 0 } : {};
     const parts = urls.map((u) => http(u, { timeout: t ?? timeout, ...own, fetchFn: fetchKeepingRateLimit, fetchOptions: { headers } })({ chain, ...own, timeout: t ?? timeout }));
+    // SENDS never use viem's retries, whatever the number of endpoints: viem re-sends on a timeout, a 5xx or -32603, and a first send
+    // that landed would then answer the second with "nonce too low" (a landed payment reported as refused). One attempt per endpoint.
+    const sendParts = urls.map((u) => http(u, { timeout: t ?? timeout, retryCount: 0, fetchFn: fetchKeepingRateLimit, fetchOptions: { headers } })({ chain, retryCount: 0, timeout: t ?? timeout }));
     let current = 0;
 
     /** Throws WrongNetwork for an endpoint on another chain; any other failure is the endpoint's (and is read-retryable). */
@@ -165,17 +175,17 @@ export function rotatingTransport(urls, { timeout = RPC_TIMEOUT_MS, headers = { 
             }
             touched++;
             try {
-              const out = await parts[at].request(req);
+              const out = await (isSend ? sendParts : parts)[at].request(req);
               current = at;
               return out;
             } catch (err) {
               last = err;
-              if (isSend) markTried(err, touched);
+              if (isSend) markAttempts(err, touched);
               if (!isRetryable(err, req.method)) throw err;
             }
           }
           if (wrong === parts.length) throw new WrongNetwork(`none of this chain's RPC endpoints answers as ${chain?.name ?? chain?.id} (${chain?.id}); nothing was read or sent. ${last.message}`);
-          if (isSend && last && touched) markTried(last, touched);
+          if (isSend && last && touched) markAttempts(last, touched);
           throw last;
         },
       },

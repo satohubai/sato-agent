@@ -224,9 +224,14 @@ export async function exactGasLimit(c, chain, tx, floor, { deps = {}, what = "tr
   let last;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const est = await c.pub.estimateGas({ account: c.account, to: tx.to, data: tx.data, ...(tx.value ? { value: BigInt(tx.value) } : {}) });
-      return BigInt(est) > floor ? BigInt(est) : floor;
+      const est = BigInt(await c.pub.estimateGas({ account: c.account, to: tx.to, data: tx.data, ...(tx.value ? { value: BigInt(tx.value) } : {}) }));
+      // An estimate is a node's word: one above the chain's ceiling is refused, not signed (a hostile node could otherwise name any limit).
+      if (est > spec.simulation.maxGas) {
+        throw new Refused([refusal("gas_estimate_too_high", `the node estimates ${est} gas for this ${what} on ${spec.label}, above the ${spec.simulation.maxGas} this kit ever signs a transaction with; nothing was signed`, spec.simulation.maxGas.toString(), est.toString())]);
+      }
+      return est > floor ? est : floor;
     } catch (err) {
+      if (err instanceof Refused) throw err; // the ceiling is final: asking again would not change it
       last = err;
       if (attempt < 2) await new Promise((r) => setTimeout(r, wait));
     }

@@ -481,6 +481,24 @@ test("Arbitrum: a node that will not estimate is a refusal and nothing is signed
   assert.deepEqual([row.status, row.reason], ["failed", "failed before broadcast"], "the reservation was released: nothing went out, so it no longer counts against the limits");
 });
 
+test("Arbitrum: an estimate above the chain's ceiling (10M) is refused, not signed; exactly the ceiling is allowed", async () => {
+  assert.deepEqual(["base", "bnb", "arbitrum", "polygon"].map((k) => evmChain(k).simulation.maxGas), [4_000_000n, 4_000_000n, 10_000_000n, 10_000_000n]);
+  const high = await arbitrumRun({ estimate: () => 10_000_001n });
+  assert.ok(high.error instanceof Refused, high.error?.stack);
+  assert.equal(high.error.refusals[0].rule, "gas_estimate_too_high");
+  assert.deepEqual([high.error.refusals[0].limit, high.error.refusals[0].observed], ["10000000", "10000001"]);
+  assert.equal(high.state.sent.length, 0, "nothing was signed");
+  assert.equal(high.state.estimated.length, 1, "a ceiling is final: no second try");
+  // a swap estimate over the ceiling after the approval: the swap is not sent and the approval is set back
+  const swapHigh = await arbitrumRun({ estimate: (args) => (args.data.startsWith(APPROVE_SELECTOR) ? 120_000n : 50_000_000n) });
+  assert.equal(swapHigh.error.refusals[0].rule, "gas_estimate_too_high");
+  assert.equal(swapHigh.state.sent.length, 2, "the approval, then its reset; never the swap");
+  assert.ok(isReset(swapHigh.state.sent[1].data));
+  const exact = await arbitrumRun({ estimate: (args) => (args.data.startsWith(APPROVE_SELECTOR) ? 120_000n : 10_000_000n) });
+  assert.equal(exact.error, undefined, exact.error?.stack);
+  assert.equal(exact.state.sent[1].gas, 10_000_000n);
+});
+
 test("Arbitrum: the reset carries its estimate; a reset the node will not estimate still goes out, with a generous fixed limit", async () => {
   // swap succeeds but leaves its allowance (no `spends`): the kit sets it back to 0
   const est = await arbitrumRun({ spends: false, estimate: (args) => (isReset(args.data) ? 180_000n : args.data.startsWith(APPROVE_SELECTOR) ? 300_000n : 4_000_000n), receipts: ["success", { status: "success", logs: [] }, "success"] });
@@ -540,7 +558,7 @@ test("signAndSend: 'nonce too low' / 'already known' after more than one endpoin
   const attempt = async (message, hosts, nested = false) => {
     const { c } = fakeChain({ address: SENDER, chainKey: "bnb" });
     c.pub.sendRawTransaction = async () => {
-      const inner = Object.assign(new Error(message), { shortMessage: message, details: message, ...(hosts === undefined ? {} : { satoHostsTried: hosts }) });
+      const inner = Object.assign(new Error(message), { shortMessage: message, details: message, ...(hosts === undefined ? {} : { satoSendAttempts: hosts }) });
       throw nested ? Object.assign(new Error("viem wrapped it"), { cause: inner }) : inner;
     };
     return baseMod.signAndSend(c, { to, data: "0x" }, undefined, { chain: "bnb" }).then(() => null, (e) => e);

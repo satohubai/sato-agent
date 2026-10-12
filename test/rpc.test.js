@@ -7,7 +7,7 @@ import test, { after } from "node:test";
 import { freshHome } from "./helpers.js";
 
 freshHome();
-const { isRetryable, rotatingTransport, chainTransport, hostsTried } = await import("../src/rpc.js");
+const { isRetryable, rotatingTransport, chainTransport, sendAttempts } = await import("../src/rpc.js");
 const { rpcUrls } = await import("../src/chains.js");
 const { createPublicClient } = await import("viem");
 const { bsc } = await import("viem/chains");
@@ -182,21 +182,65 @@ test("a SEND is not moved on for a rate-limit WORD on a 200 or a 400; it is for 
   assert.equal(await client([(await node(wordOnly(-32000, 429))).url, next.url]).sendRawTransaction({ serializedTransaction: raw }), `0x${"ab".repeat(32)}`);
 });
 
-test("a failed send says how many endpoints it touched (hostsTried), through viem's own wrapping", async () => {
+test("a failed send says how many attempts it made (sendAttempts), through viem's own wrapping", async () => {
   const raw = "0x02f86c";
   const nonceLow = (m) => (m === "eth_chainId" ? { result: "0x38" } : { body: { jsonrpc: "2.0", error: { code: -32000, message: "nonce too low" } } });
   const limited = (m) => (m === "eth_chainId" ? { result: "0x38" } : rateLimited);
   // one endpoint answered: one touched
   const one = await client([(await node(nonceLow)).url]).sendRawTransaction({ serializedTransaction: raw }).then(() => null, (e) => e);
-  assert.equal(hostsTried(one), 1);
+  assert.equal(sendAttempts(one), 1);
   // the first turned the send away with a 429, the second said "nonce too low": two touched
   const two = await client([(await node(limited)).url, (await node(nonceLow)).url]).sendRawTransaction({ serializedTransaction: raw }).then(() => null, (e) => e);
   assert.match(String(two?.message), /nonce too low/);
-  assert.equal(hostsTried(two), 2);
+  assert.equal(sendAttempts(two), 2);
   // every endpoint rate limited: all of them touched
   const all = await client([(await node(limited)).url, (await node(limited)).url]).sendRawTransaction({ serializedTransaction: raw }).then(() => null, (e) => e);
-  assert.equal(hostsTried(all), 2);
-  assert.equal(hostsTried(new Error("not from the transport")), 0);
+  assert.equal(sendAttempts(all), 2);
+  assert.equal(sendAttempts(new Error("not from the transport")), 0);
+});
+
+test("a send is attempted exactly once per endpoint: viem's own retries never re-send it (one endpoint, or two)", async () => {
+  // The first answer arrives after the client's timeout, and the node DID take the transaction: a re-send would meet "nonce too low".
+  const mk = async () => {
+    const state = { sends: 0 };
+    const server = await node((m) => {
+      if (m !== "eth_sendRawTransaction") return { result: "0x1" };
+      state.sends++;
+      if (state.sends === 1) return { hang: true }; // taken, never answered in time
+      return { body: { jsonrpc: "2.0", error: { code: -32000, message: "nonce too low" } } };
+    });
+    return { state, server };
+  };
+  for (const extra of [[], [await deadUrl()]]) {
+    const n = await mk();
+    const err = await client([n.server.url, ...extra], 300).sendRawTransaction({ serializedTransaction: "0x02f86c" }).then(() => null, (e) => e);
+    assert.ok(err, "the timeout is thrown");
+    assert.equal(n.state.sends, 1, `${extra.length + 1} endpoint(s): the node received the send exactly once`);
+    assert.doesNotMatch(String(err.message), /nonce too low/);
+    assert.equal(sendAttempts(err), 1);
+  }
+  // a READ on a single endpoint still keeps viem's retries (v0.3)
+  let reads = 0;
+  const flakyRead = await node((m) => (m === "eth_blockNumber" ? (++reads < 3 ? { status: 503, body: { error: "busy" } } : { result: "0x7" }) : {}));
+  assert.equal(await client([flakyRead.url]).request({ method: "eth_blockNumber" }), "0x7");
+});
+
+test("signAndSend over a single endpoint whose send times out after the node took it: Pending (exit 4), one send, never Rejected", async () => {
+  const { fakeChain } = await import("./swap-evm-helpers.js");
+  const { Pending } = await import("../src/errors.js");
+  const { signAndSend } = await import("../src/base.js");
+  const state = { sends: 0 };
+  const server = await node((m) => {
+    if (m !== "eth_sendRawTransaction") return { result: "0x1" };
+    state.sends++;
+    return state.sends === 1 ? { hang: true } : { body: { jsonrpc: "2.0", error: { code: -32000, message: "nonce too low" } } };
+  });
+  const { c } = fakeChain({ address: "0x20FE51A9229EEf2cF8Ad9E89d91CAb9312cF3b7A", chainKey: "bnb" });
+  const pub = client([server.url], 300);
+  c.pub.sendRawTransaction = (a) => pub.sendRawTransaction(a);
+  const err = await signAndSend(c, { to: "0x000000000000000000000000000000000000dEaD", data: "0x" }, undefined, { chain: "bnb" }).then(() => null, (e) => e);
+  assert.ok(err instanceof Pending, `${err?.constructor?.name}: ${err?.message}`);
+  assert.equal(state.sends, 1);
 });
 
 // ------------------------------------------------------------------ the chain id check

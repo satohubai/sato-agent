@@ -4,15 +4,15 @@
  "data": {
   "routeSummary": {
    "tokenIn": "0x912ce59144191c1204e64559fe8253a0e49e6548",
-   "amountIn": "50188153626674520064",
-   "amountInUsd": "9.931576070567647",
+   "amountIn": "51771322693455003733",
+   "amountInUsd": "9.933603843577236",
    "tokenOut": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-   "amountOut": "9924185",
-   "amountOutUsd": "9.932311471723084",
+   "amountOut": "9916085",
+   "amountOutUsd": "9.934960676015443",
    "gas": "330498",
-   "gasPrice": "20016000",
-   "gasUsd": "0.016944851240182177",
-   "l1FeeUsd": "0.00016431653253572186",
+   "gasPrice": "20014000",
+   "gasUsd": "0.016730138152991215",
+   "l1FeeUsd": "0.00013612165428018215",
    "extraFee": {
     "feeAmount": "",
     "chargeFeeBy": "",
@@ -22,51 +22,51 @@
    "route": [
     [
      {
-      "pool": "0xb0f6ca40411360c03d41c5ffc5f179b8403cdcf8",
+      "pool": "0x9ffca51d23ac7f7df82da414865ef1055e5afcc3",
       "tokenIn": "0x912ce59144191c1204e64559fe8253a0e49e6548",
       "tokenOut": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-      "swapAmount": "50188153626674520064",
-      "amountOut": "9924185",
-      "exchange": "uniswapv3",
-      "poolType": "uniswapv3",
+      "swapAmount": "51771322693455003733",
+      "amountOut": "9916085",
+      "exchange": "pancake-v3",
+      "poolType": "pancake-v3",
       "poolExtra": {
        "swapFee": 500,
        "priceLimit": "4295558253",
-       "blockNumber": 514024335
+       "blockNumber": 514127710
       },
       "extra": {
-       "_cs": "17759333347405701029",
+       "_cs": "14164568031794423017",
        "_ss": {
         "pool": "0x716aa091d30a88a3e1874d56e99fbf1487cbc65a",
         "tokenIn": "0x912ce59144191c1204e64559fe8253a0e49e6548",
         "tokenOut": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-        "swapAmount": "50188153626674520064",
-        "amountOut": "9910993",
+        "swapAmount": "51771322693455003733",
+        "amountOut": "9912062",
         "exchange": "dodo-dpp",
         "poolType": "dodo-dpp",
         "poolExtra": {
          "type": "DPP",
          "baseToken": "0x912ce59144191c1204e64559fe8253a0e49e6548",
          "quoteToken": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-         "blockNumber": 514024633
+         "blockNumber": 514127689
         },
         "extra": null
        },
-       "_ts": "1791782769",
-       "nSqrtRx96": "35236942814539568693102",
-       "nT": -292530,
+       "_ts": "1791812283",
+       "nSqrtRx96": "34682432837025855630135",
+       "nT": -292847,
        "rAI": "0",
-       "ri": "63ed93faOeZGUZnl"
+       "ri": "22f96f11-GpNwoWz"
       }
      }
     ]
    ],
    "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
-   "routeID": "63ed93faOeZGUZnl",
-   "checksum": "17759333347405701029",
-   "timestamp": 1791782769
+   "routeID": "22f96f11-GpNwoWz",
+   "checksum": "14164568031794423017",
+   "timestamp": 1791812283
   },
   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
  },
- "requestId": "63ed93fa-39e6-4651-99e5-20d3ab46dc3d"
+ "requestId": "22f96f11-f86a-4dc2-85b3-c3f331182663"
 }

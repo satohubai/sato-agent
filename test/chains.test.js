@@ -541,3 +541,17 @@ test("BOT.md, README.md and SKILL.md: the bots, each chain's gas token and stabl
   }
   assert.match(readme, /Avalanche is not supported/);
 });
+
+test("every EVM chain carries its own swap gas cap and says whether its gas needs the node's exact estimate; only Arbitrum does, only Polygon is above 2M", () => {
+  const caps = Object.fromEntries(chains.evmChainKeys().map((k) => [k, chains.getChain(k).simulation.swapGas]));
+  assert.deepEqual(caps, { base: 2_000_000n, bnb: 2_000_000n, arbitrum: 2_000_000n, polygon: 5_000_000n });
+  assert.deepEqual(Object.fromEntries(chains.evmChainKeys().map((k) => [k, chains.getChain(k).simulation.exactGasEstimate])), { base: false, bnb: false, arbitrum: true, polygon: false });
+  // the endpoints seen to answer eth_simulateV1 come first on Polygon
+  assert.deepEqual(chains.rpcUrls("polygon", {}).slice(0, 2), ["https://polygon.api.onfinality.io/public", "https://api.zan.top/polygon-mainnet"]);
+});
+
+test("the usage text for --chains is the registry's, in every message that shows it", () => {
+  const policySrc = readFileSync(join(root, "src", "policy.js"), "utf8");
+  const baseSrc = readFileSync(join(root, "src", "base.js"), "utf8");
+  for (const [name, src] of [["policy.js", policySrc], ["base.js", baseSrc]]) assert.ok(!/--chains <base\|solana/.test(src), `${name} has no hand-written chain list in a --chains message`);
+});

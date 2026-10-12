@@ -537,6 +537,9 @@ export function giftcardChain(requested, policy = loadPolicy()) {
   if (wanted !== undefined) {
     if (!isKnownChain(wanted)) throw new Error(`--chain must be ${orList(GIFT_CHAINS)}`);
     if (!GIFT_CHAINS.includes(wanted)) throw refuse("giftcards_not_on_chain", `Bitrefill takes ${labelList(GIFT_CHAINS)}, not ${labelOf(wanted)}. Gift cards are available through the Sato Base Bot.`, GIFT_CHAINS, wanted);
+    // The owner's chains rule here too, before any sign-in: `--chain polygon` on an agent set to Base only signs nothing, asks
+    // Bitrefill nothing, and says why. (No policy at all reads as v0.3's Base, and the limits check says the rest.)
+    if (chains && !chains.includes(wanted)) throw refuse("chain_not_allowed", `this agent is set to work on ${chains.join(" and ")} only`, chains, wanted);
     return wanted;
   }
   if (!chains) return GIFT.key;

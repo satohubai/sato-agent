@@ -907,8 +907,9 @@ test("tiered fee (rc.3): USDC <-> ETH is a major pair held to 0.15%, even when t
   // Priced as a "token" trade (more expensive than a major pair): an overcharge, refused.
   assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: at(15, "token") })), ["fee_tier_mismatch"]);
   assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: at(75, "token") })), ["fee_tier_mismatch", "fee_over_major_ceiling"]);
-  // Priced as "stable" (cheaper): accepted within the stable ceiling.
-  await verifyCase("usdc-to-eth", { edit: at(15, "stable") });
+  // Priced as "stable" (cheaper): held to the stable ceiling (3 bps), so 15 is refused. (3 bps accepted is covered per chain by the
+  // recorded stable pairs in swap-evm-chains.test.js; this route's simulation measured 15 bps, so a 3 bps disclosure fails the simulation.)
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: at(15, "stable") })), ["fee_over_major_ceiling"]);
   assert.equal(evm.MAX_SATO_FEE_BPS, 100);
 });
 

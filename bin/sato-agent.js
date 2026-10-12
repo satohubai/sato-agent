@@ -349,15 +349,17 @@ async function main(command = cmd, args = positionals.slice(1)) {
     case "balance": {
       const a = addresses();
       const chains = allowedChains(loadPolicy());
-      const res = {};
-      await Promise.all(
-        chains.map(async (c) => {
-          try {
-            res[c] = isEvm(c) ? await baseChain.balances(addressFor(c, a), c) : await solana.balances(a.solana);
-          } catch (err) {
-            res[c] = { address: addressFor(c, a), error: err.message };
-          }
-        }),
+      // Read in parallel, kept in the owner's chain order (not the order the answers come back in), so the JSON never shuffles.
+      const res = Object.fromEntries(
+        await Promise.all(
+          chains.map(async (c) => {
+            try {
+              return [c, isEvm(c) ? await baseChain.balances(addressFor(c, a), c) : await solana.balances(a.solana)];
+            } catch (err) {
+              return [c, { address: addressFor(c, a), error: err.message }];
+            }
+          }),
+        ),
       );
       const line = (c) => {
         const r = res[c];
@@ -873,7 +875,9 @@ async function main(command = cmd, args = positionals.slice(1)) {
         const stable = req.symbol ? stableBySymbol(chain, req.symbol) : defaultStable(chain);
         const a = addresses();
         const card = [`Payment link: pay exactly ${req.amount} ${stable.symbol} on ${labelOf(chain)} to ${req.to} (the amount written in the link).`];
-        const check = await beforeSpend({ chain, intent: { cmd: "checkout", kind, chain, to: req.to, amount: req.amount }, checkArgs: { address: req.to, chain: getChain(chain).hubName, from: addressFor(chain, a) }, expectKind: "address", usd: unitsToUsd(req.units, stable.decimals), to: req.to, purchase: true, card });
+        // The approval binds WHICH token as well as how much: on BNB Chain 10 USDC and 10 USDT are different payments, and a code given
+        // for one must not pay the other. The token is named by its contract address (a symbol is a label), with the chain.
+        const check = await beforeSpend({ chain, intent: { cmd: "checkout", kind, chain, token: stable.address, asset: stable.symbol, to: req.to, amount: req.amount }, checkArgs: { address: req.to, chain: getChain(chain).hubName, from: addressFor(chain, a) }, expectKind: "address", usd: unitsToUsd(req.units, stable.decimals), to: req.to, purchase: true, card });
         if (flags["dry-run"]) {
           const d = await baseChain.dryRunSendStable({ to: req.to, amount: req.amount, chain, symbol: stable.symbol });
           return out(`${card.join("\n")}\nDRY RUN: the checks and the simulation passed. Nothing was signed or sent, and nothing counts against the limits.`, { ...d, card, sato_hub_check: check });
@@ -895,7 +899,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
         const r = await prepared.execute();
         return out(`Paid on Solana (about $${r.usd}).\n  ${r.explorer}`, { ...r, chain: "solana", kind, sato_hub_check: check });
       }
-      throw new UsageError("checkout takes a Solana Pay request (solana:...) or a USDC-on-Base payment link (ethereum:...). For an x402 link, including a Coinbase Business checkout's x402_url, use `pay <url>`. For a Stripe deposit address, use `send --to <address> --amount <the exact amount>`.");
+      throw new UsageError("checkout takes a Solana Pay request (solana:...) or a stablecoin payment link on " + labelList(chainsWith("checkout").filter(isEvm)) + " (ethereum:...). For an x402 link, including a Coinbase Business checkout's x402_url, use `pay <url>`. For a Stripe deposit address, use `send --to <address> --amount <the exact amount>`.");
     }
     case "giftcard": {
       const sub = rest[0];

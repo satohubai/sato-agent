@@ -123,8 +123,8 @@ export const transferLog = (token, from, to, value) => ({
  * TRANSFER_FROM_FAILED (seen live on Base, 2026-10-09). Only a request that brings its own nonce
  * and gas avoids the estimate.
  */
-export function fakeChain({ address, allowance = 0n, receipts = [], balance = 0n, balanceAfter = 0n, stale = false } = {}) {
-  const state = { allowance, sent: [], hashes: [], staleAllowance: allowance };
+export function fakeChain({ address, allowance = 0n, receipts = [], balance = 0n, balanceAfter = 0n, stale = false, chainKey, estimate = 150_000n } = {}) {
+  const state = { allowance, sent: [], hashes: [], staleAllowance: allowance, estimated: [] };
   let n = 0;
   const account = { address };
   const wallet = {
@@ -161,6 +161,13 @@ export function fakeChain({ address, allowance = 0n, receipts = [], balance = 0n
     async getBalance({ blockNumber }) {
       return blockNumber === 100n ? balanceAfter : balance;
     },
+    /** What the node says the gas of a transaction is (a number, or a function that may throw); remembered in state.estimated. */
+    async estimateGas(args) {
+      state.estimated.push(args);
+      const out = typeof estimate === "function" ? await estimate(args, state.estimated.length) : estimate;
+      return out;
+    },
   };
-  return { c: { account, wallet, pub }, state };
+  // `chainKey`: the chain this client is for, as a real client (src/base.js `clients`) carries it. None means Base's, like a v0.3 client.
+  return { c: { account, wallet, pub, ...(chainKey ? { chainKey } : {}) }, state };
 }

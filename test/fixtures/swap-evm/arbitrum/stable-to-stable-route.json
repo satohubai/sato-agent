@@ -5,14 +5,14 @@
   "routeSummary": {
    "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
    "amountIn": "10000000",
-   "amountInUsd": "10.00818855323947",
+   "amountInUsd": "10.019035411672492",
    "tokenOut": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
-   "amountOut": "10007859",
-   "amountOutUsd": "10.00506122589074",
-   "gas": "320197",
-   "gasPrice": "20062000",
-   "gasUsd": "0.016454440406559603",
-   "l1FeeUsd": "0.00016431653253572186",
+   "amountOut": "10005014",
+   "amountOutUsd": "10.015715092653203",
+   "gas": "441581",
+   "gasPrice": "20034000",
+   "gasUsd": "0.0223756079585698",
+   "l1FeeUsd": "0.00013612165428018215",
    "extraFee": {
     "feeAmount": "3",
     "chargeFeeBy": "currency_in",
@@ -22,52 +22,124 @@
    "route": [
     [
      {
-      "pool": "0xfc43aaf89a71acaa644842ee4219e8eb77657427",
+      "pool": "pmm_5_0xaf88d065e77c8cc2239327c5edb3a432268e5831_0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
       "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
       "tokenOut": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
       "swapAmount": "9997000",
-      "amountOut": "10007859",
-      "exchange": "traderjoe-v21",
-      "poolType": "liquiditybook-v21",
+      "amountOut": "10005014",
+      "exchange": "pmm-5/traderjoe-v21",
+      "poolType": "orderbook",
       "poolExtra": {
        "approvalAddress": "",
-       "blockNumber": 514016307
+       "blockNumber": 0
       },
       "extra": {
-       "_cs": "12855574448710780154",
-       "_ss": {
-        "pool": "0x19b001e6bc2d89154c18e2216eec5c8c6047b6d8",
+       "_ce": {
+        "prCnt": 1,
+        "tgtAmtOut": "10005014",
+        "ces": [
+         {
+          "pool": "0x13fd8faf63c1b0dbd44157df1a390224d734bdcf1f60451fb84a8b48dd3d388a",
+          "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+          "tokenOut": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+          "swapAmount": "9997000",
+          "amountOut": "10005461",
+          "exchange": "uniswap-v4-fairflow",
+          "poolType": "uniswap-v4",
+          "poolExtra": {
+           "blockNumber": 514127203,
+           "router": "0xa51afafe0263b40edaef0df8781ea9aa03e381a3",
+           "permit2Addr": "0x000000000022d473030f116ddee9f6b43ac78ba3",
+           "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+           "tokenOut": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+           "fee": 1,
+           "tickSpacing": 1,
+           "hookAddress": "0x4440854b2d02c57a0dc5c58b7a884562d875c0c4",
+           "hookData": "",
+           "priceLimit": "4295128740"
+          },
+          "extra": {
+           "rAI": "0",
+           "nSqrtRx96": "79264038685769321326721311250",
+           "nT": 9,
+           "HookSwapInfo": null
+          }
+         },
+         {
+          "pool": "0x13fd8faf63c1b0dbd44157df1a390224d734bdcf1f60451fb84a8b48dd3d388a",
+          "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+          "tokenOut": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+          "swapAmount": "9997000",
+          "amountOut": "10005461",
+          "exchange": "uniswap-v4-fairflow",
+          "poolType": "uniswap-v4",
+          "poolExtra": {
+           "blockNumber": 514127203,
+           "router": "0xa51afafe0263b40edaef0df8781ea9aa03e381a3",
+           "permit2Addr": "0x000000000022d473030f116ddee9f6b43ac78ba3",
+           "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+           "tokenOut": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+           "fee": 1,
+           "tickSpacing": 1,
+           "hookAddress": "0x4440854b2d02c57a0dc5c58b7a884562d875c0c4",
+           "hookData": "",
+           "priceLimit": "4295128740"
+          },
+          "extra": {
+           "rAI": "0",
+           "nSqrtRx96": "79264038685769321326721311250",
+           "nT": 9,
+           "HookSwapInfo": null
+          }
+         }
+        ]
+       },
+       "_cs": "2789050807600009264",
+       "_fr": {
+        "amountOut": "10004962",
+        "amountOutUsd": 10.01566303703541
+       },
+       "_fs": {
+        "pool": "0xfc43aaf89a71acaa644842ee4219e8eb77657427",
         "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
         "tokenOut": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
         "swapAmount": "9997000",
-        "amountOut": "10008152",
-        "exchange": "balancer-v3-stable",
-        "poolType": "balancer-v3-stable",
+        "amountOut": "10004962",
+        "exchange": "traderjoe-v21",
+        "poolType": "liquiditybook-v21",
         "poolExtra": {
-         "buffIn": "0x7f6501d3b98ee91f9b9535e4b0ac710fb0f9e0bc",
-         "buffOut": "0xa6d12574efb239fc1d2099732bd8b5dc6306897f",
-         "approvalAddress": "0xad89051bed8d96f045e8912ae1672c6c0bf8a85e",
-         "blockNumber": 514024717
+         "approvalAddress": "",
+         "blockNumber": 514119004
         },
-        "extra": {
-         "Buffers": null,
-         "AggregateFee": 12,
-         "AmountInBeforeConvert": null,
-         "AmountOutBeforeConvert": 8114469
-        }
+        "extra": {}
        },
-       "_ts": "1791782758",
-       "ri": "50cbde53POlPlpgR"
+       "_ss": {
+        "pool": "0x72abbf3cbd63d80b42df481b27fa8dc4240dbd41",
+        "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+        "tokenOut": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+        "swapAmount": "9997000",
+        "amountOut": "10005962",
+        "exchange": "metric-propamm",
+        "poolType": "metric-propamm",
+        "poolExtra": {
+         "swapDir": true,
+         "priceProvider": "",
+         "blockNumber": 514127092
+        },
+        "extra": null
+       },
+       "_ts": "1791812271",
+       "ri": "0b5458c7hrFLDb3A"
       }
      }
     ]
    ],
    "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
-   "routeID": "50cbde53POlPlpgR",
-   "checksum": "12855574448710780154",
-   "timestamp": 1791782758
+   "routeID": "0b5458c7hrFLDb3A",
+   "checksum": "2789050807600009264",
+   "timestamp": 1791812271
   },
   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
  },
- "requestId": "50cbde53-3ce9-4f96-9811-320e6b427988"
+ "requestId": "0b5458c7-86b1-4b0d-bdc0-bf1c89d7eb8e"
 }

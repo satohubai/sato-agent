@@ -5,14 +5,14 @@
   "routeSummary": {
    "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
    "amountIn": "10000000",
-   "amountInUsd": "10.002893104573854",
+   "amountInUsd": "10.019035411672492",
    "tokenOut": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-   "amountOut": "3900708362094511",
-   "amountOutUsd": "9.987039284099959",
-   "gas": "582162",
-   "gasPrice": "20054000",
-   "gasUsd": "0.029890841480094056",
-   "l1FeeUsd": "0.0001642415012775105",
+   "amountOut": "3954159281261478",
+   "amountOutUsd": "10.00117336645052",
+   "gas": "330498",
+   "gasPrice": "20066000",
+   "gasUsd": "0.016773606084636843",
+   "l1FeeUsd": "0.00013612165428018215",
    "extraFee": {
     "feeAmount": "15",
     "chargeFeeBy": "currency_in",
@@ -22,102 +22,50 @@
    "route": [
     [
      {
-      "pool": "pmm_5_0x82af49447d8a07e3bd95bd0d56f35241523fbab1_0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+      "pool": "0x6f38e884725a116c9c7fbf208e79fe8828a2595f",
       "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
       "tokenOut": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
       "swapAmount": "9985000",
-      "amountOut": "3900708362094511",
-      "exchange": "pmm-5/pancake-v3",
-      "poolType": "orderbook",
+      "amountOut": "3954159281261478",
+      "exchange": "uniswapv3",
+      "poolType": "uniswapv3",
       "poolExtra": {
-       "approvalAddress": "",
-       "blockNumber": 0
+       "swapFee": 100,
+       "priceLimit": "1461446703485210103287273052203988822378723970341",
+       "blockNumber": 514127694
       },
       "extra": {
-       "_ce": {
-        "prCnt": 1,
-        "tgtAmtOut": "3900708362094511",
-        "ces": [
-         {
-          "pool": "0xb1026b8e7276e7ac75410f1fcbbe21796e8f7526",
-          "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-          "tokenOut": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
-          "swapAmount": "9985000",
-          "amountOut": "3900941472694784",
-          "exchange": "camelot-v3",
-          "poolType": "algebra-v1",
-          "poolExtra": {
-           "swapFee": 0,
-           "priceLimit": "1461300573427867316570072651998408279850435624080",
-           "blockNumber": 514024704
-          },
-          "extra": {
-           "Liquidity": "39529421691793982",
-           "GlobalState": {
-            "price": "4008189615542622668924868",
-            "tick": -197845,
-            "feeZto": 100,
-            "feeOtz": 100,
-            "timepoint_index": 6025,
-            "community_fee_token0": 150,
-            "community_fee_token1": 150,
-            "unlocked": false
-           }
-          }
-         }
-        ]
-       },
-       "_cs": "1119465200743155719",
-       "_fr": {
-        "amountOut": "3900826056779978",
-        "amountOutUsd": 9.987340619482708
-       },
-       "_fs": {
-        "pool": "0x7fcdc35463e3770c2fb992716cd070b63540b947",
-        "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-        "tokenOut": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
-        "swapAmount": "9985000",
-        "amountOut": "3900826056779978",
-        "exchange": "pancake-v3",
-        "poolType": "pancake-v3",
-        "poolExtra": {
-         "swapFee": 100,
-         "priceLimit": "1461446703485210103287273052203988822378723970341",
-         "blockNumber": 514024528
-        },
-        "extra": {
-         "rAI": "0",
-         "nSqrtRx96": "4008255283549839781183793",
-         "nT": -197845
-        }
-       },
+       "_cs": "14267048845672393667",
        "_ss": {
         "pool": "0x4c9c68429c76cc299bc89483bd1dfb382f146071",
         "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
         "tokenOut": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
         "swapAmount": "9985000",
-        "amountOut": "3901014883756845",
+        "amountOut": "3951325227414370",
         "exchange": "metric-propamm",
         "poolType": "metric-propamm",
         "poolExtra": {
          "swapDir": false,
          "priceProvider": "",
-         "blockNumber": 514024504
+         "blockNumber": 514127675
         },
         "extra": null
        },
-       "_ts": "1791782752",
-       "ri": "974fd1b5lFJBbaWo"
+       "_ts": "1791812265",
+       "nSqrtRx96": "3981157693226600229576089",
+       "nT": -197981,
+       "rAI": "0",
+       "ri": "3d7bd38fSY9OhYVR"
       }
      }
     ]
    ],
    "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
-   "routeID": "974fd1b5lFJBbaWo",
-   "checksum": "1119465200743155719",
-   "timestamp": 1791782752
+   "routeID": "3d7bd38fSY9OhYVR",
+   "checksum": "14267048845672393667",
+   "timestamp": 1791812265
   },
   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
  },
- "requestId": "974fd1b5-9452-416d-a5a8-6a2d61055f3a"
+ "requestId": "3d7bd38f-498f-4e85-8551-25c192c4e34d"
 }

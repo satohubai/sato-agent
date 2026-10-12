@@ -20,8 +20,8 @@ import {
 } from "viem";
 import { usdcUnits, unitsToUsd } from "./amount.js";
 import { DEFAULT_EVM_CHAIN, defaultStable, evmChain, explorerTx, lockName, stableBySymbol } from "./chains.js";
-import { chainTransport } from "./rpc.js";
-import { allowedChains, loadPolicy } from "./policy.js";
+import { chainTransport, hostsTried } from "./rpc.js";
+import { CHAINS_USAGE, allowedChains, loadPolicy } from "./policy.js";
 import { entries, record, release, reserve } from "./ledger.js";
 import { Pending, Rejected } from "./errors.js";
 import { withLock } from "./store.js";
@@ -79,6 +79,16 @@ export async function balances(addr = loadWallet().evm.address, chain = DEFAULT_
 const DEFINITE_REJECTION = /insufficient funds|nonce too low|nonce has already been used|replacement transaction underpriced|intrinsic gas too low|exceeds block gas limit|invalid sender|already known/i;
 
 /**
+ * The client must be for the chain the transaction is for. A client carries its chain's key (`clients(account, chain)`); one with
+ * none is Base's, as in v0.3. A mismatch is a programming error that would sign for one chain and broadcast on another, so it stops
+ * before anything is signed.
+ */
+export function assertClientChain(c, chain, doing = "use") {
+  const has = c?.chainKey ?? DEFAULT_EVM_CHAIN;
+  if (has !== chain) throw new Error(`refusing to ${doing} for ${chain} with a client for ${has}: nothing was signed`);
+}
+
+/**
  * Sign locally, record the hash, broadcast, wait. Returns the receipt.
  * Nonce assignment through broadcast is serialized by a lock, so two commands
  * never sign with the same nonce. Throws Rejected when the node definitely
@@ -87,6 +97,7 @@ const DEFINITE_REJECTION = /insufficient funds|nonce too low|nonce has already b
  */
 export async function signAndSend(c, { to, data, value = 0n, gas, nonce }, onSigned, { counted = true, chain: chainOpt } = {}) {
   const chain = chainOpt ?? c.chainKey ?? DEFAULT_EVM_CHAIN;
+  assertClientChain(c, chain, "sign");
   const viem = evmChain(chain).viem;
   const { signed, hash, sentNonce } = await withLock(
     async () => {
@@ -108,8 +119,11 @@ export async function signAndSend(c, { to, data, value = 0n, gas, nonce }, onSig
         await c.pub.sendRawTransaction({ serializedTransaction: signedTx });
       } catch (err) {
         const msg = `${err.shortMessage || ""} ${err.details || ""} ${err.message || ""}`;
+        // A send that reached more than one endpoint (the first turned it away with a rate limit or no connection) cannot say that
+        // a "nonce too low" or an "already known" is a refusal: an earlier endpoint may have passed ours on and it landed. Pending.
+        const multiHost = hostsTried(err) > 1;
         // "already known" means the node already has it: treat as sent, not rejected.
-        if (DEFINITE_REJECTION.test(msg) && !/already known/i.test(msg)) throw new Rejected(`the node refused ${h}: ${err.shortMessage || err.message}`);
+        if (!multiHost && DEFINITE_REJECTION.test(msg) && !/already known/i.test(msg)) throw new Rejected(`the node refused ${h}: ${err.shortMessage || err.message}`);
         throw new Pending(`broadcast of ${h} reported an error (${err.shortMessage || err.message}).`, { tx: h, explorer: explorer(chain, h), counted });
       }
       return { signed: signedTx, hash: h, sentNonce: prepared.nonce };
@@ -235,7 +249,7 @@ export async function registerAgent({ name, description, image, services = [], x
   const registry = ch.erc8004Registry;
   const registryId = `${ch.caip2}:${registry}`;
   const policy = loadPolicy();
-  if (policy && !Array.isArray(policy.chains)) throw new Error("choose which chain(s) this agent works on first: `sato-agent policy set --chains <base|solana|base,solana>`");
+  if (policy && !Array.isArray(policy.chains)) throw new Error("choose which chain(s) this agent works on first: `sato-agent policy set --chains <" + CHAINS_USAGE + ">`");
   if (policy && !allowedChains(policy).includes(chain)) throw new Error(`this agent is set to work on ${allowedChains(policy).join(" and ")} only; ERC-8004 registration is on ${ch.label}`);
   let agentId;
   let r1; // step one's receipt (a fresh registration only)

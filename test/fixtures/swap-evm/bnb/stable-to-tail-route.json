@@ -5,13 +5,13 @@
   "routeSummary": {
    "tokenIn": "0x55d398326f99059ff775485246999027b3197955",
    "amountIn": "10000000000000000000",
-   "amountInUsd": "9.998354951580314",
+   "amountInUsd": "10.000987207116275",
    "tokenOut": "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82",
-   "amountOut": "4137652909299276776",
-   "amountOutUsd": "9.918029442702062",
-   "gas": "330498",
+   "amountOut": "4260813343642076550",
+   "amountOutUsd": "9.923935410469712",
+   "gas": "287581",
    "gasPrice": "50000000",
-   "gasUsd": "0.012452475019557374",
+   "gasUsd": "0.01072102309103668",
    "l1FeeUsd": "0",
    "extraFee": {
     "feeAmount": "75",
@@ -22,50 +22,60 @@
    "route": [
     [
      {
-      "pool": "0x8ec186cd1ad51c380bd23fde29f852226647616c",
+      "pool": "0x1b533146638f7ee66347016317b7d5dbaf8e26633d45f0b9d8c9aac5a0402f50",
       "tokenIn": "0x55d398326f99059ff775485246999027b3197955",
       "tokenOut": "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82",
       "swapAmount": "9925000000000000000",
-      "amountOut": "4137652909299276776",
-      "exchange": "pancake-v3",
-      "poolType": "pancake-v3",
+      "amountOut": "4260813343642076550",
+      "exchange": "pancake-infinity-cl",
+      "poolType": "pancake-infinity-cl",
       "poolExtra": {
-       "swapFee": 500,
-       "priceLimit": "1461300573427867316570072651998408279850435624080",
-       "blockNumber": 127154586
+       "blockNumber": 127219934,
+       "vault": "0x238a358808379702088667322f80ac48bad5e6c4",
+       "poolManager": "0xa0ffb9c1ce1fe56963b0321b32e7a0302114058b",
+       "permit2Addr": "0x31c2f6fcff4f8759b3bd5bf0e1084a055615c768",
+       "tokenIn": "0x55d398326f99059ff775485246999027b3197955",
+       "tokenOut": "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82",
+       "fee": 335,
+       "parameters": "0x0000000000000000000000000000000000000000000000000000000000020000",
+       "hookAddress": "0x0000000000000000000000000000000000000000",
+       "hookData": "",
+       "priceLimit": "130269705572362057709328534659",
+       "swapFee": 499
       },
       "extra": {
-       "_cs": "4062556267462223990",
+       "HookSwapInfo": null,
+       "_cs": "4358210108261714134",
        "_ss": {
         "pool": "0xa39af17ce4a8eb807e076805da1e2b8ea7d0755b",
         "tokenIn": "0x55d398326f99059ff775485246999027b3197955",
         "tokenOut": "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82",
         "swapAmount": "9925000000000000000",
-        "amountOut": "4133014839673762153",
+        "amountOut": "4246961913514469835",
         "exchange": "pancake",
         "poolType": "uniswap-v2",
         "poolExtra": {
          "fee": 25,
          "feePrecision": 10000,
-         "blockNumber": 127153003
+         "blockNumber": 127219798
         },
         "extra": null
        },
-       "_ts": "1791782727",
-       "nSqrtRx96": "122676869027645578822047768155",
-       "nT": 8744,
+       "_ts": "1791812244",
+       "nSqrtRx96": "120924587302403982818391470329",
+       "nT": 8457,
        "rAI": "0",
-       "ri": "367c30452iVMGI1P"
+       "ri": "5e8786fepwNPVIAT"
       }
      }
     ]
    ],
    "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
-   "routeID": "367c30452iVMGI1P",
-   "checksum": "4062556267462223990",
-   "timestamp": 1791782727
+   "routeID": "5e8786fepwNPVIAT",
+   "checksum": "4358210108261714134",
+   "timestamp": 1791812244
   },
   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
  },
- "requestId": "367c3045-da25-4c18-8d4f-b2ad55cc12b8"
+ "requestId": "5e8786fe-a703-4f54-8013-c13a25b22834"
 }

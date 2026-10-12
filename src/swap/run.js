@@ -388,7 +388,30 @@ function impliedPrice(sized, sell, buy) {
   return isStableSymbol(sized.chain, sized.from) ? sell / buy : buy / sell;
 }
 
+/** How far a stablecoin-for-stablecoin quote may sit from one dollar for one dollar. A depeg or a bad route shows up here, not in an oracle. */
+export const STABLE_PEG_TOLERANCE_PCT = 1;
+/** Both sides are stablecoins of the chain (USDT <-> USDC): there is no volatile asset to price, so no oracle. */
+const isStablePair = (sized) => isStableAsset(sized.chain, sized.fromAsset) && isStableAsset(sized.chain, sized.toAsset);
+
+/**
+ * The independent check on a major pair. With an oracle (the volatile side priced by Chainlink) the quote must sit within the
+ * feed's tolerance. A stablecoin pair has no oracle: the implied rate must be 1 within STABLE_PEG_TOLERANCE_PCT. A pair with
+ * neither is refused (never skipped): a major pair is never signed on a quote nothing independent has looked at.
+ */
 function checkAgainstOracle(sized, implied) {
+  if (!sized.oracle) {
+    if (!isStablePair(sized)) throw refuse("oracle_missing", `there is no independent price for this pair, so the quote cannot be checked; nothing was signed`);
+    const deviation = Number.isFinite(implied) && implied > 0 ? Math.round(Math.abs(implied - 1) * 100 * 1e6) / 1e6 : null;
+    if (deviation === null || deviation > STABLE_PEG_TOLERANCE_PCT) {
+      throw refuse(
+        "stable_pair_off_peg",
+        `the quote gives ${deviation === null ? "an unreadable amount" : `${roundUsd(implied)} ${sized.from} sold for each ${sized.to} received, ${deviation}% from one for one`}, beyond the ${STABLE_PEG_TOLERANCE_PCT}% this kit allows between two stablecoins (a depeg, or a bad route); nothing was signed`,
+        STABLE_PEG_TOLERANCE_PCT,
+        deviation,
+      );
+    }
+    return deviation;
+  }
   const tol = oracleTolerancePct(sized.volatile, oracleChainOf(sized.chain));
   const q = quoteWithinOracle({ usdOracle: sized.oracle.usd, usdQuote: implied, tolerancePct: tol });
   if (!q.ok) {
@@ -530,7 +553,9 @@ export function swapIntent(sized, reasonCodes = [], { skipCheck = false } = {}) 
     confirm_reasons: [...reasonCodes].sort(),
     price: sized.longTail
       ? "no independent price exists for the token: its USD size comes from the quote, is held to your limits before anything is signed, and the minimum out is set by the slippage"
-      : "the quote must sit within the oracle tolerance; the minimum out is set by the slippage",
+      : isStablePair(sized)
+        ? `a stablecoin pair has no oracle: the quote must give back within ${STABLE_PEG_TOLERANCE_PCT}% of what is sold, one dollar for one dollar; the minimum out is set by the slippage`
+        : "the quote must sit within the oracle tolerance; the minimum out is set by the slippage",
     skip_check: Boolean(skipCheck),
     // The fee tier the kit reads for this pair (stable / major / token), with the most Sato Hub may charge on it. The exact
     // rate comes with the quote, after this approval; it is held to this ceiling and to the transaction (src/swap/fee-tier.js).
@@ -592,6 +617,7 @@ async function prepareEvm(sized, deps) {
       usd_held_to_limits: held,
       usd_basis: basis,
       oracle: oracleDisplay(sized, deviation),
+      ...(isStablePair(sized) ? { stable_peg: { deviation_pct: deviation, tolerance_pct: STABLE_PEG_TOLERANCE_PCT } } : {}),
       confirm_reasons: confirm,
       notes: sized.notes,
       resolved_from_link: sized.resolvedFromLink,
@@ -798,6 +824,7 @@ export function swapLines(d) {
   if (d.oracle && !d.oracle.used_for) lines.push(`Independent price: ${d.oracle.source} says $${d.oracle.usd} (${d.oracle.age_s}s old); the quote is ${d.oracle.deviation_pct}% from it.`);
   else if (d.oracle) lines.push(`Independent price of the ${d.oracle.asset} leg: ${d.oracle.source} says $${d.oracle.usd} (${d.oracle.age_s}s old). There is no independent price for the token, so the quote is not checked against one.`);
   else if (d.long_tail) lines.push("There is no independent price for the token, so the quote is not checked against one; the size below comes from the quote.");
+  else if (d.stable_peg) lines.push(`Two stablecoins have no oracle: the quote is held to one for one, and sits ${d.stable_peg.deviation_pct}% from it (the kit allows ${d.stable_peg.tolerance_pct}%).`);
   if (d.market) {
     const m = d.market;
     if (typeof m.price_impact_bps === "number") lines.push(`Price impact: Jupiter estimates ${m.price_impact_bps / 100}%${m.route_hops ? ` across ${m.route_hops} hop${m.route_hops === 1 ? "" : "s"}` : ""}. Shown for you to weigh.`);

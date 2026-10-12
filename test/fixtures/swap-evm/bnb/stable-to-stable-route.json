@@ -5,13 +5,13 @@
   "routeSummary": {
    "tokenIn": "0x55d398326f99059ff775485246999027b3197955",
    "amountIn": "10000000000000000000",
-   "amountInUsd": "9.996329968654454",
+   "amountInUsd": "10.001312380154776",
    "tokenOut": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
-   "amountOut": "9986134535039254432",
-   "amountOutUsd": "9.99398030884164",
+   "amountOut": "9987460188150372345",
+   "amountOutUsd": "9.99985398999645",
    "gas": "193831",
    "gasPrice": "50000000",
-   "gasUsd": "0.007303147630290729",
+   "gasUsd": "0.007225754410843667",
    "l1FeeUsd": "0",
    "extraFee": {
     "feeAmount": "3",
@@ -26,27 +26,27 @@
       "tokenIn": "0x55d398326f99059ff775485246999027b3197955",
       "tokenOut": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
       "swapAmount": "9997000000000000000",
-      "amountOut": "9986134535039254432",
+      "amountOut": "9987460188150372345",
       "exchange": "nomiswap-stable",
       "poolType": "nomiswap-stable",
       "poolExtra": {
        "approvalAddress": "",
-       "blockNumber": 127154586
+       "blockNumber": 127220037
       },
       "extra": {
-       "_cs": "15955128460439626501",
-       "_ts": "1791782722",
-       "ri": "1197f0c2crFDmLpT"
+       "_cs": "18268346072065937338",
+       "_ts": "1791812239",
+       "ri": "75723191cGhCtpQ-"
       }
      }
     ]
    ],
    "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
-   "routeID": "1197f0c2crFDmLpT",
-   "checksum": "15955128460439626501",
-   "timestamp": 1791782722
+   "routeID": "75723191cGhCtpQ-",
+   "checksum": "18268346072065937338",
+   "timestamp": 1791812239
   },
   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
  },
- "requestId": "1197f0c2-72b1-4398-ba53-4a70fbc69e2c"
+ "requestId": "75723191-7068-42b6-943e-a8bafcf85ce4"
 }

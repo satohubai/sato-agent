@@ -5,13 +5,13 @@
   "routeSummary": {
    "tokenIn": "0x55d398326f99059ff775485246999027b3197955",
    "amountIn": "10000000000000000000",
-   "amountInUsd": "9.998354951580314",
+   "amountInUsd": "10.000144000537212",
    "tokenOut": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-   "amountOut": "13244806297057716",
-   "amountOutUsd": "9.980733290548653",
-   "gas": "287581",
+   "amountOut": "13395326291391529",
+   "amountOutUsd": "9.98718863697886",
+   "gas": "443831",
    "gasPrice": "50000000",
-   "gasUsd": "0.010835452010600153",
+   "gasUsd": "0.01654541227109779",
    "l1FeeUsd": "0",
    "extraFee": {
     "feeAmount": "15",
@@ -22,61 +22,109 @@
    "route": [
     [
      {
-      "pool": "0xd37aa0f0d66ad670279f6b89325c88bdff17d0265144762fb01f54fca9779944",
+      "pool": "0x1156f415e79cc1c19f1b442f21a62b40d4d3f20e24b4daf93ab1373b4c97fecc",
       "tokenIn": "0x55d398326f99059ff775485246999027b3197955",
       "tokenOut": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
       "swapAmount": "9985000000000000000",
-      "amountOut": "13244806297057716",
-      "exchange": "pancake-infinity-cl",
+      "amountOut": "13395326291391529",
+      "exchange": "pancake-infinity-cl-fairflow",
       "poolType": "pancake-infinity-cl",
       "poolExtra": {
-       "blockNumber": 127154530,
+       "blockNumber": 127220014,
        "vault": "0x238a358808379702088667322f80ac48bad5e6c4",
        "poolManager": "0xa0ffb9c1ce1fe56963b0321b32e7a0302114058b",
        "permit2Addr": "0x31c2f6fcff4f8759b3bd5bf0e1084a055615c768",
        "tokenIn": "0x55d398326f99059ff775485246999027b3197955",
        "tokenOut": "0x0000000000000000000000000000000000000000",
-       "fee": 67,
-       "parameters": "0x0000000000000000000000000000000000000000000000000000000000010000",
-       "hookAddress": "0x0000000000000000000000000000000000000000",
+       "fee": 61,
+       "parameters": "0x00000000000000000000000000000000000000000000000000000000000108c0",
+       "hookAddress": "0x44428c6ce391915d51f963c0dd395cd0f95fdfd2",
        "hookData": "",
        "priceLimit": "1461446703485210103287273052203988822378723970341",
-       "swapFee": 99
+       "swapFee": 91
       },
       "extra": {
        "HookSwapInfo": null,
-       "_cs": "14228823526695418546",
+       "_ce": {
+        "prCnt": 1,
+        "tgtAmtOut": "13395326291391529",
+        "ces": [
+         {
+          "pool": "kipseli-prop_0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c_0x55d398326f99059ff775485246999027b3197955",
+          "tokenIn": "0x55d398326f99059ff775485246999027b3197955",
+          "tokenOut": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+          "swapAmount": "9985000000000000000",
+          "amountOut": "13389837552730316",
+          "exchange": "kipseli-prop",
+          "poolType": "kipseli-prop",
+          "poolExtra": {
+           "blockNumber": 127220040,
+           "routerAddress": "0x4cb2140c29518db6203f661b9f6dd60b68bb7f0d",
+           "approvalAddress": "0x4cb2140c29518db6203f661b9f6dd60b68bb7f0d"
+          },
+          "extra": null
+         },
+         {
+          "pool": "0xd405b976ac01023c9064024880999fc450a8668b",
+          "tokenIn": "0x55d398326f99059ff775485246999027b3197955",
+          "tokenOut": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+          "swapAmount": "9985000000000000000",
+          "amountOut": "13395574211219942",
+          "exchange": "thena-fusion",
+          "poolType": "algebra-v1",
+          "poolExtra": {
+           "swapFee": 0,
+           "priceLimit": "4306310045",
+           "blockNumber": 127219791
+          },
+          "extra": {
+           "Liquidity": "4976803840998897413835",
+           "GlobalState": {
+            "price": "2902539991413581420759200439",
+            "tick": -66139,
+            "feeZto": 497,
+            "feeOtz": 497,
+            "timepoint_index": 7837,
+            "community_fee_token0": 0,
+            "community_fee_token1": 0,
+            "unlocked": false
+           }
+          }
+         }
+        ]
+       },
+       "_cs": "7583425727872811535",
        "_ss": {
         "pool": "0x00007904d186680c709519e71f4dc3e2df8f1b99",
         "tokenIn": "0x55d398326f99059ff775485246999027b3197955",
         "tokenOut": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
         "swapAmount": "9985000000000000000",
-        "amountOut": "13241950416597120",
+        "amountOut": "13392520280222897",
         "exchange": "lunarbase",
         "poolType": "lunarbase",
         "poolExtra": {
-         "blockHash": "0xa1ce9f6e2d9adc4999fb2bceb713a8e16111deb2a139a93807ff0415d0a48600",
-         "blockNumber": 127154575,
+         "blockHash": "0x8fb07f2eb662eae847e1306f32f9026a65095ace23fe40be3db1a6b0ad241783",
+         "blockNumber": 127220043,
          "approvalAddress": "0x00007904d186680c709519e71f4dc3e2df8f1b99",
          "n": true
         },
         "extra": {}
        },
-       "_ts": "1791782717",
-       "nSqrtRx96": "2175263035240195540558994263936",
-       "nT": 66254,
+       "_ts": "1791812234",
+       "nSqrtRx96": "2162813755176737743328835484248",
+       "nT": 66139,
        "rAI": "0",
-       "ri": "ca07e9ddXA5EMrCA"
+       "ri": "5b3586495p1OL5Ni"
       }
      }
     ]
    ],
    "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
-   "routeID": "ca07e9ddXA5EMrCA",
-   "checksum": "14228823526695418546",
-   "timestamp": 1791782717
+   "routeID": "5b3586495p1OL5Ni",
+   "checksum": "7583425727872811535",
+   "timestamp": 1791812234
   },
   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
  },
- "requestId": "ca07e9dd-5c0e-4432-b080-ef232cf9e769"
+ "requestId": "5b358649-e69d-4e2f-9362-cf9922b8d362"
 }

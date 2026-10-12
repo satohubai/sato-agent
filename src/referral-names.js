@@ -20,7 +20,7 @@ import { clean } from "./text.js";
 import { PlainError } from "./errors.js";
 import { record } from "./ledger.js";
 import { evmAccount, solanaSecret } from "./wallet.js";
-import { chainKeys, isEvm, isKnownChain, orList } from "./chains.js";
+import { chainKeys, isEvm, isKnownChain, orList, pipeList } from "./chains.js";
 import { isReferralName, loadSettings, normalizeAddress, normalizeReferralName, patchSettings, shortReferrer } from "./settings.js";
 
 /** The referrer's share of Sato Hub's swap fee, in percent. The ONE place the kit says it (BOT.md repeats it in words). */
@@ -352,7 +352,7 @@ export function referralShow(referredBy) {
   const lines = [
     own.name
       ? `This bot's referral name: ${own.name}${own.payout ? `\nPayouts go to ${shortReferrer(own.payout)} on ${chainLabel(payoutChain)} (signed with this bot's ${chainLabel(own.chain)} wallet).` : `\nPayout: kept at Sato Hub (signed with this bot's ${chainLabel(own.chain)} wallet). \`referral set-payout <address>\` sets it.`}`
-      : "This bot has no referral name of its own. `referral create --chain base|solana` makes one.",
+      : `This bot has no referral name of its own. \`referral create --chain ${pipeList(chainKeys())}\` makes one.`,
     ...(own.name && own.payoutChangedAt ? [`Last payout change: ${own.payoutChangedAt}`] : []),
     `Referred by: ${data.referred_by ?? "nobody (no referral set)"}`,
     `Offer: ${offer}`,

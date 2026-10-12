@@ -131,6 +131,29 @@ test("checkout: a payment link on a chain the owner did not choose is refused; t
   assert.match(run("checkout", "--to", ADDR, "--amount", "1").stderr, /checkout --to <address> --amount <usdc> --chain base\|bnb\|arbitrum\|polygon\|solana/);
 });
 
+test("checkout: the owner's approval of a payment link names the token and the chain, so a code for 1 USDT never pays 1 USDC", () => {
+  const set = run("policy", "set", "--chains", "bnb", "--per-tx", "5", "--per-day", "50", "--approval", "ask");
+  assert.equal(set.status, 0, set.stderr);
+  const link = (token) => `ethereum:${token}@56/transfer?address=${ADDR}&uint256=1000000000000000000`; // 1 token: BNB Chain's stables have 18 decimals
+  const USDT = "0x55d398326f99059fF775485246999027B3197955";
+  const USDC = "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d";
+  const asked = run("checkout", link(USDT), "--skip-check");
+  assert.equal(asked.status, 5, asked.stderr);
+  const said = asked.stdout + asked.stderr;
+  const intent = JSON.parse(/^Intent: (.*)$/m.exec(said)[1]);
+  assert.deepEqual([intent.cmd, intent.kind, intent.chain, intent.token, intent.asset, intent.amount], ["checkout", "eip681", "bnb", USDT, "USDT", "1"]);
+  const code = /--approve ([0-9a-f]{8})/.exec(said)[1];
+  // the same amount in the other stablecoin of the chain is another payment: the code is for a different intent
+  const other = run("checkout", link(USDC), "--skip-check", "--approve", code);
+  assert.notEqual(other.status, 0);
+  assert.match(other.stdout + other.stderr, /approval [0-9a-f]{8} was given for a different intent/);
+  // and the asked-for intent of the other token names ITS token
+  const askedUsdc = run("checkout", link(USDC), "--skip-check");
+  assert.equal(askedUsdc.status, 5);
+  assert.equal(JSON.parse(/^Intent: (.*)$/m.exec(askedUsdc.stdout + askedUsdc.stderr)[1]).token, USDC);
+  assert.equal(policy("base,bnb,arbitrum,polygon,solana").status, 0);
+});
+
 test("swap: the chain is validated against the chains that swap; a bot that did not choose it is refused before anything is read", () => {
   assert.equal(policy("arbitrum,solana").status, 0);
   const r = run("swap", "--chain", "bnb", "--from", "USDT", "--to", "BNB", "--amount", "1", "--skip-check");

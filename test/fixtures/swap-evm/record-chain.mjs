@@ -11,7 +11,7 @@
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { encodeAbiParameters, encodeFunctionData, erc20Abi, keccak256, pad, toHex } from "viem";
-import { buildSimulationRequest, SATO_FEE_RECIPIENT } from "../../../src/swap/evm.js";
+import { buildSimulationRequest, SATO_FEE_RECIPIENT, sellBackCalls, swapCalls } from "../../../src/swap/evm.js";
 import { evmChain, kyberApiBase, majorTokens, rpcUrls } from "../../../src/chains.js";
 
 const chainKey = process.argv[2];
@@ -94,7 +94,9 @@ async function balanceOverride(token, owner, amount) {
     const key = keccak256(encodeAbiParameters([{ type: "address" }, { type: "uint256" }], [owner, BigInt(slot)]));
     const override = { [token]: { stateDiff: { [key]: pad(toHex(amount)) } } };
     try {
-      if (BigInt(await rpc("eth_call", [{ to: token, data }, "latest", override])) === amount) return override;
+      // Probed with eth_simulateV1, the method the kit itself needs (some endpoints that simulate refuse eth_call: ZAN on Polygon).
+      const res = await rpc("eth_simulateV1", [{ blockStateCalls: [{ stateOverrides: override, calls: [{ to: token, data }] }], validation: false }, "latest"]);
+      if (BigInt(res[0].calls[0].returnData) === amount) return override;
     } catch {
       /* try the next slot */
     }
@@ -149,11 +151,9 @@ for (const k of cases) {
   write(`${k.name}-build`, build);
   const b = build.data;
   const funded = tin.native ? undefined : await balanceOverride(tin.address, SENDER, k.units * 3n);
-  const swapCall = { to: b.routerAddress, data: b.data, value: BigInt(b.transactionValue) };
-  const approve = (token, amount) => ({ to: token.address, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [chain.kyber.router, amount] }) });
-  const calls = [];
-  if (!tin.native) calls.push(approve(tin, k.units));
-  calls.push(swapCall);
+  // The calls are the KIT's own (swapCalls / sellBackCalls in src/swap/evm.js), gas limits included: what is recorded is what the kit
+  // would send to eth_simulateV1, so a route that needs more gas than the chain's cap (`simulation.swapGas`) shows up here.
+  const calls = swapCalls({ intent: { chain: chainKey, tokenIn: tin, amountIn: k.units }, facts: { value: BigInt(b.transactionValue) }, tx: { to: b.routerAddress, data: b.data }, approvalNeeded: !tin.native });
   const sim = await simulate(calls, funded);
   write(`${k.name}-sim`, sim);
   console.log(chainKey, k.name, "recorded", sim.result.flatMap((x) => x.calls).map((c) => c.status).join(","), "blocks", sim.request_blocks);
@@ -169,8 +169,7 @@ for (const k of cases) {
     if (sBuild.code !== 0) throw new Error(`${k.name} sell-back build: ${JSON.stringify(sBuild).slice(0, 300)}`);
     write(`${k.name}-sellback-route`, sRoute);
     write(`${k.name}-sellback-build`, sBuild);
-    const sell = { to: sBuild.data.routerAddress, data: sBuild.data.data, value: 0n };
-    const all = [...calls, approve(tout, got), sell];
+    const all = [...calls, ...sellBackCalls({ chain: chainKey, token: tout, units: got, data: sBuild.data.data })];
     all.splitAt = calls.length;
     const full = await simulate(all, funded);
     write(`${k.name}-sellback-sim`, full);

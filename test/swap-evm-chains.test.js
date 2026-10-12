@@ -15,9 +15,10 @@ import { SENDER, fakeChain, load, passes, satoResponseFrom, topicAddr, transferL
 freshHome();
 const evm = await import("../src/swap/evm.js");
 const chainsMod = await import("../src/chains.js");
-const { Refused } = await import("../src/errors.js");
+const { Pending, Refused, Rejected } = await import("../src/errors.js");
+const baseMod = await import("../src/base.js");
 const { setPolicy } = await import("../src/policy.js");
-const { entries } = await import("../src/ledger.js");
+const { actions, entries } = await import("../src/ledger.js");
 const { decodeFunctionData, encodeFunctionData } = await import("viem");
 const { evmChain, majorTokens } = chainsMod;
 const { KYBER_ROUTER_ABI: ROUTER_ABI } = evm;
@@ -81,15 +82,16 @@ function recordedSellBack(key, name, seen = []) {
 }
 
 /** Verify one recorded case on one chain with everything injected. */
-async function verifyCase(key, name, { edit, editSim, editIntent, deps = {}, allowance = 0n, side } = {}) {
+async function verifyCase(key, name, { edit, editSim, editIntent, deps = {}, allowance = 0n, side, fixture = name } = {}) {
   const meta = casesOf(key)[name];
   const c = evmChain(key);
   const intent = evm.parseIntent({ from: meta.from, to: meta.to, amount: meta.amount, slippageBps: 50, chain: key });
   intent.taker = SENDER;
   editIntent?.(intent);
-  const response = satoResponseFrom(load(`${key}/${name}-route`), load(`${key}/${name}-build`), { hubName: c.hubName, chainId: c.chainId, feeBps: meta.bps, feeTier: meta.tier, feeSide: side ?? meta.side });
+  // `fixture`: another recorded route/build/simulation for the same case (the Polygon AAVE sale that needed 2.5M gas)
+  const response = satoResponseFrom(load(`${key}/${fixture}-route`), load(`${key}/${fixture}-build`), { hubName: c.hubName, chainId: c.chainId, feeBps: meta.bps, feeTier: meta.tier, feeSide: side ?? meta.side });
   edit?.(response);
-  const sim1 = clone(load(`${key}/${name}-sim`));
+  const sim1 = clone(load(`${key}/${fixture}-sim`));
   editSim?.(sim1);
   const sims = [sim1];
   if (meta.sellBack) sims.push(clone(load(`${key}/${name}-sellback-sim`)));
@@ -167,6 +169,12 @@ for (const key of ["bnb", "arbitrum", "polygon"]) {
     // and a fee above the stable tier's ceiling is refused whatever the label
     const over = await rules(verifyCase(key, "stable-to-stable", { edit: (res) => (res.sato_fee_bps = 16) }));
     assert.ok(over.includes("fee_over_major_ceiling") || over.includes("fee_not_as_disclosed"), over.join(","));
+    // a stable pair is held to ITS ceiling (3 bps), not the major tier's 15: 4 bps is refused whatever the label, 3 is the recorded build
+    const four = await rules(verifyCase(key, "stable-to-stable", { edit: (res) => (res.sato_fee_bps = 4) }));
+    assert.ok(four.includes("fee_over_major_ceiling"), four.join(","));
+    const fifteen = await rules(verifyCase(key, "stable-to-stable", { edit: (res) => ((res.sato_fee_bps = 15), (res.sato_fee_tier = "major")) }));
+    assert.ok(fifteen.includes("fee_over_major_ceiling"), "15 bps on a stable pair priced as major: " + fifteen.join(","));
+    assert.equal((await verifyCase(key, "stable-to-stable")).plan.fee.bps, 3);
   });
 
   test(`${key}: buying a long-tail token: the fee in ${c.defaultStable} (the input), the sell-back simulated in a second block, the round trip within the band`, async () => {
@@ -245,7 +253,7 @@ for (const key of ["bnb", "arbitrum", "polygon"]) {
     const before = entries().filter((e) => e.kind === "swap").length;
     const { plan } = await verifyCase(key, "stable-to-native");
     const got = 5n * 10n ** 15n;
-    const { c: client, state } = fakeChain({ address: SENDER, receipts: ["success", { status: "success", spends: plan.amount_in, logs: [] }], balance: 10n ** 18n, balanceAfter: 10n ** 18n + got + 100_000n * 1_000_000n });
+    const { c: client, state } = fakeChain({ address: SENDER, chainKey: key, receipts: ["success", { status: "success", spends: plan.amount_in, logs: [] }], balance: 10n ** 18n, balanceAfter: 10n ** 18n + got + 100_000n * 1_000_000n });
     const out = await evm.executeBaseSwap(plan, { c: client, usdNotional: plan.usd });
     assert.equal(state.sent.length, 2, "an exact approval, then the swap");
     const approve = decodeFunctionData({ abi: (await import("viem")).erc20Abi, data: state.sent[0].data });
@@ -380,4 +388,171 @@ test("a bare 0x address with no --chain is the bot's own EVM chain; with two it 
   assert.throws(() => evmChainFor(undefined, undefined, { chains: ["base", "bnb"] }), /works on Base and BNB Chain: say which with --chain base\|bnb/);
   assert.throws(() => evmChainFor("solana", "register", { chains: ["solana"] }), /--chain must be/);
   await assert.rejects(async () => evmChainFor("bnb", "register", { chains: ["base"] }), (e) => e instanceof Refused && e.refusals[0].rule === "chain_not_allowed");
+});
+
+// ------------------------------------------------------------------ gas: a cap per chain, and Arbitrum's L1 cost
+
+test("the gas cap is the chain's own: the simulation's calls carry it, and the signing limit stays within it", async () => {
+  assert.deepEqual(["base", "bnb", "arbitrum", "polygon"].map((k) => evm.simGasSwap(k)), [2_000_000n, 2_000_000n, 2_000_000n, 5_000_000n]);
+  for (const key of ["bnb", "arbitrum", "polygon"]) {
+    for (const name of ["stable-to-native", "tail-to-stable"]) {
+      const { plan, seen } = await verifyCase(key, name);
+      const calls = seen[0].calls;
+      assert.equal(calls.at(-1).gas, evm.simGasSwap(key), `${key} ${name}: the swap is simulated with the chain's cap`);
+      if (calls.length === 2) assert.equal(calls[0].gas, 100_000n, "an approval keeps its own");
+      const used = BigInt(plan.simulation.gas_used.at(-1));
+      const want = (used * 3n) / 2n + 50_000n;
+      assert.equal(evm.swapGasLimit(plan), want > evm.simGasSwap(key) ? evm.simGasSwap(key) : want, `${key} ${name}: half again plus a margin, within the cap`);
+    }
+  }
+  // A recorded Polygon sale of AAVE (2026-10-12, tail-to-stable-heavy-*) used 2,522,648 gas, more than the 2,000,000 cap the other
+  // chains keep: with the cap Polygon had in 0.4.0 it would have been refused. With Polygon's own cap it verifies, is simulated
+  // with 5,000,000 and is signed with half again of what it used.
+  const heavy = await verifyCase("polygon", "tail-to-stable", { fixture: "tail-to-stable-heavy" });
+  assert.equal(BigInt(heavy.plan.simulation.gas_used.at(-1)), 2_522_648n);
+  assert.equal(heavy.seen[0].calls.at(-1).gas, 5_000_000n);
+  assert.equal(evm.swapGasLimit(heavy.plan), (2_522_648n * 3n) / 2n + 50_000n);
+  // the same heavy route on a chain capped at 2M would have been held to 2M (BNB Chain's plan shape, a made-up plan with that gas)
+  assert.equal(evm.swapGasLimit({ chain: "bnb", simulation: { gas_used: ["2522648"] } }), 2_000_000n);
+  assert.equal(evm.swapGasLimit({ chain: "polygon", simulation: { gas_used: ["2522648"] } }), 3_833_972n);
+  assert.equal(evm.swapGasLimit({ simulation: { gas_used: ["2522648"] } }), 2_000_000n, "no chain: Base's, unchanged");
+});
+
+const APPROVE_SELECTOR = "0x095ea7b3";
+const isReset = (data) => data.startsWith(APPROVE_SELECTOR) && /^0+$/.test(data.slice(-64));
+
+async function arbitrumRun({ estimate, receipts = ["success", { status: "success", logs: [] }], spends = true, name = "stable-to-native", deps = {} }) {
+  const { plan } = await verifyCase("arbitrum", name);
+  const got = 5n * 10n ** 15n;
+  const rec = receipts.map((r) => (spends && typeof r === "object" ? { ...r, spends: plan.amount_in } : r));
+  const { c, state } = fakeChain({ address: SENDER, chainKey: "arbitrum", estimate, receipts: rec, balance: 10n ** 18n, balanceAfter: 10n ** 18n + got + 100_000n * 1_000_000n });
+  const result = await evm.executeBaseSwap(plan, { c, usdNotional: plan.usd, estimateRetryMs: 0, ...deps }).then((out) => ({ out }), (error) => ({ error }));
+  return { plan, state, ...result };
+}
+
+test("Arbitrum: every signed transaction carries max(the simulation-based limit, eth_estimateGas for that exact transaction)", async () => {
+  // the node's estimates (the L1 data cost included) are above what the simulation alone gives: they win, for the approval and the swap
+  const { plan, state, out, error } = await arbitrumRun({ estimate: (args) => (args.data.startsWith(APPROVE_SELECTOR) ? 300_000n : 4_000_000n) });
+  assert.equal(error, undefined, error?.stack);
+  assert.equal(state.sent.length, 2);
+  assert.equal(state.sent[0].gas, 300_000n, "the approval: the estimate is above the 100,000 floor");
+  assert.equal(state.sent[1].gas, 4_000_000n, "the swap: the estimate is above the simulation-based limit");
+  assert.ok(evm.swapGasLimit(plan) < 4_000_000n);
+  assert.deepEqual(state.estimated.map((a) => [a.to, a.data.slice(0, 10)]), [[plan.token_in.address, APPROVE_SELECTOR], [plan.tx.to, plan.tx.data.slice(0, 10)]], "each exact transaction was estimated, from the bot's account");
+  assert.ok(state.estimated.every((a) => a.account.address === SENDER));
+  assert.equal(out.sold.amount, "10");
+  // estimates BELOW the floors: the simulation-based limit stays
+  const low = await arbitrumRun({ estimate: () => 21_000n });
+  assert.equal(low.state.sent[0].gas, 100_000n);
+  assert.equal(low.state.sent[1].gas, evm.swapGasLimit(low.plan));
+});
+
+test("Arbitrum: a swap that needs no approval is estimated too, and a native sale carries its value in the estimate", async () => {
+  const { plan } = await verifyCase("arbitrum", "native-to-stable");
+  assert.equal(plan.approval.needed, false);
+  const router = evmChain("arbitrum").kyber.router;
+  const stable = majorTokens("arbitrum")[evmChain("arbitrum").defaultStable];
+  const { c, state } = fakeChain({ address: SENDER, chainKey: "arbitrum", estimate: () => 2_500_000n, receipts: [{ status: "success", logs: [transferLog(stable.address, router, SENDER, plan.quoted_out)] }] });
+  const out = await evm.executeBaseSwap(plan, { c, usdNotional: plan.usd, estimateRetryMs: 0 });
+  assert.equal(out.sold.asset, "ETH");
+  assert.equal(state.sent.length, 1, "no approval, one transaction");
+  assert.equal(state.sent[0].gas, 2_500_000n, "the node's estimate is above the simulation-based limit");
+  assert.equal(state.estimated[0].value, plan.tx.value, "the estimate is for the exact transaction, its value included");
+  assert.equal(state.estimated[0].to, plan.tx.to);
+});
+
+test("Arbitrum: a node that will not estimate is a refusal and nothing is signed: for the approval, and for the swap (the approval is then set back to 0)", async () => {
+  const flaky = await arbitrumRun({ estimate: () => { throw new Error("execution reverted: TRANSFER_FROM_FAILED"); } });
+  assert.ok(flaky.error instanceof Refused, flaky.error?.stack);
+  assert.equal(flaky.error.refusals[0].rule, "gas_estimate_failed");
+  assert.match(flaky.error.message, /would not estimate the gas for this approval on Arbitrum/);
+  assert.equal(flaky.state.sent.length, 0, "nothing was signed");
+  assert.equal(flaky.state.estimated.length, 3, "tried three times (a node right after a block can lag), then refused");
+  // the approval estimates, the swap does not: the approval already granted is reset, and the swap is not sent
+  const swapFails = await arbitrumRun({ estimate: (args) => { if (args.data.startsWith(APPROVE_SELECTOR)) return 120_000n; throw new Error("execution reverted"); } });
+  assert.ok(swapFails.error instanceof Refused);
+  assert.equal(swapFails.error.refusals[0].rule, "gas_estimate_failed");
+  assert.match(swapFails.error.message, /for this swap on Arbitrum/);
+  assert.match(swapFails.error.message, /approval granted for this swap was set back to 0/);
+  assert.equal(swapFails.state.sent.length, 2, "the approval, then its reset; never the swap");
+  assert.equal(swapFails.state.sent[1].to, swapFails.plan.token_in.address);
+  assert.ok(isReset(swapFails.state.sent[1].data));
+  const row = actions().filter((e) => e.kind === "swap").at(-1);
+  assert.deepEqual([row.status, row.reason], ["failed", "failed before broadcast"], "the reservation was released: nothing went out, so it no longer counts against the limits");
+});
+
+test("Arbitrum: the reset carries its estimate; a reset the node will not estimate still goes out, with a generous fixed limit", async () => {
+  // swap succeeds but leaves its allowance (no `spends`): the kit sets it back to 0
+  const est = await arbitrumRun({ spends: false, estimate: (args) => (isReset(args.data) ? 180_000n : args.data.startsWith(APPROVE_SELECTOR) ? 300_000n : 4_000_000n), receipts: ["success", { status: "success", logs: [] }, "success"] });
+  assert.equal(est.error, undefined, est.error?.stack);
+  assert.equal(est.state.sent.length, 3);
+  assert.ok(isReset(est.state.sent[2].data));
+  assert.equal(est.state.sent[2].gas, 180_000n);
+  const noEst = await arbitrumRun({ spends: false, estimate: (args) => { if (isReset(args.data)) throw new Error("node unavailable"); return args.data.startsWith(APPROVE_SELECTOR) ? 300_000n : 4_000_000n; }, receipts: ["success", { status: "success", logs: [] }, "success"] });
+  assert.equal(noEst.error, undefined, noEst.error?.stack);
+  assert.equal(noEst.state.sent.length, 3, "the reset was still sent");
+  assert.equal(noEst.state.sent[2].gas, 500_000n);
+});
+
+test("on BNB Chain, Polygon and Base the node is never asked to estimate: the limits are the simulation's, as before", async () => {
+  for (const key of ["bnb", "polygon"]) {
+    const { plan } = await verifyCase(key, "stable-to-native");
+    const got = 5n * 10n ** 15n;
+    const { c, state } = fakeChain({ address: SENDER, chainKey: key, estimate: () => { throw new Error("must not be asked"); }, receipts: ["success", { status: "success", spends: plan.amount_in, logs: [] }], balance: 10n ** 18n, balanceAfter: 10n ** 18n + got + 100_000n * 1_000_000n });
+    await evm.executeBaseSwap(plan, { c, usdNotional: plan.usd });
+    assert.equal(state.estimated.length, 0, key);
+    assert.equal(state.sent[0].gas, undefined, "the approval takes the node's own estimate through viem, as in v0.4.0");
+    assert.equal(state.sent[1].gas, evm.swapGasLimit(plan), "after our approval the swap takes the simulation-based limit and the next nonce");
+  }
+});
+
+// ------------------------------------------------------------------ the client must be for the chain
+
+test("a swap is not signed with a client for another chain (nothing reaches the ledger or the signer)", async () => {
+  const before = entries().length;
+  const { plan } = await verifyCase("bnb", "stable-to-native");
+  for (const chainKey of [undefined, "arbitrum", "polygon", "base"]) {
+    const { c, state } = fakeChain({ address: SENDER, ...(chainKey ? { chainKey } : {}) });
+    await assert.rejects(evm.executeBaseSwap(plan, { c, usdNotional: plan.usd }), /refusing to swap for bnb with a client for (base|arbitrum|polygon): nothing was signed/, String(chainKey));
+    assert.equal(state.sent.length, 0);
+  }
+  assert.equal(entries().length, before, "no ledger row was written");
+});
+
+test("signAndSend: the client's chain must be the transaction's chain", async () => {
+  const to = "0x000000000000000000000000000000000000dEaD";
+  const none = fakeChain({ address: SENDER });
+  await assert.rejects(baseMod.signAndSend(none.c, { to, data: "0x" }, undefined, { chain: "bnb" }), /refusing to sign for bnb with a client for base/);
+  const arb = fakeChain({ address: SENDER, chainKey: "arbitrum" });
+  await assert.rejects(baseMod.signAndSend(arb.c, { to, data: "0x" }, undefined, { chain: "polygon" }), /refusing to sign for polygon with a client for arbitrum/);
+  assert.equal(none.state.sent.length + arb.state.sent.length, 0);
+  // the same chain, named or not, is signed
+  const ok = fakeChain({ address: SENDER, chainKey: "polygon" });
+  assert.equal((await baseMod.signAndSend(ok.c, { to, data: "0x" }, undefined, { chain: "polygon" })).status, "success");
+  const ok2 = fakeChain({ address: SENDER, chainKey: "bnb" });
+  assert.equal((await baseMod.signAndSend(ok2.c, { to, data: "0x" })).status, "success", "no chain given: the client's own");
+});
+
+// ------------------------------------------------------------------ a send that touched more than one endpoint
+
+test("signAndSend: 'nonce too low' / 'already known' after more than one endpoint is Pending (exit 4), never Rejected; after one it keeps its meaning", async () => {
+  const to = "0x000000000000000000000000000000000000dEaD";
+  const attempt = async (message, hosts, nested = false) => {
+    const { c } = fakeChain({ address: SENDER, chainKey: "bnb" });
+    c.pub.sendRawTransaction = async () => {
+      const inner = Object.assign(new Error(message), { shortMessage: message, details: message, ...(hosts === undefined ? {} : { satoHostsTried: hosts }) });
+      throw nested ? Object.assign(new Error("viem wrapped it"), { cause: inner }) : inner;
+    };
+    return baseMod.signAndSend(c, { to, data: "0x" }, undefined, { chain: "bnb" }).then(() => null, (e) => e);
+  };
+  for (const message of ["nonce too low: next nonce 7, tx nonce 6", "already known", "replacement transaction underpriced", "insufficient funds for gas * price + value"]) {
+    const two = await attempt(message, 2);
+    assert.ok(two instanceof Pending, `${message} after two endpoints: ${two?.constructor?.name}`);
+    assert.ok((await attempt(message, 3, true)) instanceof Pending, `${message}: found through the cause chain`);
+  }
+  // one endpoint (or none counted): a refusal is a refusal, and "already known" is still not one
+  assert.ok((await attempt("nonce too low: next nonce 7, tx nonce 6", 1)) instanceof Rejected);
+  assert.ok((await attempt("nonce too low", undefined)) instanceof Rejected);
+  assert.ok((await attempt("insufficient funds for gas * price + value", 1)) instanceof Rejected);
+  assert.ok((await attempt("already known", 1)) instanceof Pending);
 });

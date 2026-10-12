@@ -31,7 +31,7 @@ const lastRow = (kind) => actions().filter((e) => e.kind === kind).at(-1);
 // ------------------------------------------------------------------ sending a stablecoin
 
 test("send on BNB Chain: USDT has 18 decimals — 1.5 USDT is 1.5e18 units, $1.50 against the limits, signed on chain 56 under the chain's own lock", async () => {
-  const { c, state } = fakeChain({ address: me });
+  const { c, state } = fakeChain({ address: me, chainKey: "bnb" });
   const r = await base.sendStable({ to: TO, amount: "1.5", chain: "bnb" }, withSim(c));
   const usdt = evmChain("bnb").stables.USDT;
   assert.equal(state.sent[0].to, usdt.address);
@@ -45,7 +45,7 @@ test("send on BNB Chain: USDT has 18 decimals — 1.5 USDT is 1.5e18 units, $1.5
 });
 
 test("send on BNB Chain: the other stablecoin by name; more than 18 decimals refused; the dollar limit reads USD, not token units", async () => {
-  const { c, state } = fakeChain({ address: me });
+  const { c, state } = fakeChain({ address: me, chainKey: "bnb" });
   await base.sendStable({ to: TO, amount: "2", chain: "bnb", symbol: "USDC" }, withSim(c));
   assert.equal(state.sent[0].to, evmChain("bnb").stables.USDC.address);
   assert.equal(lastRow("send").asset, "USDC");
@@ -61,7 +61,7 @@ test("send on BNB Chain: the other stablecoin by name; more than 18 decimals ref
 
 test("send on Arbitrum and Polygon: USDC with 6 decimals; a stablecoin Base does not have is refused there", async () => {
   for (const [chain, scan] of [["arbitrum", "https://arbiscan.io"], ["polygon", "https://polygonscan.com"]]) {
-    const { c, state } = fakeChain({ address: me });
+    const { c, state } = fakeChain({ address: me, chainKey: chain });
     const r = await base.sendStable({ to: TO, amount: "1.25", chain }, withSim(c));
     const call = decodeFunctionData({ abi: erc20Abi, data: state.sent[0].data });
     assert.equal(state.sent[0].to, evmChain(chain).stables.USDC.address);
@@ -73,7 +73,7 @@ test("send on Arbitrum and Polygon: USDC with 6 decimals; a stablecoin Base does
   }
   await assert.rejects(base.sendStable({ to: TO, amount: "1", chain: "base", symbol: "USDT" }, withSim(fakeChain({ address: me }).c)), /USDT is not a stablecoin this kit sends on Base/);
   // sendUsdc still means USDC: on BNB Chain that is the 18-decimal Binance-Peg token, by name, never USDT
-  const { c, state } = fakeChain({ address: me });
+  const { c, state } = fakeChain({ address: me, chainKey: "bnb" });
   await base.sendUsdc({ to: TO, amount: "1", chain: "bnb" }, withSim(c));
   assert.equal(state.sent[0].to, evmChain("bnb").stables.USDC.address);
 });
@@ -101,13 +101,14 @@ test("a dry run of a send simulates the transfer in the chain's own token and si
 
 const servers = [];
 after(() => servers.forEach((s) => s.closeAllConnections?.() ?? s.close()));
-async function rpcServer(handler) {
+async function rpcServer(handler, { chain } = {}) {
   const s = http.createServer((req, res) => {
     let raw = "";
     req.on("data", (d) => (raw += d));
     req.on("end", () => {
       const j = JSON.parse(raw);
-      const out = handler(j);
+      // every endpoint is asked which chain it is on before its first real call (src/rpc.js)
+      const out = chain && j.method === "eth_chainId" ? { result: `0x${evmChain(chain).chainId.toString(16)}` } : handler(j);
       res.writeHead(out.status ?? 200, { "content-type": "application/json" });
       res.end(JSON.stringify(out.body ?? { jsonrpc: "2.0", id: j.id, result: out.result }));
     });
@@ -119,7 +120,7 @@ async function rpcServer(handler) {
 
 test("balance on BNB Chain: gas in BNB and both stablecoins with 18 decimals, read through the owner's RPC list (the first is rate limited)", async () => {
   const limited = await rpcServer(() => ({ status: 429, body: { jsonrpc: "2.0", error: { code: -32029, message: "Too Many Requests" } } }));
-  const good = await rpcServer((j) => ({ result: j.method === "eth_getBalance" ? "0xde0b6b3a7640000" : `0x${(2_500_000_000_000_000_000n).toString(16).padStart(64, "0")}` }));
+  const good = await rpcServer((j) => ({ result: j.method === "eth_getBalance" ? "0xde0b6b3a7640000" : `0x${(2_500_000_000_000_000_000n).toString(16).padStart(64, "0")}` }), { chain: "bnb" });
   process.env.SATO_AGENT_BNB_RPC = `${limited},${good}`;
   try {
     assert.deepEqual(await base.balances(me, "bnb"), { address: me, bnb: "1", usdt: "2.5", usdc: "2.5" });
@@ -129,7 +130,7 @@ test("balance on BNB Chain: gas in BNB and both stablecoins with 18 decimals, re
 });
 
 test("balance on Arbitrum: the old shape — { address, eth, usdc, usdt } — with 6-decimal stablecoins", async () => {
-  const good = await rpcServer((j) => ({ result: j.method === "eth_getBalance" ? "0x2386f26fc10000" : `0x${(12_340_000n).toString(16).padStart(64, "0")}` }));
+  const good = await rpcServer((j) => ({ result: j.method === "eth_getBalance" ? "0x2386f26fc10000" : `0x${(12_340_000n).toString(16).padStart(64, "0")}` }), { chain: "arbitrum" });
   process.env.SATO_AGENT_ARBITRUM_RPC = good;
   try {
     assert.deepEqual(await base.balances(me, "arbitrum"), { address: me, eth: "0.01", usdc: "12.34", usdt: "12.34" });
@@ -180,6 +181,7 @@ function registryClient(chain) {
     state,
     c: {
       account: { address: me },
+      chainKey: chain,
       sleep: async () => {},
       wallet: {
         async prepareTransactionRequest(req) {
@@ -253,6 +255,23 @@ test("gift cards: the chain a command runs on", async () => {
   B.assertBaseAgent({ chains: ["bnb", "polygon"] });
   assert.throws(() => B.giftcardChain("bnb", { chains: ["bnb", "base"] }), (e) => refused("giftcards_not_on_chain")(e) && /Bitrefill takes Base, Arbitrum and Polygon, not BNB Chain/.test(e.message));
   assert.throws(() => B.giftcardChain("eth", null), /--chain must be base, arbitrum or polygon/);
+  // --chain obeys the owner's chains: a chain the agent is not set to work on is refused, before any sign-in
+  assert.throws(() => B.giftcardChain("polygon", { chains: ["base"] }), (e) => refused("chain_not_allowed")(e) && /set to work on base only/.test(e.message));
+  assert.throws(() => B.giftcardChain("arbitrum", { chains: ["base", "solana"] }), refused("chain_not_allowed"));
+  assert.equal(B.giftcardChain("base", { chains: ["base", "solana"] }), "base");
+  assert.equal(B.giftcardChain("polygon", null), "polygon", "no policy at all: the limits check says the rest");
+});
+
+test("gift cards: --chain on a chain the owner did not allow stops before any request to Bitrefill", async () => {
+  const B = await import("../src/bitrefill.js");
+  const keep = loadPolicy();
+  setPolicy({ chains: "base" });
+  let fetched = 0;
+  const fetchImpl = async () => (fetched++, new Response("{}", { status: 200 }));
+  await assert.rejects(B.buyGiftcard({ product: "amazon-us", value: "25", chain: "polygon" }, { fetchImpl }), refused("chain_not_allowed"));
+  assert.throws(() => B.giftcardChain("arbitrum"), refused("chain_not_allowed"), "search / detail / status choose the chain the same way");
+  assert.equal(fetched, 0, "Bitrefill was never asked, and nothing was signed");
+  setPolicy({ chains: keep.chains.join(",") });
 });
 
 test("gift cards: a sign-in on Arbitrum or Polygon is for that chain's id, and Bitrefill's challenge must offer it", async () => {

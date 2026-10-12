@@ -56,7 +56,7 @@
 
 import { decodeFunctionData, encodeFunctionData, erc20Abi, getAddress, isAddress, parseEventLogs, toHex } from "viem";
 import { Pending, Refused, Rejected } from "../errors.js";
-import { clients, signAndSend } from "../base.js";
+import { assertClientChain, clients, signAndSend } from "../base.js";
 import { DEFAULT_EVM_CHAIN, NATIVE_PLACEHOLDER, defaultStable, evmChain, explorerTx, isStableSymbol, kyberApiBase, lockName, majorTokens, orList, stableByAddress } from "../chains.js";
 import { loadPolicy } from "../policy.js";
 import { record, release, reserve } from "../ledger.js";
@@ -192,18 +192,46 @@ const KYBER_ALLOWED_FLAGS = 0x80n | 0x200n;
 
 /** Gas limits for the kit's own simulation: generous for an exact approval and a KyberSwap route. */
 const SIM_GAS_APPROVE = 100_000n;
-const SIM_GAS_SWAP = 2_000_000n;
+/** The gas limit a swap gets in the simulation, and the cap on what the kit signs it with: the chain's own (src/chains.js, `simulation.swapGas`). */
+export const simGasSwap = (chain = DEFAULT_EVM_CHAIN) => evmChain(chain).simulation.swapGas;
 /** Gas for an approve(router, 0) sent right after our own transactions (no estimate from a possibly stale node). */
 const RESET_GAS = 100_000n;
+/** The reset's limit on a chain whose gas includes an L1 data cost, when the node will not estimate it (the reset must still go out). */
+const RESET_GAS_L1_FALLBACK = 500_000n;
 
-/** The swap's gas limit from our own simulation: what it used, plus half again and a fixed margin, within the simulation's cap. */
+/** The swap's gas limit from our own simulation: what it used, plus half again and a fixed margin, within the chain's cap. */
 export function swapGasLimit(plan) {
+  const cap = simGasSwap(chainKeyOf(plan));
   const used = plan?.simulation?.gas_used;
   const last = Array.isArray(used) && used.length ? used[used.length - 1] : null;
   const g = last !== null && /^\d+$/.test(String(last)) ? BigInt(last) : 0n;
-  if (g <= 0n) return SIM_GAS_SWAP;
+  if (g <= 0n) return cap;
   const limit = (g * 3n) / 2n + 50_000n;
-  return limit > SIM_GAS_SWAP ? SIM_GAS_SWAP : limit;
+  return limit > cap ? cap : limit;
+}
+
+/**
+ * The gas limit a transaction is signed with on a chain whose gas includes more than the simulation shows (Arbitrum: the cost of
+ * posting the data to Ethereum). There it is max(`floor`, eth_estimateGas for this exact transaction): the simulation-based
+ * limit can be short, the node's own estimate covers the L1 part. A node that will not estimate it (tried a few times: a
+ * load-balanced node right after our approval can still answer from before it) is a refusal, and nothing is signed. On any other
+ * chain the floor is returned unchanged, and nothing is asked of the node.
+ */
+export async function exactGasLimit(c, chain, tx, floor, { deps = {}, what = "transaction" } = {}) {
+  const spec = evmChain(chain);
+  if (!spec.simulation.exactGasEstimate) return floor;
+  const wait = deps.estimateRetryMs ?? 700;
+  let last;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const est = await c.pub.estimateGas({ account: c.account, to: tx.to, data: tx.data, ...(tx.value ? { value: BigInt(tx.value) } : {}) });
+      return BigInt(est) > floor ? BigInt(est) : floor;
+    } catch (err) {
+      last = err;
+      if (attempt < 2) await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+  throw new Refused([refusal("gas_estimate_failed", `the node would not estimate the gas for this ${what} on ${spec.label} (${errText(last).slice(0, 160)}); the gas there includes the cost of posting the data to Ethereum, which the kit's simulation cannot see, so nothing was signed`)]);
 }
 
 /** How long Sato's signature, and a verified plan, stay usable. Prices move; the plan is rebuilt after this. */
@@ -909,7 +937,7 @@ export function assetDeltas(calls, taker) {
 const assetKey = (token) => lc(token.address);
 
 /** The calls the swap itself sends: an exact approval when the allowance is short, then the swap. Each gets a gas limit. */
-function swapCalls({ intent, facts, tx, approvalNeeded }) {
+export function swapCalls({ intent, facts, tx, approvalNeeded }) {
   // Each simulated call gets a gas limit. With real fees in the simulation the node checks the
   // wallet can pay gas x fee, and with no limit it assumes a whole block's gas (about 0.003 ETH
   // on 2026-10-09), which a wallet funded with a little ETH for gas does not hold.
@@ -917,8 +945,17 @@ function swapCalls({ intent, facts, tx, approvalNeeded }) {
   if (approvalNeeded) {
     calls.push({ to: intent.tokenIn.address, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [routerOf(chainKeyOf(intent)), intent.amountIn] }), value: 0n, gas: SIM_GAS_APPROVE });
   }
-  calls.push({ to: getAddress(tx.to), data: tx.data, value: facts.value, gas: SIM_GAS_SWAP });
+  calls.push({ to: getAddress(tx.to), data: tx.data, value: facts.value, gas: simGasSwap(chainKeyOf(intent)) });
   return calls;
+}
+
+/** The two calls of a sell-back test, in the block after the buy: the exact approval of the token to the router, then the sale. */
+export function sellBackCalls({ chain, token, units, data }) {
+  const router = routerOf(chain);
+  return [
+    { to: token.address, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [router, units] }), value: 0n, gas: SIM_GAS_APPROVE },
+    { to: router, data, value: 0n, gas: simGasSwap(chain) },
+  ];
 }
 
 /** Run calls through the kit's own eth_simulateV1 (or the injected one). Refuses, never guesses, when it cannot run or be read. */
@@ -1155,9 +1192,7 @@ async function sellBackCheck({ intent, facts, tx, approvalNeeded, sim, deps, get
     const checked = checkRouterCalldata(built.data, { intent: sellIntent, minOut: null, feeBps: 0, feeSide: "in" });
     if (checked.refusals.length) throw new Refused(checked.refusals.map((r) => ({ ...r, message: `in the sell-back route: ${r.message}` })));
 
-    const approveToken = { to: token.address, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [router, units] }), value: 0n, gas: SIM_GAS_APPROVE };
-    const sell = { to: router, data: built.data, value: 0n, gas: SIM_GAS_SWAP };
-    const calls = [...baseCalls, approveToken, sell];
+    const calls = [...baseCalls, ...sellBackCalls({ chain, token, units, data: built.data })];
     // The buy (and its approval) in one block, the token's approval and the sell in the NEXT one.
     const got = await runSimulation({ intent, calls, splitAt: baseCalls.length, deps, getClient });
     const n = baseCalls.length;
@@ -1481,6 +1516,8 @@ async function executeLocked(plan, deps) {
   const router = routerOf(chain);
   const explorerOf = (hash) => explorer(chain, hash);
   const c = deps.c ?? clients(undefined, chain);
+  // A client for another chain would sign for this one and broadcast on that one: stopped before the ledger or any signing.
+  assertClientChain(c, chain, "swap");
   if (!same(c.account.address, plan.taker)) throw new Refused([refusal("taker_mismatch", "the plan was built for a different wallet than the one signing", plan.taker, c.account.address)]);
   // The larger of what verify measured and the caller's independent figure is what counts against the limits.
   const usd = Math.max(plan.usd, deps.usdNotional);
@@ -1533,9 +1570,15 @@ async function executeLocked(plan, deps) {
         left = await reader();
         if (left === 0n) return { state: "none_left" };
       }
+      const resetTx = { to: plan.token_in.address, data: approveData(0n, chain) };
+      // Where the gas includes an L1 data cost (Arbitrum) the reset gets the node's estimate when it has one; a reset must still go
+      // out when the node will not estimate it (the approval would stay open), so it falls back to a generous fixed limit.
+      const resetGas = evmChain(chain).simulation.exactGasEstimate
+        ? await exactGasLimit(c, chain, resetTx, RESET_GAS, { deps, what: "approval reset" }).catch(() => RESET_GAS_L1_FALLBACK)
+        : undefined;
       const r = await signAndSend(
         c,
-        { to: plan.token_in.address, data: approveData(0n, chain), ...(nextNonce !== undefined ? { nonce: nextNonce, gas: RESET_GAS } : {}) },
+        { ...resetTx, ...(nextNonce !== undefined ? { nonce: nextNonce, gas: RESET_GAS } : {}), ...(resetGas !== undefined ? { gas: resetGas } : {}) },
         (hash) => record({ id: entry.id, allowance: "reset_signed", allowance_tx: hash, allowance_spender: router }),
         { counted: false, chain },
       );
@@ -1566,7 +1609,9 @@ async function executeLocked(plan, deps) {
   if (current !== null && current < plan.amount_in) {
     let r;
     try {
-      r = await signAndSend(c, { to: plan.token_in.address, data: approveData(plan.amount_in, chain) }, (hash) => {
+      const approveTx0 = { to: plan.token_in.address, data: approveData(plan.amount_in, chain) };
+      const approveGas = evmChain(chain).simulation.exactGasEstimate ? { gas: await exactGasLimit(c, chain, approveTx0, SIM_GAS_APPROVE, { deps, what: "approval" }) } : {};
+      r = await signAndSend(c, { ...approveTx0, ...approveGas }, (hash) => {
         approveTx = hash;
         record({ id: entry.id, status: "approval_signed", step: "approve", tx: hash, approve_tx: hash });
       }, { chain });
@@ -1596,7 +1641,9 @@ async function executeLocked(plan, deps) {
   const afterApproval = nextNonce !== undefined ? { nonce: nextNonce, gas: swapGasLimit(plan) } : {};
   let receipt;
   try {
-    receipt = await signAndSend(c, { to: plan.tx.to, data: plan.tx.data, value: plan.tx.value, ...afterApproval }, (hash) => record({ id: entry.id, status: "signed", step: "swap", tx: hash }), { chain });
+    const swapTx = { to: plan.tx.to, data: plan.tx.data, value: plan.tx.value };
+    const swapGas = evmChain(chain).simulation.exactGasEstimate ? { gas: await exactGasLimit(c, chain, swapTx, swapGasLimit(plan), { deps, what: "swap" }) } : {};
+    receipt = await signAndSend(c, { ...swapTx, ...afterApproval, ...swapGas }, (hash) => record({ id: entry.id, status: "signed", step: "swap", tx: hash }), { chain });
   } catch (err) {
     if (err instanceof Pending) throw err; // may still land: stays counted, allowance untouched
     release(entry, err instanceof Rejected ? "rejected; never landed" : "failed before broadcast", { error: errText(err) });

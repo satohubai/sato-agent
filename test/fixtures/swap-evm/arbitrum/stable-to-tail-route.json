@@ -5,14 +5,14 @@
   "routeSummary": {
    "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
    "amountIn": "10000000",
-   "amountInUsd": "10.002893104573854",
+   "amountInUsd": "10.019035411672492",
    "tokenOut": "0x912ce59144191c1204e64559fe8253a0e49e6548",
-   "amountOut": "50188153626674520064",
-   "amountOutUsd": "9.923922436347063",
-   "gas": "415912",
-   "gasPrice": "20004000",
-   "gasUsd": "0.02130156803824375",
-   "l1FeeUsd": "0.0001642415012775105",
+   "amountOut": "51771322693455003733",
+   "amountOutUsd": "9.933603843577236",
+   "gas": "330498",
+   "gasPrice": "20034000",
+   "gasUsd": "0.016746856588239534",
+   "l1FeeUsd": "0.00013612165428018215",
    "extraFee": {
     "feeAmount": "75",
     "chargeFeeBy": "currency_in",
@@ -22,95 +22,51 @@
    "route": [
     [
      {
-      "pool": "pmm_5_0x912ce59144191c1204e64559fe8253a0e49e6548_0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+      "pool": "0xb0f6ca40411360c03d41c5ffc5f179b8403cdcf8",
       "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
       "tokenOut": "0x912ce59144191c1204e64559fe8253a0e49e6548",
       "swapAmount": "9925000",
-      "amountOut": "50188153626674520064",
-      "exchange": "pmm-5/pancake-v3",
-      "poolType": "orderbook",
+      "amountOut": "51771322693455003733",
+      "exchange": "uniswapv3",
+      "poolType": "uniswapv3",
       "poolExtra": {
-       "approvalAddress": "",
-       "blockNumber": 0
+       "swapFee": 500,
+       "priceLimit": "1461300573427867316570072651998408279850435624080",
+       "blockNumber": 514127707
       },
       "extra": {
-       "_ce": {
-        "prCnt": 1,
-        "tgtAmtOut": "50188153626674520064",
-        "ces": [
-         {
-          "pool": "0x9ffca51d23ac7f7df82da414865ef1055e5afcc3",
-          "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-          "tokenOut": "0x912ce59144191c1204e64559fe8253a0e49e6548",
-          "swapAmount": "9925000",
-          "amountOut": "50192220382501626183",
-          "exchange": "pancake-v3",
-          "poolType": "pancake-v3",
-          "poolExtra": {
-           "swapFee": 500,
-           "priceLimit": "1461300573427867316570072651998408279850435624080",
-           "blockNumber": 514024359
-          },
-          "extra": {
-           "rAI": "0",
-           "nSqrtRx96": "35222624106170477151892",
-           "nT": -292538
-          }
-         }
-        ]
-       },
-       "_cs": "14170785272324554114",
-       "_fr": {
-        "amountOut": "50192220382501626183",
-        "amountOutUsd": 9.924726573707764
-       },
-       "_fs": {
-        "pool": "0x9ffca51d23ac7f7df82da414865ef1055e5afcc3",
-        "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-        "tokenOut": "0x912ce59144191c1204e64559fe8253a0e49e6548",
-        "swapAmount": "9925000",
-        "amountOut": "50192220382501626183",
-        "exchange": "pancake-v3",
-        "poolType": "pancake-v3",
-        "poolExtra": {
-         "swapFee": 500,
-         "priceLimit": "1461300573427867316570072651998408279850435624080",
-         "blockNumber": 514024359
-        },
-        "extra": {
-         "rAI": "0",
-         "nSqrtRx96": "35222624106170477151892",
-         "nT": -292538
-        }
-       },
+       "_cs": "7506872021336327926",
        "_ss": {
         "pool": "0x716aa091d30a88a3e1874d56e99fbf1487cbc65a",
         "tokenIn": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
         "tokenOut": "0x912ce59144191c1204e64559fe8253a0e49e6548",
         "swapAmount": "9925000",
-        "amountOut": "50153156946669070423",
+        "amountOut": "51639039975825263812",
         "exchange": "dodo-dpp",
         "poolType": "dodo-dpp",
         "poolExtra": {
          "type": "DPP",
          "baseToken": "0x912ce59144191c1204e64559fe8253a0e49e6548",
          "quoteToken": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-         "blockNumber": 514024633
+         "blockNumber": 514127689
         },
         "extra": null
        },
-       "_ts": "1791782763",
-       "ri": "9b1da76bdDRDDosY"
+       "_ts": "1791812277",
+       "nSqrtRx96": "34683738392984022501557",
+       "nT": -292847,
+       "rAI": "0",
+       "ri": "aa6cfcfcWdtKNYnL"
       }
      }
     ]
    ],
    "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
-   "routeID": "9b1da76bdDRDDosY",
-   "checksum": "14170785272324554114",
-   "timestamp": 1791782763
+   "routeID": "aa6cfcfcWdtKNYnL",
+   "checksum": "7506872021336327926",
+   "timestamp": 1791812277
   },
   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
  },
- "requestId": "9b1da76b-7434-430e-8b18-30da90afea4e"
+ "requestId": "aa6cfcfc-59db-4a35-89cb-44489fb8795e"
 }

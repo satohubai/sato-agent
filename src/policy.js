@@ -18,7 +18,7 @@ import { isAddress as isEvmAddress } from "viem";
 import { isAddress as isSolanaAddress } from "@solana/kit";
 import { paths, readJson, writePrivate } from "./store.js";
 import { entries, recordPolicyChange } from "./ledger.js";
-import { DEFAULT_EVM_CHAIN, chainKeys, chainsWith, evmChainKeys, hasFeature, isEvm, labelList, labelOf, orList } from "./chains.js";
+import { DEFAULT_EVM_CHAIN, chainKeys, chainsWith, evmChainKeys, hasFeature, isEvm, labelList, labelOf, orList, pipeList } from "./chains.js";
 import { Refused } from "./errors.js";
 
 export { Refused } from "./errors.js";
@@ -26,6 +26,8 @@ export { Refused } from "./errors.js";
 export const POLICY_SCHEMA = "sato-agent.policy/v2";
 // The chains an owner can choose: every chain in the registry (src/chains.js).
 export const CHAINS = chainKeys();
+/** How `--chains` is written in a message: one chain of the registry, or a comma-separated list ("base|bnb|...|base,bnb,..."). */
+export const CHAINS_USAGE = `${pipeList(CHAINS)}|${CHAINS.join(",")}`;
 // What a v0.1 policy (no `chains` field) meant: both chains that existed then. Pinned, so a chain added to the registry later
 // never becomes allowed by a policy that never chose it.
 const LEGACY_CHAINS = Object.freeze(["base", "solana"]);
@@ -238,7 +240,7 @@ export function evmChainFor(requested, feature, policy = loadPolicy()) {
  */
 export function evaluate(policy, { usd, to, chain, kind, slippage_bps }, spent) {
   if (!policy) {
-    return [{ rule: "limits_not_set", limit: null, observed: null, message: "no spending limits are set yet: the owner runs `sato-agent policy set --chains <base|solana> --per-tx <usd|none> --per-day <usd|none>`" }];
+    return [{ rule: "limits_not_set", limit: null, observed: null, message: "no spending limits are set yet: the owner runs `sato-agent policy set --chains <" + CHAINS_USAGE + "> --per-tx <usd|none> --per-day <usd|none>`" }];
   }
   const s = typeof spent === "number" ? { usd: spent, unreadable: [] } : spent;
   if (s.unreadable.length) {
@@ -247,7 +249,7 @@ export function evaluate(policy, { usd, to, chain, kind, slippage_bps }, spent) 
   const out = [];
   if (!Array.isArray(policy.chains)) {
     // A v0.1.0 policy never chose its chains. No default: choose before spending.
-    return [{ rule: "chains_not_set", limit: null, observed: null, message: "choose which chain(s) this agent may spend on: `sato-agent policy set --chains <base|solana|base,solana>`" }];
+    return [{ rule: "chains_not_set", limit: null, observed: null, message: "choose which chain(s) this agent may spend on: `sato-agent policy set --chains <" + CHAINS_USAGE + ">`" }];
   }
   if (chain && !allowedChains(policy).includes(chain)) {
     out.push({ rule: "chain_not_allowed", limit: allowedChains(policy), observed: chain, message: `this agent is set to work on ${allowedChains(policy).join(" and ")} only` });

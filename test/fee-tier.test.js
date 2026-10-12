@@ -60,7 +60,23 @@ test("a disclosed tier CHEAPER than the kit's reading is accepted, held to the c
   assert.deepEqual(rules(F.feeTierRefusals({ bps: 16, tier: "token", disclosedTier: "major" })), ["fee_over_major_ceiling"]);
   // USDC <-> ETH priced as "stable": cheaper, accepted at 3 or 15 bps.
   assert.deepEqual(F.feeTierRefusals({ bps: 3, tier: "major", disclosedTier: "stable" }), []);
-  assert.deepEqual(F.feeTierRefusals({ bps: 15, tier: "major", disclosedTier: "stable" }), []);
+  assert.deepEqual(rules(F.feeTierRefusals({ bps: 15, tier: "major", disclosedTier: "stable" })), ["fee_over_major_ceiling"], "a stable claim is held to the stable ceiling");
+});
+
+test("each tier has its own ceiling: a stable pair is held to 3 bps, not to the major tier's 15 (4 bps refused, 3 accepted)", () => {
+  assert.deepEqual(F.TIER_CEILING_BPS, { stable: 3, major: 15, token: 100 });
+  assert.deepEqual(F.feeTierRefusals({ bps: 3, tier: "stable" }), []);
+  assert.deepEqual(F.feeTierRefusals({ bps: 3, tier: "stable", disclosedTier: "stable" }), []);
+  for (const disclosedTier of [undefined, "stable"]) {
+    const got = F.feeTierRefusals({ bps: 4, tier: "stable", disclosedTier });
+    assert.deepEqual(rules(got), ["fee_over_major_ceiling"], String(disclosedTier));
+    assert.deepEqual([got[0].limit, got[0].observed], [3, 4]);
+    assert.match(got[0].message, /priced as stable, whose most is 0\.03%/);
+  }
+  assert.deepEqual(F.feeTierRefusals({ bps: 15, tier: "major" }), []);
+  assert.deepEqual(rules(F.feeTierRefusals({ bps: 16, tier: "major" })), ["fee_over_major_ceiling"]);
+  assert.deepEqual(F.feeTierRefusals({ bps: 100, tier: "token" }), []);
+  assert.deepEqual([F.approvalFeeCeiling("stable"), F.approvalFeeCeiling("major"), F.approvalFeeCeiling("token")], [3, 15, 100]);
 });
 
 test("a pair where neither side is a kit major (USDT <-> DAI, \"stable\" to Sato Hub) is refused before any quote: the fee could not be kept off a token", async () => {
@@ -91,7 +107,7 @@ test("Solana: the ceiling is 1% for a token pair, and USDC <-> SOL is held to 0.
 test("the approval line uses the published table and the tier ceiling", () => {
   assert.equal(F.approvalFeeLine("token"), "Sato Hub fee: 0.75% for a token trade (this approval allows up to 1%).");
   assert.equal(F.approvalFeeLine("major"), "Sato Hub fee: 0.15% for ETH or SOL with USDC (this approval allows up to 0.15%).");
-  assert.equal(F.approvalFeeLine("stable"), "Sato Hub fee: 0.03% for a stablecoin pair (this approval allows up to 0.15%).");
+  assert.equal(F.approvalFeeLine("stable"), "Sato Hub fee: 0.03% for a stablecoin pair (this approval allows up to 0.03%).");
 });
 
 test("the approval intent binds the fee tier and the most that tier may cost", () => {

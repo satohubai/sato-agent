@@ -8,7 +8,7 @@
 // does not pin the rate; it holds it to two ceilings so a broken or hostile server cannot overcharge:
 //
 //   - any pair: at most FEE_CEILING_BPS (1%);
-//   - a stable or major pair: at most MAJOR_FEE_CEILING_BPS (0.15%). Only a pair with a long-tail token may go higher.
+//   - a pair of its tier: at most TIER_CEILING_BPS (stable 0.03%, major 0.15%). Only a pair with a long-tail token may go higher.
 //
 // The kit classifies the pair itself (it already knows which side is a major and which a long-tail token). Sato Hub's
 // majors are a wider set (USDT, DAI, ...), so its disclosed tier may be CHEAPER than the kit's reading: that is accepted,
@@ -21,6 +21,11 @@ import { DEFAULT_EVM_CHAIN, getChain, orList, stableSymbols } from "../chains.js
 
 export const FEE_CEILING_BPS = 100;
 export const MAJOR_FEE_CEILING_BPS = 15;
+/**
+ * The most each tier may charge: a stablecoin pair 3 bps (0.03%), a major pair 15 bps, a pair with a long-tail token 1%. A tier is
+ * held to ITS OWN ceiling, not the dearer tier's: a stable pair at 15 bps is an overcharge of five times its published rate.
+ */
+export const TIER_CEILING_BPS = Object.freeze({ stable: 3, major: MAJOR_FEE_CEILING_BPS, token: FEE_CEILING_BPS });
 export const FEE_TIERS = Object.freeze(["stable", "major", "token"]);
 /** Sato Hub's published rate per tier, for display and docs only: the kit enforces the ceilings above, not these. */
 export const PUBLISHED_FEE_BPS = Object.freeze({ stable: 3, major: 15, token: 75 });
@@ -79,14 +84,15 @@ export function feeTierRefusals({ bps, tier, disclosedTier, prefix = "" }) {
     r("fee_disclosure_missing", "Sato Hub's fee is not a whole number of basis points", "0-100", bps ?? null);
   } else if (bps > FEE_CEILING_BPS) {
     r("fee_over_ceiling", `the fee is ${feePercent(bps)} (${bps} bps), above the ${feePercent(FEE_CEILING_BPS)} this kit ever accepts; nothing was signed`, FEE_CEILING_BPS, bps);
-  } else if (ceilingTier !== "token" && bps > MAJOR_FEE_CEILING_BPS) {
-    r("fee_over_major_ceiling", `the fee is ${feePercent(bps)} (${bps} bps) on a pair priced as ${ceilingTier}; only a trade with a long-tail token may cost more than ${feePercent(MAJOR_FEE_CEILING_BPS)}; nothing was signed`, MAJOR_FEE_CEILING_BPS, bps);
+  } else if (ceilingTier !== "token" && bps > TIER_CEILING_BPS[ceilingTier]) {
+    const ceiling = TIER_CEILING_BPS[ceilingTier];
+    r("fee_over_major_ceiling", `the fee is ${feePercent(bps)} (${bps} bps) on a pair priced as ${ceilingTier}, whose most is ${feePercent(ceiling)}; only a trade with a long-tail token may cost more than ${feePercent(MAJOR_FEE_CEILING_BPS)}; nothing was signed`, ceiling, bps);
   }
   return out;
 }
 
-/** The most a swap approval allows Sato Hub to charge on a pair of this tier. */
-export const approvalFeeCeiling = (tier) => (tier === "token" ? FEE_CEILING_BPS : MAJOR_FEE_CEILING_BPS);
+/** The most a swap approval allows Sato Hub to charge on a pair of this tier (its own ceiling, TIER_CEILING_BPS). */
+export const approvalFeeCeiling = (tier) => TIER_CEILING_BPS[tier] ?? FEE_CEILING_BPS;
 
 /**
  * The plain line an approval request carries for a swap (approved before the quote, so the rate is the published one and

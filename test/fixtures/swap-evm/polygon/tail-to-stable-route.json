@@ -5,13 +5,13 @@
   "routeSummary": {
    "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
    "amountIn": "10000000000000000000",
-   "amountInUsd": "1690.7562496560822",
+   "amountInUsd": "1646.7092977667508",
    "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
-   "amountOut": "1669867992",
-   "amountOutUsd": "1674.7042121933762",
-   "gas": "2697766",
-   "gasPrice": "204945610145",
-   "gasUsd": "0.05743828108272153",
+   "amountOut": "1632397919",
+   "amountOutUsd": "1630.5992000478473",
+   "gas": "1049276",
+   "gasPrice": "274410982025",
+   "gasUsd": "0.030295825606945086",
    "l1FeeUsd": "0",
    "extraFee": {
     "feeAmount": "75",
@@ -22,30 +22,142 @@
    "route": [
     [
      {
-      "pool": "0x141688f5eab27cba15b5588f011bdefc25f9eae6",
+      "pool": "0x2aceda63b5e958c45bd27d916ba701bc1dc08f7a",
       "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
-      "tokenOut": "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6",
-      "swapAmount": "793495505600000000",
-      "amountOut": "159944",
+      "tokenOut": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
+      "swapAmount": "2051072364195782648",
+      "amountOut": "133184883940948560",
       "exchange": "uniswapv3",
       "poolType": "uniswapv3",
       "poolExtra": {
        "swapFee": 3000,
        "priceLimit": "1457652066949847389969617340386294118487833376467",
-       "blockNumber": 95385288
+       "blockNumber": 95406128
       },
       "extra": {
-       "_cs": "10713617236327675047",
+       "_cs": "3924059701435831748",
        "_fr": {
-        "amountOut": "1682409069",
-        "amountOutUsd": 1687.2816102739193
+        "amountOut": "1643804543",
+        "amountOutUsd": 1641.9932552308144
        },
+       "_ss": {
+        "pool": "0x2813d43463c374a680f235c428fb1d7f08de0b69",
+        "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
+        "tokenOut": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
+        "swapAmount": "2051072364195782648",
+        "amountOut": "132750797252255372",
+        "exchange": "sushiswap",
+        "poolType": "uniswap-v2",
+        "poolExtra": {
+         "fee": 3,
+         "feePrecision": 1000,
+         "blockNumber": 95406125
+        },
+        "extra": null
+       },
+       "_ts": "1791814483",
+       "nSqrtRx96": "310476182380142121769958509610",
+       "nT": 27316,
+       "rAI": "0",
+       "ri": "5f7c0acdv8hBXJj9"
+      }
+     },
+     {
+      "pool": "pmm_8_0x3c499c542cef5e3811e1192ce70d8cc03d5c3359_0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
+      "tokenIn": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
+      "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+      "swapAmount": "133184883940948560",
+      "amountOut": "337346927",
+      "exchange": "pmm-8/uniswapv3",
+      "poolType": "orderbook",
+      "poolExtra": {
+       "approvalAddress": "",
+       "blockNumber": 0
+      },
+      "extra": {
+       "_ce": {
+        "prCnt": 0,
+        "tgtAmtOut": "337346927",
+        "ces": [
+         {
+          "pool": "0xa4d8c89f0c20efbe54cba9e7e7a7e509056228d9",
+          "tokenIn": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
+          "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+          "swapAmount": "133184883940948560",
+          "amountOut": "337355606",
+          "exchange": "uniswapv3",
+          "poolType": "uniswapv3",
+          "poolExtra": {
+           "swapFee": 500,
+           "priceLimit": "1461300573427867316570072651998408279850435624080",
+           "blockNumber": 95406115
+          },
+          "extra": {
+           "rAI": "0",
+           "nSqrtRx96": "1573923580814542134994843260028655",
+           "nT": 197944
+          }
+         }
+        ]
+       },
+       "_fs": {
+        "pool": "0xa4d8c89f0c20efbe54cba9e7e7a7e509056228d9",
+        "tokenIn": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
+        "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+        "swapAmount": "133184883940948560",
+        "amountOut": "337355606",
+        "exchange": "uniswapv3",
+        "poolType": "uniswapv3",
+        "poolExtra": {
+         "swapFee": 500,
+         "priceLimit": "1461300573427867316570072651998408279850435624080",
+         "blockNumber": 95406115
+        },
+        "extra": {
+         "rAI": "0",
+         "nSqrtRx96": "1573923580814542134994843260028655",
+         "nT": 197944
+        }
+       },
+       "_ss": {
+        "pool": "0x7baf833f82bb1971f99a5a5d84bed1d5d0dedd70",
+        "tokenIn": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
+        "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+        "swapAmount": "133184883940948560",
+        "amountOut": "327793576",
+        "exchange": "quickswap",
+        "poolType": "uniswap-v2",
+        "poolExtra": {
+         "fee": 3,
+         "feePrecision": 1000,
+         "blockNumber": 95405773
+        },
+        "extra": null
+       }
+      }
+     }
+    ],
+    [
+     {
+      "pool": "0x141688f5eab27cba15b5588f011bdefc25f9eae6",
+      "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
+      "tokenOut": "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6",
+      "swapAmount": "248933738400000000",
+      "amountOut": "49538",
+      "exchange": "uniswapv3",
+      "poolType": "uniswapv3",
+      "poolExtra": {
+       "swapFee": 3000,
+       "priceLimit": "1457652066949847389969617340386294118487833376467",
+       "blockNumber": 95405720
+      },
+      "extra": {
        "_ss": {
         "pool": "0xba9c0286fd6d2535c5b3cca5353743a8bfe45241",
         "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
         "tokenOut": "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6",
-        "swapAmount": "793495505600000000",
-        "amountOut": "293",
+        "swapAmount": "248933738400000000",
+        "amountOut": "292",
         "exchange": "sushiswap",
         "poolType": "uniswap-v2",
         "poolExtra": {
@@ -55,286 +167,193 @@
         },
         "extra": null
        },
-       "_ts": "1791783284",
-       "nSqrtRx96": "176373103383398290964169825911830875",
-       "nT": 292330,
-       "rAI": "0",
-       "ri": "03ad12126FRKtZG9"
+       "nSqrtRx96": "177388671352227967661318047436497881",
+       "nT": 292445,
+       "rAI": "0"
       }
-     }
-    ],
-    [
+     },
      {
-      "pool": "0x140715c74995b0bbd350db63b24680bf6651809cf0e1f55c981178f28bd91ab0",
-      "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
-      "tokenOut": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
-      "swapAmount": "360656935200000000",
-      "amountOut": "23815835973800320",
-      "exchange": "uniswap-v4",
-      "poolType": "uniswap-v4",
+      "pool": "0x32fae204835e08b9374493d6b4628fd1f87dd045",
+      "tokenIn": "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6",
+      "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+      "swapAmount": "49538",
+      "amountOut": "40981455",
+      "exchange": "uniswapv3",
+      "poolType": "uniswapv3",
       "poolExtra": {
-       "blockNumber": 95385145,
-       "router": "0x1095692a6237d83c6a72f3f5efedb9a670c49223",
-       "permit2Addr": "0x000000000022d473030f116ddee9f6b43ac78ba3",
-       "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
-       "tokenOut": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
-       "fee": 500,
-       "tickSpacing": 10,
-       "hookAddress": "0x0000000000000000000000000000000000000000",
-       "hookData": "",
-       "priceLimit": "331543907782267312565483524750"
+       "swapFee": 500,
+       "priceLimit": "4295558253",
+       "blockNumber": 95406093
       },
       "extra": {
-       "HookSwapInfo": null,
        "_ss": {
-        "pool": "0x0c787944946d22922c9f41c477cc539700d35bb2",
-        "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
-        "tokenOut": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
-        "swapAmount": "360656935200000000",
-        "amountOut": "23784999169296510",
-        "exchange": "honeyswap-v2",
-        "poolType": "uniswap-v2",
+        "pool": "0x4b2d96a6b63609ce629888e0829673c577aa97eb",
+        "tokenIn": "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6",
+        "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+        "swapAmount": "49538",
+        "amountOut": "40967534",
+        "exchange": "dodo-dpp",
+        "poolType": "dodo-dpp",
         "poolExtra": {
-         "fee": 15,
-         "feePrecision": 10000,
-         "blockNumber": 95385290
+         "type": "DPP",
+         "baseToken": "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6",
+         "quoteToken": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+         "blockNumber": 95406120
         },
         "extra": null
        },
-       "nSqrtRx96": "308501395374947874634970820938",
-       "nT": 27189,
+       "nSqrtRx96": "2279303311131916195551149823770",
+       "nT": 67189,
        "rAI": "0"
       }
      }
     ],
     [
      {
-      "pool": "0x44720a6f572649526ac9073cae9200755cc78e0a",
+      "pool": "pmm_8_0x3c499c542cef5e3811e1192ce70d8cc03d5c3359_0xd6df932a45c0f255f85145f286ea0b292b21c90b",
       "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
-      "tokenOut": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
-      "swapAmount": "588094822400000000",
-      "amountOut": "38804872788069584",
-      "exchange": "quickswap-v3",
-      "poolType": "algebra-v1",
+      "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+      "swapAmount": "5471128170348257308",
+      "amountOut": "899825981",
+      "exchange": "pmm-8/uniswapv3",
+      "poolType": "orderbook",
       "poolExtra": {
-       "swapFee": 0,
-       "priceLimit": "1457652066949847389969617340386294118487833376467",
-       "blockNumber": 95385245
+       "approvalAddress": "",
+       "blockNumber": 0
       },
       "extra": {
-       "GlobalState": {
-        "community_fee_token0": 150,
-        "community_fee_token1": 150,
-        "feeOtz": 1972,
-        "feeZto": 1972,
-        "price": "308260683927043421607443373251",
-        "tick": 27173,
-        "timepoint_index": 4559,
-        "unlocked": false
+       "_ce": {
+        "prCnt": 0,
+        "tgtAmtOut": "899825981",
+        "ces": [
+         {
+          "pool": "0xc42bf5cd16d9eb1e892b66bb32a3892dcb7bb75c",
+          "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
+          "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+          "swapAmount": "5471128170348257308",
+          "amountOut": "898895689",
+          "exchange": "uniswapv3",
+          "poolType": "uniswapv3",
+          "poolExtra": {
+           "swapFee": 3000,
+           "priceLimit": "1457652066949847389969617340386294118487833376467",
+           "blockNumber": 95405833
+          },
+          "extra": {
+           "rAI": "0",
+           "nSqrtRx96": "6175451534236653000694464050963147",
+           "nT": 225286
+          }
+         }
+        ]
        },
-       "Liquidity": "178333698991729042258",
-       "_ss": {
-        "pool": "0x0c787944946d22922c9f41c477cc539700d35bb2",
+       "_fs": {
+        "pool": "0xc42bf5cd16d9eb1e892b66bb32a3892dcb7bb75c",
         "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
-        "tokenOut": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
-        "swapAmount": "588094822400000000",
-        "amountOut": "38729855968409038",
-        "exchange": "honeyswap-v2",
-        "poolType": "uniswap-v2",
+        "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+        "swapAmount": "5471128170348257308",
+        "amountOut": "898895689",
+        "exchange": "uniswapv3",
+        "poolType": "uniswapv3",
         "poolExtra": {
-         "fee": 15,
-         "feePrecision": 10000,
-         "blockNumber": 95385290
+         "swapFee": 3000,
+         "priceLimit": "1457652066949847389969617340386294118487833376467",
+         "blockNumber": 95405833
         },
-        "extra": null
+        "extra": {
+         "rAI": "0",
+         "nSqrtRx96": "6175451534236653000694464050963147",
+         "nT": 225286
+        }
        }
       }
      }
     ],
     [
      {
-      "pool": "0x2aceda63b5e958c45bd27d916ba701bc1dc08f7a",
-      "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
-      "tokenOut": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
-      "swapAmount": "4045847559200000000",
-      "amountOut": "266842350008894529",
-      "exchange": "uniswapv3",
-      "poolType": "uniswapv3",
-      "poolExtra": {
-       "swapFee": 3000,
-       "priceLimit": "1457652066949847389969617340386294118487833376467",
-       "blockNumber": 95385289
-      },
-      "extra": {
-       "_ss": {
-        "pool": "0x2813d43463c374a680f235c428fb1d7f08de0b69",
-        "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
-        "tokenOut": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
-        "swapAmount": "4045847559200000000",
-        "amountOut": "264688008837902637",
-        "exchange": "sushiswap",
-        "poolType": "uniswap-v2",
-        "poolExtra": {
-         "fee": 3,
-         "feePrecision": 1000,
-         "blockNumber": 95385245
-        },
-        "extra": null
-       },
-       "nSqrtRx96": "308089791029111676515890630599",
-       "nT": 27162,
-       "rAI": "0"
-      }
-     }
-    ],
-    [
-     {
-      "pool": "0xa9077cdb3d13f45b8b9d87c43e11bce0e73d8631",
-      "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
-      "tokenOut": "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270",
-      "swapAmount": "611905177600000000",
-      "amountOut": "993138221185365704704",
-      "exchange": "uniswapv3",
-      "poolType": "uniswapv3",
-      "poolExtra": {
-       "swapFee": 3000,
-       "priceLimit": "1457652066949847389969617340386294118487833376467",
-       "blockNumber": 95385259
-      },
-      "extra": {
-       "_ss": {
-        "pool": "0x4485df5f2b6bf03935cee44bf41ba65c06650b84",
-        "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
-        "tokenOut": "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270",
-        "swapAmount": "611905177600000000",
-        "amountOut": "975075159013228554449",
-        "exchange": "polyzap-v2",
-        "poolType": "uniswap-v2",
-        "poolExtra": {
-         "fee": 25,
-         "feePrecision": 10000,
-         "blockNumber": 95382508
-        },
-        "extra": null
-       },
-       "nSqrtRx96": "1964064904451827416992334517",
-       "nT": -73951,
-       "rAI": "0"
-      }
-     }
-    ],
-    [
-     {
-      "pool": "0xc42bf5cd16d9eb1e892b66bb32a3892dcb7bb75c",
-      "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
-      "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
-      "swapAmount": "2000000000000000000",
-      "amountOut": "336401432",
-      "exchange": "uniswapv3",
-      "poolType": "uniswapv3",
-      "poolExtra": {
-       "swapFee": 3000,
-       "priceLimit": "1457652066949847389969617340386294118487833376467",
-       "blockNumber": 95385312
-      },
-      "extra": {
-       "rAI": "0",
-       "nSqrtRx96": "6100970303178005701891382553326532",
-       "nT": 225043
-      }
-     }
-    ],
-    [
-     {
-      "pool": "0x20fb28b6209ed80eee40894baa9a199c07b03e55",
+      "pool": "pmm_8_0xc2132d05d31c914a87c6611c10748aeb04b58e8f_0xd6df932a45c0f255f85145f286ea0b292b21c90b",
       "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
       "tokenOut": "0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
-      "swapAmount": "1600000000000000000",
-      "amountOut": "269378801",
-      "exchange": "uniswapv3",
-      "poolType": "uniswapv3",
+      "swapAmount": "2228865727055960044",
+      "amountOut": "366938530",
+      "exchange": "pmm-8/uniswapv3",
+      "poolType": "orderbook",
       "poolExtra": {
-       "swapFee": 3000,
-       "priceLimit": "1457652066949847389969617340386294118487833376467",
-       "blockNumber": 95385294
+       "approvalAddress": "",
+       "blockNumber": 0
       },
       "extra": {
+       "_ce": {
+        "prCnt": 0,
+        "tgtAmtOut": "366938530",
+        "ces": [
+         {
+          "pool": "0x20fb28b6209ed80eee40894baa9a199c07b03e55",
+          "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
+          "tokenOut": "0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
+          "swapAmount": "2228865727055960044",
+          "amountOut": "366938566",
+          "exchange": "uniswapv3",
+          "poolType": "uniswapv3",
+          "poolExtra": {
+           "swapFee": 3000,
+           "priceLimit": "1457652066949847389969617340386294118487833376467",
+           "blockNumber": 95405769
+          },
+          "extra": {
+           "rAI": "0",
+           "nSqrtRx96": "6166747151496176846875449250712223",
+           "nT": 225258
+          }
+         }
+        ]
+       },
+       "_fs": {
+        "pool": "0x20fb28b6209ed80eee40894baa9a199c07b03e55",
+        "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
+        "tokenOut": "0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
+        "swapAmount": "2228865727055960044",
+        "amountOut": "366938566",
+        "exchange": "uniswapv3",
+        "poolType": "uniswapv3",
+        "poolExtra": {
+         "swapFee": 3000,
+         "priceLimit": "1457652066949847389969617340386294118487833376467",
+         "blockNumber": 95405769
+        },
+        "extra": {
+         "rAI": "0",
+         "nSqrtRx96": "6166747151496176846875449250712223",
+         "nT": 225258
+        }
+       },
        "_ss": {
         "pool": "0xa543ba3fd79a03788e5521a0ce48b3f2bf93b2c1",
         "tokenIn": "0xd6df932a45c0f255f85145f286ea0b292b21c90b",
         "tokenOut": "0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
-        "swapAmount": "1600000000000000000",
-        "amountOut": "23848199",
+        "swapAmount": "2228865727055960044",
+        "amountOut": "24168039",
         "exchange": "sushiswap",
         "poolType": "uniswap-v2",
         "poolExtra": {
          "fee": 3,
          "feePrecision": 1000,
-         "blockNumber": 95380911
+         "blockNumber": 95404171
         },
         "extra": null
-       },
-       "nSqrtRx96": "6097736192206467011101045380810034",
-       "nT": 225033,
-       "rAI": "0"
+       }
       }
-     }
-    ],
-    [
-     {
-      "pool": "0xebc6eba1c4392ad3b9e9c07cc7a21cafa70b19d269b1496bcca5de0e5b2d9f9a",
-      "tokenIn": "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6",
-      "tokenOut": "0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
-      "swapAmount": "159944",
-      "amountOut": "133851453",
-      "exchange": "uniswap-v4",
-      "poolType": "uniswap-v4",
-      "poolExtra": {
-       "blockNumber": 95385225,
-       "router": "0x1095692a6237d83c6a72f3f5efedb9a670c49223",
-       "permit2Addr": "0x000000000022d473030f116ddee9f6b43ac78ba3",
-       "tokenIn": "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6",
-       "tokenOut": "0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
-       "fee": 500,
-       "tickSpacing": 10,
-       "hookAddress": "0x0000000000000000000000000000000000000000",
-       "hookData": "",
-       "priceLimit": "4295558253"
-      },
-      "extra": {
-       "HookSwapInfo": null,
-       "_ss": {
-        "pool": "0xcdbcc1ac4d4e18fb1f2f2d604144fd33e77cda52",
-        "tokenIn": "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6",
-        "tokenOut": "0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
-        "swapAmount": "159944",
-        "amountOut": "127869066",
-        "exchange": "apeswap",
-        "poolType": "uniswap-v2",
-        "poolExtra": {
-         "fee": 2,
-         "feePrecision": 1000,
-         "blockNumber": 95384345
-        },
-        "extra": null
-       },
-       "nSqrtRx96": "2292588691004994899967148179783",
-       "nT": 67305,
-       "rAI": "0"
-      }
-     }
-    ],
-    [
+     },
      {
       "pool": "0xa37d3e6da98dfeb7dc8103a6614f586916a6e04d41ea0a929bc19a029de1a399",
       "tokenIn": "0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
       "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
-      "swapAmount": "403230254",
-      "amountOut": "402810358",
+      "swapAmount": "366938530",
+      "amountOut": "366579056",
       "exchange": "uniswap-v4",
       "poolType": "uniswap-v4",
       "poolExtra": {
-       "blockNumber": 95385306,
+       "blockNumber": 95406128,
        "router": "0x1095692a6237d83c6a72f3f5efedb9a670c49223",
        "permit2Addr": "0x000000000022d473030f116ddee9f6b43ac78ba3",
        "tokenIn": "0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
@@ -348,218 +367,33 @@
       "extra": {
        "HookSwapInfo": null,
        "_ss": {
-        "pool": "0x0b1a513ee24972daef112bc777a5610d4325c9e7",
+        "pool": "0xae93239585df1de20a6ce985c1a38d70a752b795",
         "tokenIn": "0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
         "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
-        "swapAmount": "403230254",
-        "amountOut": "402731531",
-        "exchange": "fluid-dex-t1",
-        "poolType": "fluid-dex-t1",
+        "swapAmount": "366938530",
+        "amountOut": "366577307",
+        "exchange": "metric-propamm",
+        "poolType": "metric-propamm",
         "poolExtra": {
-         "blockNumber": 95385333,
-         "approvalAddress": "0x0b1a513ee24972daef112bc777a5610d4325c9e7"
-        },
-        "extra": {
-         "hasNative": false
-        }
-       },
-       "nSqrtRx96": "79269235565687663277308277358",
-       "nT": 10,
-       "rAI": "0"
-      }
-     }
-    ],
-    [
-     {
-      "pool": "0xb6e57ed85c4c9dbfef2a68711e9d6f36c56e0fcb",
-      "tokenIn": "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270",
-      "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
-      "swapAmount": "993138221185365704704",
-      "amountOut": "102948730",
-      "exchange": "uniswapv3",
-      "poolType": "uniswapv3",
-      "poolExtra": {
-       "swapFee": 500,
-       "priceLimit": "4295558253",
-       "blockNumber": 95385322
-      },
-      "extra": {
-       "_ss": {
-        "pool": "0x6d9e8dbb2779853db00418d4dcf96f3987cfc9d2",
-        "tokenIn": "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270",
-        "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
-        "swapAmount": "993138221185365704704",
-        "amountOut": "90127327",
-        "exchange": "quickswap",
-        "poolType": "uniswap-v2",
-        "poolExtra": {
-         "fee": 3,
-         "feePrecision": 1000,
-         "blockNumber": 95384795
+         "swapDir": false,
+         "priceProvider": "",
+         "blockNumber": 95406112
         },
         "extra": null
        },
-       "nSqrtRx96": "25512720986908446391682",
-       "nT": -298989,
+       "nSqrtRx96": "79266772665380203557613675669",
+       "nT": 9,
        "rAI": "0"
       }
-     }
-    ],
-    [
-     {
-      "pool": "0x03cd191f589d12b0582a99808cf19851e468e6b5",
-      "tokenIn": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
-      "tokenOut": "0x2791bca1f2de4661ed88a30c99a7a9449aa84174",
-      "swapAmount": "62620708761869904",
-      "amountOut": "159776266",
-      "exchange": "balancer-v2-weighted",
-      "poolType": "balancer-v2-weighted",
-      "poolExtra": {
-       "vault": "0xba12222222228d8ba445958a75a0704d566bf2c8",
-       "poolId": "0x03cd191f589d12b0582a99808cf19851e468e6b500010000000000000000000a",
-       "tokenOutIndex": 1,
-       "blockNumber": 95385232,
-       "approvalAddress": "0xba12222222228d8ba445958a75a0704d566bf2c8"
-      },
-      "extra": {}
-     }
-    ],
-    [
-     {
-      "pool": "0xa4d8c89f0c20efbe54cba9e7e7a7e509056228d9",
-      "tokenIn": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
-      "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
-      "swapAmount": "187715708815782783",
-      "amountOut": "478757114",
-      "exchange": "uniswapv3",
-      "poolType": "uniswapv3",
-      "poolExtra": {
-       "swapFee": 500,
-       "priceLimit": "1461300573427867316570072651998408279850435624080",
-       "blockNumber": 95385284
-      },
-      "extra": {
-       "_ss": {
-        "pool": "0x7baf833f82bb1971f99a5a5d84bed1d5d0dedd70",
-        "tokenIn": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
-        "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
-        "swapAmount": "187715708815782783",
-        "amountOut": "462514426",
-        "exchange": "quickswap",
-        "poolType": "uniswap-v2",
-        "poolExtra": {
-         "fee": 3,
-         "feePrecision": 1000,
-         "blockNumber": 95385283
-        },
-        "extra": null
-       },
-       "nSqrtRx96": "1568581422286195551366585794668402",
-       "nT": 197876,
-       "rAI": "0"
-      }
-     }
-    ],
-    [
-     {
-      "pool": "0x5520385bfcf07ec87c4c53a7d8d65595dff69fa4",
-      "tokenIn": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
-      "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
-      "swapAmount": "79126641193111746",
-      "amountOut": "201795715",
-      "exchange": "woofi-v3/uniswapv3",
-      "poolType": "woofi-v21",
-      "poolExtra": {
-       "blockNumber": 95385328
-      },
-      "extra": {
-       "_ce": {
-        "prCnt": 1,
-        "tgtAmtOut": "201795715",
-        "ces": [
-         {
-          "pool": "0xa4d8c89f0c20efbe54cba9e7e7a7e509056228d9",
-          "tokenIn": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
-          "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
-          "swapAmount": "79126641193111746",
-          "amountOut": "201751146",
-          "exchange": "uniswapv3",
-          "poolType": "uniswapv3",
-          "poolExtra": {
-           "swapFee": 500,
-           "priceLimit": "1461300573427867316570072651998408279850435624080",
-           "blockNumber": 95385284
-          },
-          "extra": {
-           "rAI": "0",
-           "nSqrtRx96": "1568706217550869066923795732638505",
-           "nT": 197878
-          }
-         }
-        ]
-       },
-       "_fs": {
-        "pool": "0xa4d8c89f0c20efbe54cba9e7e7a7e509056228d9",
-        "tokenIn": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
-        "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
-        "swapAmount": "79126641193111746",
-        "amountOut": "201751146",
-        "exchange": "uniswapv3",
-        "poolType": "uniswapv3",
-        "poolExtra": {
-         "swapFee": 500,
-         "priceLimit": "1461300573427867316570072651998408279850435624080",
-         "blockNumber": 95385284
-        },
-        "extra": {
-         "rAI": "0",
-         "nSqrtRx96": "1568706217550869066923795732638505",
-         "nT": 197878
-        }
-       },
-       "_ss": {
-        "pool": "0x7baf833f82bb1971f99a5a5d84bed1d5d0dedd70",
-        "tokenIn": "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619",
-        "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
-        "swapAmount": "79126641193111746",
-        "amountOut": "199000090",
-        "exchange": "quickswap",
-        "poolType": "uniswap-v2",
-        "poolExtra": {
-         "fee": 3,
-         "feePrecision": 1000,
-         "blockNumber": 95385283
-        },
-        "extra": null
-       }
-      }
-     }
-    ],
-    [
-     {
-      "pool": "0x105825f35b3b3d45c527e0a5ce01a8d9f34e9be5",
-      "tokenIn": "0x2791bca1f2de4661ed88a30c99a7a9449aa84174",
-      "tokenOut": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
-      "swapAmount": "159776266",
-      "amountOut": "159773292",
-      "exchange": "dodo-dpp",
-      "poolType": "dodo-dpp",
-      "poolExtra": {
-       "type": "DPP",
-       "baseToken": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
-       "quoteToken": "0x2791bca1f2de4661ed88a30c99a7a9449aa84174",
-       "blockNumber": 95385124
-      },
-      "extra": null
      }
     ]
    ],
    "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
-   "routeID": "03ad12126FRKtZG9",
-   "checksum": "10713617236327675047",
-   "timestamp": 1791783284
+   "routeID": "5f7c0acdv8hBXJj9",
+   "checksum": "3924059701435831748",
+   "timestamp": 1791814483
   },
   "routerAddress": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
  },
- "requestId": "03ad1212-e854-4ab5-91bd-49c0c1c14b86"
+ "requestId": "5f7c0acd-bfc8-415c-98fd-72d12153fdb4"
 }

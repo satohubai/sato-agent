@@ -30,7 +30,7 @@ const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
 // Pins KyberSwap and the ERC-8004 project publish ONE address for on every EVM chain they serve. Each chain below still lists them in
 // its own entry, and each was re-observed per chain (2026-10-12, SPIKES.md section 2 and 3): 28 of 28 live builds named this router and
-// executor on BNB, Arbitrum and Polygon; the router is Sourcify-verified on each; the executor's runtime code is identical on all.
+// executor on BNB, Arbitrum and Polygon; the router's source is published on Sourcify on each; the executor's runtime code is identical on all.
 const KYBER_ROUTER = "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5";
 const KYBER_EXECUTOR = "0x8F10B468b06c6FD214B65F87778827F7D113f996";
 const ERC8004_REGISTRY = "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432";
@@ -72,7 +72,7 @@ const REGISTRY = deepFreeze({
     erc8004Registry: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
     x402: { v1Name: "base", caip2: "eip155:8453" },
     /** What the kit's own eth_simulateV1 needs to look like this chain: block time, and the tip used when the node cannot say. */
-    simulation: { blockTimeS: 2, tipFallbackWei: 1_000_000n, prevRandao: true, timedBlocks: true, zeroBaseFee: false },
+    simulation: { blockTimeS: 2, tipFallbackWei: 1_000_000n, prevRandao: true, timedBlocks: true, zeroBaseFee: false, swapGas: 2_000_000n, exactGasEstimate: false },
     // amazon: Crossmint orders (dark until switched on); giftcards: Bitrefill's agent API takes this chain.
     features: { send: true, swap: true, x402: true, giftcards: true, register: true, checkout: true, amazon: true },
   },
@@ -109,7 +109,7 @@ const REGISTRY = deepFreeze({
     x402: { v1Name: null, caip2: "eip155:56" },
     // Blocks come every 0.45 s, so a +1 block / +2 s override is refused (-38020); the latest block's baseFeePerGas is 0 (legacy gas
     // pricing, 0.05 gwei) and its mixHash is zero.
-    simulation: { blockTimeS: 1, tipFallbackWei: 50_000_000n, prevRandao: false, timedBlocks: false, zeroBaseFee: true },
+    simulation: { blockTimeS: 1, tipFallbackWei: 50_000_000n, prevRandao: false, timedBlocks: false, zeroBaseFee: true, swapGas: 2_000_000n, exactGasEstimate: false },
     features: { send: true, swap: true, x402: false, giftcards: false, register: true, checkout: true, amazon: false },
   },
   arbitrum: {
@@ -144,7 +144,10 @@ const REGISTRY = deepFreeze({
     erc8004Registry: ERC8004_REGISTRY,
     x402: { v1Name: "arbitrum", caip2: "eip155:42161" },
     // Blocks of 0.25 to 0.3 s: block-number / time overrides fail here too. Base fee 0.02 gwei, tip 0.
-    simulation: { blockTimeS: 1, tipFallbackWei: 0n, prevRandao: false, timedBlocks: false, zeroBaseFee: false },
+    // exactGasEstimate: an Arbitrum transaction's gas includes the cost of posting its data to Ethereum, which eth_simulateV1's gasUsed
+    // does not show, so a limit taken from the simulation alone can be short. Every transaction the kit signs here carries
+    // max(the simulation-based limit, eth_estimateGas for that exact transaction), and one the node will not estimate is not signed.
+    simulation: { blockTimeS: 1, tipFallbackWei: 0n, prevRandao: false, timedBlocks: false, zeroBaseFee: false, swapGas: 2_000_000n, exactGasEstimate: true },
     features: { send: true, swap: true, x402: true, giftcards: true, register: true, checkout: true, amazon: false },
   },
   polygon: {
@@ -155,12 +158,13 @@ const REGISTRY = deepFreeze({
     chainId: 137,
     caip2: "eip155:137",
     hubName: "Polygon",
-    // From the researched list. The first three failed their TLS handshake from the research Mac (a path problem there, retest from the
-    // deploy host); OnFinality answered but rate-limits about every second call; ZAN simulates but blocks eth_call without an account
-    // ("cu limit exceeded", which moves the call on). A keyed provider (SATO_AGENT_POLYGON_RPC) is the dependable route: swaps need
-    // eth_simulateV1 and refuse without it.
+    // In order of what was seen to answer eth_simulateV1 (SPIKES.md, 2026-10-12): OnFinality did (and rate-limits about every second
+    // call), ZAN did (but blocks eth_call without an account, "cu limit exceeded", which moves the call on). The last three failed
+    // their TLS handshake from the research Mac (a path problem there, retest from the deploy host) and have never been seen to
+    // simulate, so they come after. Swaps need eth_simulateV1 and refuse without it, so a keyed provider (SATO_AGENT_POLYGON_RPC) is
+    // the dependable route.
     rpcEnv: "SATO_AGENT_POLYGON_RPC",
-    rpcDefaults: ["https://polygon-bor-rpc.publicnode.com", "https://polygon-rpc.com", "https://polygon.drpc.org", "https://polygon.api.onfinality.io/public", "https://api.zan.top/polygon-mainnet"],
+    rpcDefaults: ["https://polygon.api.onfinality.io/public", "https://api.zan.top/polygon-mainnet", "https://polygon-bor-rpc.publicnode.com", "https://polygon-rpc.com", "https://polygon.drpc.org"],
     explorer: { url: "https://polygonscan.com", tx: "/tx/", address: "/address/" },
     native: { symbol: "POL", name: "Polygon Ecosystem Token", decimals: 18, oracle: "POL" },
     wrappedNative: { symbol: "WPOL", name: "Wrapped Polygon Ecosystem Token", address: "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270", decimals: 18 },
@@ -180,7 +184,9 @@ const REGISTRY = deepFreeze({
     erc8004Registry: ERC8004_REGISTRY,
     x402: { v1Name: "polygon", caip2: "eip155:137" },
     // Blocks of about 1.5 s on load-balanced nodes that lag: overrides fail (-38020). Base fee about 248 gwei, tip about 30 gwei.
-    simulation: { blockTimeS: 2, tipFallbackWei: 30_000_000_000n, prevRandao: false, timedBlocks: false, zeroBaseFee: false },
+    // swapGas: a recorded Polygon route (selling AAVE) used 2.52M gas, past the 2M cap the other chains keep; the cap is where a
+    // swap that would burn an unreasonable amount stops, so it sits about twice the largest route seen.
+    simulation: { blockTimeS: 2, tipFallbackWei: 30_000_000_000n, prevRandao: false, timedBlocks: false, zeroBaseFee: false, swapGas: 5_000_000n, exactGasEstimate: false },
     features: { send: true, swap: true, x402: true, giftcards: true, register: true, checkout: true, amazon: false },
   },
   solana: {

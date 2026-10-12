@@ -132,6 +132,7 @@ export function ownReferral(settings = loadSettings()) {
     payout: normalizeAddress(settings?.referral_payout),
     chain: settings?.referral_chain === "base" || settings?.referral_chain === "solana" ? settings.referral_chain : null,
     lastSignedAt: typeof settings?.referral_last_signed_at === "string" ? settings.referral_last_signed_at : null,
+    payoutChangedAt: typeof settings?.referral_payout_changed_at === "string" ? settings.referral_payout_changed_at : null,
     offers: { setup_at: offers.setup_at ?? null, swap_at: offers.swap_at ?? null, declined_at: offers.declined_at ?? null },
   };
 }
@@ -246,17 +247,35 @@ async function postSigned(payload, deps) {
 // ---------------------------------------------------------------- create / set-payout
 
 /**
+ * The owner's approval for a payout address: `deps.authorize(intent, ledgerIntent)` stops the command (exit 5, a one-time code for
+ * this exact intent) until the owner has said yes, then lets it through on the re-run with --approve. The intent names the full
+ * address so the owner can check it; the ledger line shows it short. Without a hook nothing is signed.
+ */
+async function authorizePayout(deps, intent, ledgerIntent) {
+  if (!deps.authorize) throw new PlainError("Changing where payouts go needs the owner's approval; nothing was signed.");
+  await deps.authorize(intent, ledgerIntent);
+}
+
+/**
  * `referral create`: sign a `create` message with this bot's key on `chain`, ask Sato Hub for a name, save it.
  * Returns { name, created, chain, payout, payout_chain, payout_known, signed_at }. Nothing is saved unless Sato Hub says 200/201.
- * deps: fetchImpl, origin, keys (see makeSigner), now (Date), timeoutMs.
+ * A bot has ONE name, signed with one chain's wallet: `create` on the other chain is refused. A `--payout` that is not the signing
+ * wallet's own address needs the owner's approval first (`deps.authorize(intent, ledgerIntent)`, which throws until it is given).
+ * deps: fetchImpl, origin, keys (see makeSigner), now (Date), timeoutMs, authorize.
  */
 export async function createReferralName({ chain, payout }, deps = {}) {
   if (chain !== "base" && chain !== "solana") throw new PlainError("referral create needs --chain base or --chain solana.");
+  const had = ownReferral();
+  if (had.name && had.chain && had.chain !== chain) {
+    throw new PlainError(`This bot already has the referral name ${had.name} (signed with its ${chainLabel(had.chain)} wallet). See \`referral show\`.`);
+  }
   const signer = makeSigner(chain, deps.keys);
   let payoutAddress = signer.address;
   if (payout !== undefined) {
     payoutAddress = normalizeAddress(payout);
     if (!payoutAddress) throw new PlainError("--payout must be a Base address (0x followed by 40 hex characters) or a Solana address.");
+    // Another payout address than this wallet's own is the owner's decision, whatever the approval mode (contract section 6).
+    if (payoutAddress !== signer.address) await authorizePayout(deps, { cmd: "referral create", chain, payout: payoutAddress }, { cmd: "referral create", chain, payout: shortReferrer(payoutAddress) });
   }
   const issuedAt = (deps.now ?? new Date()).toISOString();
   const message = referralMessage({ action: "create", signer: signer.address, payout: payoutAddress, issuedAt });
@@ -270,19 +289,22 @@ export async function createReferralName({ chain, payout }, deps = {}) {
   const payoutKept = created ? payoutAddress : before.name === name ? before.payout : null;
   const payoutChain = body.payout_chain === "base" || body.payout_chain === "solana" ? body.payout_chain : payoutKept ? chainOfAddress(payoutKept) : null;
   patchSettings((s) => ({ ...s, referral_name: name, referral_payout: payoutKept, referral_chain: chain, referral_last_signed_at: issuedAt }));
-  record({ kind: "settings", status: "referral_name_created", name, created, signer_chain: chain, payout_chain: payoutChain });
+  // The ledger holds the payout only in short form (0x1234…abcd).
+  record({ kind: "settings", status: "referral_name_created", name, created, signer_chain: chain, payout_chain: payoutChain, payout: payoutKept ? shortReferrer(payoutKept) : null });
   return { name, created, chain, payout: payoutKept, payout_chain: payoutChain, payout_known: Boolean(payoutKept), signed_at: issuedAt };
 }
 
 /**
  * `referral set-payout <address>`: sign `set_payout` for the saved name with the saved chain's key. Returns
- * { name, changed, payout, payout_chain }. Nothing is saved unless Sato Hub says 200.
+ * { name, changed, payout, payout_chain }. Nothing is saved unless Sato Hub says 200. ALWAYS needs the owner's approval first
+ * (`deps.authorize`), whatever the approval mode: a payout change redirects every accrual not yet batched.
  */
 export async function setReferralPayout(address, deps = {}) {
   const own = ownReferral();
   if (!own.name || !own.chain) throw new PlainError("Run referral create first.");
   const payout = normalizeAddress(address);
   if (!payout) throw new PlainError("referral set-payout needs a Base address (0x followed by 40 hex characters) or a Solana address.");
+  await authorizePayout(deps, { cmd: "referral set-payout", name: own.name, chain: own.chain, payout }, { cmd: "referral set-payout", name: own.name, chain: own.chain, payout: shortReferrer(payout) });
   const signer = makeSigner(own.chain, deps.keys);
   // issued_at must be later than the last signed change: never earlier than one millisecond after the saved one.
   const now = (deps.now ?? new Date()).getTime();
@@ -293,9 +315,11 @@ export async function setReferralPayout(address, deps = {}) {
   const { body } = await postSigned({ action: "set_payout", name: own.name, signer: signer.address, payout, issued_at: issuedAt, signature }, deps);
   if (normalizeReferralName(body.name) !== own.name) throw new PlainError("Sato Hub's answer named a different referral name; nothing was saved. Try again.");
   const payoutChain = body.payout_chain === "base" || body.payout_chain === "solana" ? body.payout_chain : chainOfAddress(payout);
-  patchSettings((s) => ({ ...s, referral_payout: payout, referral_last_signed_at: issuedAt }));
+  const previous = own.payout;
+  patchSettings((s) => ({ ...s, referral_payout: payout, referral_last_signed_at: issuedAt, referral_payout_changed_at: issuedAt }));
   const changed = body.changed !== false;
-  if (changed) record({ kind: "settings", status: "referral_payout_changed", name: own.name, signer_chain: own.chain, payout_chain: payoutChain });
+  // The ledger holds the payout only in short form (0x1234…abcd).
+  if (changed) record({ kind: "settings", status: "referral_payout_changed", name: own.name, signer_chain: own.chain, payout_chain: payoutChain, from: previous ? shortReferrer(previous) : null, to: shortReferrer(payout) });
   return { name: own.name, changed, payout, payout_chain: payoutChain };
 }
 
@@ -314,6 +338,7 @@ export function referralShow(referredBy) {
     payout: own.payout ? shortReferrer(own.payout) : null,
     payout_chain: payoutChain,
     signing_chain: own.chain,
+    payout_changed_at: own.payoutChangedAt,
     referred_by: referredBy ? (isReferralName(referredBy) ? referredBy : shortReferrer(referredBy)) : null,
     offer: { state: own.name ? "has_name" : offers.declined_at ? "declined" : "open", setup_at: offers.setup_at, swap_at: offers.swap_at, declined_at: offers.declined_at },
   };
@@ -321,6 +346,7 @@ export function referralShow(referredBy) {
     own.name
       ? `This bot's referral name: ${own.name}${own.payout ? `\nPayouts go to ${shortReferrer(own.payout)} on ${chainLabel(payoutChain)} (signed with this bot's ${chainLabel(own.chain)} wallet).` : `\nPayout: kept at Sato Hub (signed with this bot's ${chainLabel(own.chain)} wallet). \`referral set-payout <address>\` sets it.`}`
       : "This bot has no referral name of its own. `referral create --chain base|solana` makes one.",
+    ...(own.name && own.payoutChangedAt ? [`Last payout change: ${own.payoutChangedAt}`] : []),
     `Referred by: ${data.referred_by ?? "nobody (no referral set)"}`,
     `Offer: ${offer}`,
   ];

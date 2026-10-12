@@ -7,12 +7,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createPublicKey, verify as edVerify } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { getBase58Encoder } from "@solana/kit";
 import { ed25519 } from "@noble/curves/ed25519";
 import { hashMessage, recoverMessageAddress, verifyMessage } from "viem";
@@ -193,10 +193,18 @@ function bot(origin) {
       child.on("close", (status) => resolve({ status, stdout, stderr }));
       child.stdin.end(input ?? "");
     });
+  /** The owner's yes: the first run stops with exit 5 and a code; the SAME command with --approve <code> runs. Returns { first, second }. */
+  const approved = async (args, env) => {
+    const first = await run(args, undefined, env);
+    assert.equal(first.status, 5, `expected exit 5, got ${first.status}: ${first.stderr}`);
+    const code = /--approve ([0-9a-f]{8})/.exec(first.stderr)?.[1];
+    assert.ok(code, first.stderr);
+    return { first, code, second: await run([...args, "--approve", code], undefined, env) };
+  };
   const file = (f) => join(dir, f);
   const saved = () => JSON.parse(readFileSync(file("settings.json"), "utf8"));
   const ledger = () => (existsSync(file("ledger.jsonl")) ? readFileSync(file("ledger.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
-  return { dir, run, file, saved, ledger };
+  return { dir, run, approved, file, saved, ledger };
 }
 
 const hubs = [];
@@ -371,7 +379,7 @@ for (const chain of ["base", "solana"]) {
     assert.deepEqual(JSON.parse((await b.run(["referral", "share-text", "--json"])).stdout).share_text, names.shareTexts("sunny-otter"));
 
     // a second create from the same wallet returns the same name; the payout is not changed by it
-    const again = await b.run(["referral", "create", "--chain", chain, "--payout", OTHER_BASE]);
+    const { second: again } = await b.approved(["referral", "create", "--chain", chain, "--payout", OTHER_BASE]);
     assert.equal(again.status, 0, again.stderr);
     assert.match(again.stdout, /already had a referral name: sunny-otter/);
     assert.equal(b.saved().referral_payout, mine, "a repeat create keeps what was known (Sato Hub keeps its payout too)");
@@ -388,8 +396,24 @@ test("CLI: referral create with --payout: another address (either chain) is the 
   assert.equal((await b.run(["referral", "create", "--chain", "base", "--payout", `0x${"0".repeat(40)}`])).status, 1, "the zero address");
   assert.equal(hub.state.requests.length, 0, "nothing was sent");
   assert.equal(existsSync(b.file("settings.json")), false, "nothing was saved");
-  const ok = await b.run(["referral", "create", "--chain", "base", "--payout", VECTORS.signers.solana]);
+  // another address than the signing wallet's own needs the owner's yes: exit 5, nothing sent, nothing saved, the full address in the intent
+  const stop = await b.run(["referral", "create", "--chain", "base", "--payout", VECTORS.signers.solana]);
+  assert.equal(stop.status, 5);
+  assert.ok(stop.stderr.includes(VECTORS.signers.solana), "the intent names the new payout in full");
+  assert.match(stop.stderr, /--approve [0-9a-f]{8}/);
+  assert.equal(hub.state.requests.length, 0, "nothing was sent");
+  assert.equal(existsSync(b.file("settings.json")), false, "nothing was saved");
+  const requested = b.ledger().find((x) => x.kind === "approval" && x.status === "requested");
+  assert.equal(requested.intent.payout, "AKnL…RSZ9", "the ledger holds the payout short");
+  assert.ok(!JSON.stringify(b.ledger()).includes(VECTORS.signers.solana));
+  const code = /--approve ([0-9a-f]{8})/.exec(stop.stderr)[1];
+  // a code is for this exact intent: another payout, or another chain, is refused
+  const other = await b.run(["referral", "create", "--chain", "base", "--payout", OTHER_BASE, "--approve", code]);
+  assert.equal(other.status, 1);
+  assert.match(other.stderr, /different intent/);
+  const ok = await b.run(["referral", "create", "--chain", "base", "--payout", VECTORS.signers.solana, "--approve", code]);
   assert.equal(ok.status, 0, ok.stderr);
+  assert.equal((await b.run(["referral", "create", "--chain", "base", "--payout", VECTORS.signers.solana, "--approve", code])).status, 1, "the code works once");
   assert.equal(JSON.parse(hub.state.requests[0].body).payout, VECTORS.signers.solana, "a Solana payout for a Base signer");
   assert.equal(b.saved().referral_payout, VECTORS.signers.solana);
   assert.match(ok.stdout, /Payouts go to AKnL…RSZ9 on Solana/);
@@ -451,7 +475,11 @@ test("CLI: referral set-payout signs set_payout with the saved name and chain; u
 
   await b.run(["referral", "create", "--chain", "solana"]);
   const first = b.saved();
-  const set = await b.run(["referral", "set-payout", OTHER_BASE.toUpperCase().replace("0X", "0x")]);
+  const addr = OTHER_BASE.toUpperCase().replace("0X", "0x");
+  const postsBefore = hub.state.requests.filter((r) => r.method === "POST").length;
+  const { first: stopped, second: set } = await b.approved(["referral", "set-payout", addr]);
+  assert.ok(stopped.stderr.includes(OTHER_BASE), "the intent names the new payout in full (normalized)");
+  assert.equal(hub.state.requests.filter((r) => r.method === "POST").length, postsBefore + 1, "nothing was signed or sent until the approved re-run");
   assert.equal(set.status, 0, set.stderr);
   assert.match(set.stdout, /Payouts for sunny-otter now go to 0x7099…79c8 on Base, weekly in USDC\./);
   const p = hub.state.issued.at(-1);
@@ -464,11 +492,15 @@ test("CLI: referral set-payout signs set_payout with the saved name and chain; u
   assert.equal(s.referral_payout, OTHER_BASE);
   assert.equal(s.referral_last_signed_at, p.issued_at);
   assert.equal(s.referral_name, "sunny-otter");
-  assert.deepEqual(b.ledger().filter((x) => x.status === "referral_payout_changed").map((x) => [x.name, x.payout_chain]), [["sunny-otter", "base"]]);
+  assert.deepEqual(b.ledger().filter((x) => x.status === "referral_payout_changed").map((x) => [x.name, x.payout_chain, x.to]), [["sunny-otter", "base", "0x7099…79c8"]]);
+  assert.ok(!JSON.stringify(b.ledger()).includes(OTHER_BASE), "the ledger never holds the payout address whole");
+  assert.equal(s.referral_payout_changed_at, p.issued_at);
+  assert.match((await b.run(["referral", "show"])).stdout, new RegExp(`Last payout change: ${p.issued_at}`));
+  assert.equal(JSON.parse((await b.run(["referral", "show", "--json"])).stdout).payout_changed_at, p.issued_at);
   assert.match((await b.run(["referral", "show"])).stdout, /Payouts go to 0x7099…79c8 on Base \(signed with this bot's Solana wallet\)/);
 
   // the same payout again: unchanged
-  const same = await b.run(["referral", "set-payout", OTHER_BASE]);
+  const { second: same } = await b.approved(["referral", "set-payout", OTHER_BASE]);
   assert.equal(same.status, 0);
   assert.match(same.stdout, /already go to 0x7099…79c8\. Nothing changed\./);
 
@@ -478,7 +510,7 @@ test("CLI: referral set-payout signs set_payout with the saved name and chain; u
   assert.equal(junk.status, 1);
   assert.match(junk.stderr, /needs a Base address .* or a Solana address/);
   const down = await newHub({ reply: (req) => (req.method === "POST" ? { status: 403, json: { error: "not_owner", message: "That name belongs to another wallet." } } : null) });
-  const refused = await b.run(["referral", "set-payout", VECTORS.signers.solana], undefined, { SATO_AGENT_MCP_URL: `${down.origin}/api/mcp` });
+  const { second: refused } = await b.approved(["referral", "set-payout", VECTORS.signers.solana], { SATO_AGENT_MCP_URL: `${down.origin}/api/mcp` });
   assert.equal(refused.status, 1);
   assert.match(refused.stderr, /That name belongs to another wallet\. \(not_owner\)/);
   assert.equal(JSON.stringify(b.saved()), before, "nothing changed");
@@ -493,7 +525,7 @@ test("referral set-payout never signs a time earlier than the last signed change
   const s = b.saved();
   const future = new Date(Date.parse(s.referral_last_signed_at) + 3_600_000).toISOString();
   writeFileSync(b.file("settings.json"), JSON.stringify({ ...s, referral_last_signed_at: future }));
-  const set = await b.run(["referral", "set-payout", OTHER_BASE]);
+  const { second: set } = await b.approved(["referral", "set-payout", OTHER_BASE]);
   // the fake hub (like the real one) requires issued_at > last signed: the kit signed one millisecond after the saved time
   assert.equal(JSON.parse(hub.state.requests.filter((r) => r.method === "POST").at(-1).body).issued_at, new Date(Date.parse(future) + 1).toISOString());
   assert.equal(set.status, 1, "Sato Hub's own window would still refuse a time an hour ahead, and nothing is saved");
@@ -602,4 +634,133 @@ test("the swap prints the offer only after a confirmed swap; no other command ca
   const fn = lib.slice(lib.indexOf("export function swapOffer"), lib.indexOf("/** The owner said no"));
   assert.match(fn, /try \{[\s\S]*takeOffer\("swap"/);
   assert.match(fn, /catch \{\s*return null;/);
+});
+
+// ---------------------------------------------------------------- the swap offer, driven through the real CLI
+
+const STUB = `--import=${pathToFileURL(ROOT("test/stubs/register.mjs")).href}`;
+const RESULT = "Swap: 1 USDC for ETH (stub)\nSwapped. https://basescan.org/tx/0xabc";
+const SWAP = ["swap", "--chain", "base", "--from", "USDC", "--to", "ETH", "--amount", "1"];
+
+test("CLI swap (chain module stubbed): only a confirmed swap prints the offer, once; a dry run, a failure, exit 4 and exit 5 do not and do not use it up", async () => {
+  const b = bot("http://127.0.0.1:9"); // Sato Hub is never called by a swap with no referrer
+  const swap = (mode, extra = []) => b.run([...SWAP, ...extra], undefined, { NODE_OPTIONS: STUB, SATO_STUB_SWAP: mode });
+  const offered = (r) => r.stdout.includes("Earn a share of Sato Swap fees.");
+
+  const dry = await swap("confirm", ["--dry-run"]);
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.ok(!offered(dry), "a dry run");
+  const pending = await swap("pending");
+  assert.equal(pending.status, 4);
+  assert.ok(!offered(pending) && !offered({ stdout: pending.stderr }), "signed but not confirmed (exit 4)");
+  const approval = await swap("approval");
+  assert.equal(approval.status, 5);
+  assert.ok(!offered(approval) && !offered({ stdout: approval.stderr }), "needs approval (exit 5)");
+  const failed = await swap("fail");
+  assert.equal(failed.status, 1);
+  assert.ok(!offered(failed) && !offered({ stdout: failed.stderr }), "a failure");
+  assert.equal(existsSync(b.file("settings.json")), false, "none of those recorded the offer as shown");
+
+  // the confirmed swap: the result first, then the offer, once
+  const first = await swap("confirm");
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stdout, /\nSwapped\. https:\/\/basescan\.org\/tx\/0xabc\n\nEarn a share of Sato Swap fees\.\nIf you share this bot/);
+  assert.ok(first.stdout.endsWith(`${names.OFFER_TEXT}\n`));
+  assert.ok(b.saved().referral_offers.swap_at);
+  const second = await swap("confirm");
+  assert.equal(second.status, 0);
+  assert.ok(!offered(second), "once ever");
+  assert.equal(second.stdout.trim(), RESULT);
+
+  // --json carries the field once, on a fresh bot
+  const c = bot("http://127.0.0.1:9");
+  const j = await c.run([...SWAP, "--json"], undefined, { NODE_OPTIONS: STUB, SATO_STUB_SWAP: "confirm" });
+  assert.equal(j.status, 0, j.stderr);
+  assert.equal(JSON.parse(j.stdout).referral_offer, names.OFFER_TEXT);
+  const j2 = await c.run([...SWAP, "--json"], undefined, { NODE_OPTIONS: STUB, SATO_STUB_SWAP: "confirm" });
+  assert.ok(!("referral_offer" in JSON.parse(j2.stdout)));
+
+  // a bot that has said no, or has its own name, never gets it; the exit code and result are the same
+  const d = bot("http://127.0.0.1:9");
+  await d.run(["referral", "decline"]);
+  const dd = await d.run(SWAP, undefined, { NODE_OPTIONS: STUB, SATO_STUB_SWAP: "confirm" });
+  assert.equal(dd.status, 0);
+  assert.equal(dd.stdout.trim(), RESULT);
+  // an unwritable settings file must not change the swap
+  const e = bot("http://127.0.0.1:9");
+  mkdirSync(e.dir, { recursive: true });
+  writeFileSync(e.file("settings.json"), "{ not json");
+  const broken = await e.run(SWAP, undefined, { NODE_OPTIONS: STUB, SATO_STUB_SWAP: "confirm" });
+  assert.equal(broken.status, 0, broken.stderr);
+  assert.match(broken.stdout, /\nSwapped\./);
+});
+
+// ---------------------------------------------------------------- review fixes: approval, guards
+
+test("payout changes need the owner's yes in every approval mode: set-payout always, create --payout only for another address", async () => {
+  const hub = await newHub();
+  const b = bot(hub.origin);
+  await b.run(["init"]);
+  await b.run(["policy", "set", "--chains", "base", "--per-tx", "10", "--per-day", "10", "--approval", "auto"]);
+  // the signing wallet's own address (spelled out) needs no approval
+  const wallet = JSON.parse(readFileSync(b.file("wallet.json"), "utf8"));
+  const own = await b.run(["referral", "create", "--chain", "base", "--payout", wallet.evm.address]);
+  assert.equal(own.status, 0, own.stderr);
+  const posts = () => hub.state.requests.filter((r) => r.method === "POST").length;
+  assert.equal(posts(), 1);
+  // set-payout: stopped even with approval = auto, the intent names the address in full, nothing is sent
+  const stop = await b.run(["referral", "set-payout", VECTORS.signers.solana, "--json"]);
+  assert.equal(stop.status, 5);
+  const j = JSON.parse(stop.stdout);
+  assert.equal(j.needs_approval.intent.payout, VECTORS.signers.solana);
+  assert.equal(j.needs_approval.intent.name, "sunny-otter");
+  assert.equal(posts(), 1);
+  assert.equal(b.saved().referral_payout, wallet.evm.address.toLowerCase());
+  // a code for one payout does not work for another, and an expired/unknown one is refused
+  const wrong = await b.run(["referral", "set-payout", OTHER_BASE, "--approve", j.needs_approval.code]);
+  assert.equal(wrong.status, 1);
+  assert.match(wrong.stderr, /different intent/);
+  assert.equal((await b.run(["referral", "set-payout", OTHER_BASE, "--approve", "00000000"])).status, 1);
+  assert.equal(posts(), 1);
+  // the right code works once
+  const go = await b.run(["referral", "set-payout", VECTORS.signers.solana, "--approve", j.needs_approval.code]);
+  assert.equal(go.status, 0, go.stderr);
+  assert.equal(posts(), 2);
+  assert.equal((await b.run(["referral", "set-payout", VECTORS.signers.solana, "--approve", j.needs_approval.code])).status, 1);
+  assert.equal(b.saved().referral_payout, VECTORS.signers.solana);
+});
+
+test("a bot has one name: create on the other chain is refused and saves nothing; the same chain returns the same name", async () => {
+  const hub = await newHub();
+  const b = bot(hub.origin);
+  await b.run(["init"]);
+  assert.equal((await b.run(["referral", "create", "--chain", "base"])).status, 0);
+  const before = JSON.stringify(b.saved());
+  const posts = hub.state.requests.length;
+  const other = await b.run(["referral", "create", "--chain", "solana"]);
+  assert.equal(other.status, 1);
+  assert.equal(other.stderr.trim(), "This bot already has the referral name sunny-otter (signed with its Base wallet). See `referral show`.");
+  assert.equal(JSON.stringify(b.saved()), before);
+  assert.equal(hub.state.requests.length, posts, "nothing was signed or sent");
+  assert.equal((await b.run(["referral", "create", "--chain", "base"])).status, 0);
+});
+
+test("a bot cannot be referred by its own name (settings set --referrer refuses; nothing is looked up or saved)", async () => {
+  const hub = await newHub();
+  const b = bot(hub.origin);
+  await b.run(["init"]);
+  await b.run(["referral", "create", "--chain", "base"]);
+  const gets = () => hub.state.requests.filter((r) => r.method === "GET").length;
+  for (const args of [["settings", "set", "--referrer", "sunny-otter"], ["settings", "set", "--referrer", "Sunny-Otter"], ["settings", "set", "--stdin"]]) {
+    const r = await b.run(args, args[2] === "--stdin" ? JSON.stringify({ referrer: "sunny-otter" }) : undefined);
+    assert.equal(r.status, 1, args.join(" "));
+    assert.equal(r.stderr.trim(), "That is this bot's own referral name; a bot can't be referred by itself.");
+  }
+  assert.equal(gets(), 0);
+  assert.equal(b.saved().referrer, undefined);
+  // another name is fine
+  hub.state.names.set("calm-heron", { signer: "x", payout: "y", payout_chain: "base", last: "" });
+  assert.equal((await b.run(["settings", "set", "--referrer", "calm-heron"])).status, 0);
+  assert.equal(b.saved().referrer, "calm-heron");
+  assert.equal(b.saved().referral_name, "sunny-otter");
 });

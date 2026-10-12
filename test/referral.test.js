@@ -661,6 +661,15 @@ test("v0.3.2: the version is the same everywhere, and the docs say what the cont
   assert.match(share, /settings set --referrer none/);
   assert.doesNotMatch(share, /guarantee|passive income|risk-free/i);
   assert.match(share, /Do not promise an amount or call it income/);
+  // review fixes: payout approval, self-referral guard, upgrade offer, one description line, retired names
+  assert.match(bot, /First run `~\/sato-agent-NAME referral show`\. If this bot's own referral name is that same name, the memory is this bot's own, for shares: leave it exactly as it is and skip \(a\)/);
+  assert.match(bot, /show the owner the kit's message, do not rename the memory, and do not retry in a loop/);
+  assert.match(bot, /After upgrading to 0\.3\.2 from an earlier version, run `~\/sato-agent-NAME referral offer --when setup` once and relay exactly what it prints, word for word, if it prints anything\./);
+  assert.match(bot, /prints nothing for a bot that already has its own name or has said no\./);
+  assert.match(bot, /exit code 5\*\* and an approval code, whatever the approval mode/);
+  assert.match(bot, /always stops with exit code 5 and an approval code/);
+  assert.match(bot, /replace that line with this one; never leave two/);
+  assert.match(bot, /If that note keeps appearing for a referral name, tell the owner, who may remove it by saying "remove the referral"/);
   // the anti-spam rules (contract section 7)
   const rulesText = bot.slice(bot.indexOf("## Rules"));
   assert.match(rulesText, /Never post, DM, tag or bulk-share anything on your own/);

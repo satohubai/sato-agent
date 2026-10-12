@@ -59,15 +59,17 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
                                          weekly in USDC. It does not change what the owner pays. With one set, each swap request
                                          carries it, and after a confirmed swap the kit reports the transaction to Sato Hub
                                          (once, never retried; Sato Hub keeps it private). "none" clears it
-  referral create --chain base|solana [--payout <address>]
-  referral set-payout <address>
+  referral create --chain base|solana [--payout <address>] [--approve <code>]
+  referral set-payout <address> [--approve <code>]
   referral show | referral share-text
   referral offer --when setup|swap | referral decline
                                          share this bot: Sato Hub gives it a referral name (sunny-otter). Bots copied from the
                                          owner's share are referred by that name, and ${REFERRAL_SHARE_PERCENT}% of Sato Hub's swap fee on their swaps
                                          is paid to the payout address weekly in USDC (they pay the same fee). create signs
                                          one message with this bot's own key on that chain (no payment, no gas); the payout
-                                         defaults to that wallet's address. share-text prints the three texts a share carries.
+                                         defaults to that wallet's address. Any other payout address (create --payout, set-payout)
+                                         always stops with exit 5 and a code, whatever the approval mode: the owner checks the
+                                         full address, then the same command with --approve <code> signs it. share-text prints the three texts a share carries.
                                          offer prints the one-time offer (once per setup / swap) when this bot has no name
                                          and has not said no; decline records the no. Nothing here posts or sends anything
   buy <request|link|ASIN> [--chain base|solana] [--approve <code>] [--dry-run]
@@ -679,7 +681,11 @@ async function main(command = cmd, args = positionals.slice(1)) {
           }
           const parsedRef = refRaw !== undefined ? parseReferrerInput(refRaw) : null; // refused before anything is written
           // A referral name is checked with Sato Hub before anything is saved (not found or no answer: refused, nothing written).
-          if (parsedRef?.referrer && isReferralName(parsedRef.referrer)) await lookupReferralName(parsedRef.referrer);
+          if (parsedRef?.referrer && isReferralName(parsedRef.referrer)) {
+            // A bot cannot be referred by itself: its own name is never its referrer (nothing is looked up or saved).
+            if (parsedRef.referrer === ownReferral().name) throw new PlainError("That is this bot's own referral name; a bot can't be referred by itself.");
+            await lookupReferralName(parsedRef.referrer);
+          }
           if (Object.keys(ship).length) s = setShipTo(ship);
           if (refRaw !== undefined) ref = setReferrer(refRaw);
         } catch (err) {
@@ -705,12 +711,18 @@ async function main(command = cmd, args = positionals.slice(1)) {
     }
     case "referral": {
       const sub = rest[0];
+      // Where payouts go is the owner's decision, in every approval mode: the command stops with exit 5 and a one-time code for this
+      // exact intent (the full address, so the owner can check it); the same command with --approve <code> signs it.
+      const authorizePayout = async (intent, ledgerIntent) => {
+        if (!flags.approve) throw new NeedsApproval(intent, await requestApproval(intent, { ledgerIntent }));
+        await consumeApproval(flags.approve, intent);
+      };
       const usage = "referral create --chain base|solana [--payout <address>] | referral set-payout <address> | referral show | referral share-text | referral offer --when setup|swap | referral decline";
       if (sub === "create") {
         if (rest.length > 1) throw new UsageError(usage);
         const chain = (flags.chain || "").toLowerCase();
         if (!["base", "solana"].includes(chain)) throw new UsageError("referral create --chain base|solana [--payout <address>]");
-        const r = await createReferralName({ chain, payout: flags.payout });
+        const r = await createReferralName({ chain, payout: flags.payout }, { authorize: authorizePayout });
         const texts = shareTexts(r.name);
         const where = r.payout
           ? `Payouts go to ${shortReferrer(r.payout)} on ${r.payout_chain === "solana" ? "Solana" : "Base"}, weekly in USDC.`
@@ -731,7 +743,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
       }
       if (sub === "set-payout") {
         if (!rest[1] || rest.length > 2) throw new UsageError("referral set-payout <address>");
-        const r = await setReferralPayout(rest[1]);
+        const r = await setReferralPayout(rest[1], { authorize: authorizePayout });
         return out(r.changed ? `Payouts for ${r.name} now go to ${shortReferrer(r.payout)} on ${r.payout_chain === "solana" ? "Solana" : "Base"}, weekly in USDC.` : `Payouts for ${r.name} already go to ${shortReferrer(r.payout)}. Nothing changed.`, { name: r.name, changed: r.changed, payout: shortReferrer(r.payout), payout_chain: r.payout_chain });
       }
       if (sub === "show") {

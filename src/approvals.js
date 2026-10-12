@@ -34,14 +34,18 @@ function prune(all, now = Date.now()) {
   return all;
 }
 
-export async function requestApproval(intent) {
+/**
+ * `options.ledgerIntent`: what the LEDGER line shows instead of the intent itself (the approval still binds the full intent).
+ * Used where the intent carries a value the ledger should hold only in short form (a referral payout address).
+ */
+export async function requestApproval(intent, options = {}) {
   return withLock(
     async () => {
       const all = prune(readJson(file()) ?? {});
       const code = randomBytes(4).toString("hex");
       all[code] = { intent: canonical(intent), created_at: Date.now(), expires_at: Date.now() + APPROVAL_TTL_MS, used: false };
       writePrivate(file(), JSON.stringify(all, null, 2) + "\n", { atomic: true });
-      record({ kind: "approval", status: "requested", code, intent });
+      record({ kind: "approval", status: "requested", code, intent: options.ledgerIntent ?? intent });
       return { code, expires_at: new Date(all[code].expires_at).toISOString() };
     },
     { name: "approvals" },

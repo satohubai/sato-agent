@@ -1,5 +1,6 @@
-// The referral share (v0.3.1). A referrer is a payout address the owner was given when someone shared this kit; Sato Hub pays
-// it 30% of the swap fee, weekly in USDC. This file is ALL the kit does about it:
+// The referral share (v0.3.1, names in v0.3.2). A referrer is a payout address, or (v0.3.2) a referral name, the owner was given
+// when someone shared this kit; Sato Hub pays it 30% of the swap fee, weekly in USDC. This file is ALL the kit does about it at
+// swap time (the bot's own name, `referral create` and the offer are in ../referral-names.js):
 //
 //   - the swap request to Sato Hub carries `referrer` (only when one is set);
 //   - the signed answer carries `referral`; the kit shows it, and WARNS (never blocks) when Sato Hub did not record the
@@ -34,7 +35,7 @@ export function referrerFor(deps = {}) {
 export function referrerRefusalMessage(body, result) {
   const text = String(body?.message ?? result?.text ?? "");
   if (body?.error !== "referrer_invalid" && !/referrer_invalid/.test(String(result?.text ?? ""))) return null;
-  return `Sato Hub did not accept the referral address${text && !/^referrer_invalid$/.test(text) ? ` (${clean(text, 200)})` : ""}. Nothing was signed. Fix it with \`settings set --referrer <address>\`, remove it with \`settings set --referrer none\`, or run this swap once without it with --no-referrer.`;
+  return `Sato Hub did not accept the referral address or name${text && !/^referrer_invalid$/.test(text) ? ` (${clean(text, 200)})` : ""}. Nothing was signed. Fix it with \`settings set --referrer <name or address>\`, remove it with \`settings set --referrer none\`, or run this swap once without it with --no-referrer.`;
 }
 
 /** The `referral` object of a signed answer, as far as it is usable: { referrer, share_of_fee_bps, payout } or null. */

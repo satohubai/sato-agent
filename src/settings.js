@@ -210,11 +210,24 @@ export function scrubAddress(text, s) {
 const EVM_RE = /^0x[0-9a-fA-F]{40}$/;
 const SOL_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
+// A referral name (v0.3.2): adjective-noun, lower case, an optional number (sunny-otter, sunny-otter-7). Sato Hub makes them.
+export const NAME_RE = /^[a-z]{3,10}-[a-z]{3,10}(-[1-9][0-9]?)?$/;
+
+/** A referral name in the form Sato Hub stores it (lower case), or null when `raw` is not one. Case-insensitive. */
+export function normalizeReferralName(raw) {
+  if (typeof raw !== "string") return null;
+  const v = raw.trim().toLowerCase();
+  return NAME_RE.test(v) ? v : null;
+}
+
+/** True for a normalized referral name (an address never matches: it has no hyphen). */
+export const isReferralName = (v) => typeof v === "string" && NAME_RE.test(v);
+
 /**
- * A referral address in the form Sato Hub stores it: a Base address (0x + 40 hex) lower-cased, or a Solana public key
+ * A payout / referral ADDRESS in the form Sato Hub stores it: a Base address (0x + 40 hex) lower-cased, or a Solana public key
  * (base58, exact case). Returns the normalized string, or null when it is neither. The same rules Sato Hub applies.
  */
-export function normalizeReferrer(raw) {
+export function normalizeAddress(raw) {
   if (typeof raw !== "string") return null;
   const v = raw.trim();
   // The zero address is refused here: Sato Hub refuses it too, and a saved one would stop every swap.
@@ -223,8 +236,13 @@ export function normalizeReferrer(raw) {
   return null;
 }
 
-/** "0x1234…abcd" / "DezX…B263": the short form shown to the owner. */
-export const shortReferrer = (a) => `${String(a).slice(0, a?.startsWith?.("0x") ? 6 : 4)}…${String(a).slice(-4)}`;
+/** A referrer: a referral name (lower-cased) or an address, normalized the way Sato Hub stores it; null when it is neither. */
+export function normalizeReferrer(raw) {
+  return normalizeAddress(raw) ?? normalizeReferralName(raw);
+}
+
+/** "0x1234…abcd" / "DezX…B263": the short form of an address shown to the owner. A referral name is shown whole. */
+export const shortReferrer = (a) => (isReferralName(a) ? a : `${String(a).slice(0, a?.startsWith?.("0x") ? 6 : 4)}…${String(a).slice(-4)}`);
 
 /** The saved referral address (normalized), or null. A hand-edited value that is not an address reads as none. */
 export function referrer() {
@@ -233,11 +251,22 @@ export function referrer() {
 
 /** `--referrer` / the "referrer" key: { clear: true } for none, { referrer } for an address; a plain Error otherwise. Writes nothing. */
 export function parseReferrerInput(value) {
-  if (typeof value !== "string") throw new Error("--referrer needs an address, or none");
+  if (typeof value !== "string") throw new Error("--referrer needs a referral name, an address, or none");
   if (/^(none|off|clear)$/i.test(value.trim())) return { clear: true };
   const referrer = normalizeReferrer(value);
-  if (!referrer) throw new Error("--referrer must be a Base address (0x followed by 40 hex characters) or a Solana address, or none");
+  if (!referrer) throw new Error("--referrer must be a Base address (0x followed by 40 hex characters), a Solana address or a referral name like sunny-otter, or none");
   return { referrer };
+}
+
+/**
+ * Change settings.json atomically (mode 600): `fn(current)` returns the next object (the schema is stamped). Everything it
+ * does not touch is kept. Used by the referral names for the bot's own name, payout and offer state.
+ */
+export function patchSettings(fn) {
+  const prev = loadSettings() ?? {};
+  const next = fn({ ...prev });
+  writePrivate(file(), JSON.stringify({ ...next, schema: SETTINGS_SCHEMA }, null, 2) + "\n", { atomic: true });
+  return next;
 }
 
 /**

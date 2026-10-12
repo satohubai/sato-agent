@@ -1,0 +1,68 @@
+{
+  "_note": "TEST VECTORS for the referral-name signed message (REFERRAL-NAMES-CONTRACT.md section 2). The keys are obviously-test keys, never real: the EVM key is the well-known anvil/hardhat account 0, the Solana seed is 32 bytes of 0x01. Both signature schemes are deterministic (EIP-191 personal_sign with RFC 6979; ed25519), so a kit that signs the same message must produce the same signature. `message` is the byte-exact UTF-8 string (lines joined with LF, no trailing newline).",
+  "evm": {
+    "private_key": "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+    "address": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+  },
+  "solana": {
+    "seed_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+    "public_key": "AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9"
+  },
+  "vectors": [
+    {
+      "label": "evm create, payout = own address",
+      "signer_chain": "base",
+      "action": "create",
+      "name": "-",
+      "signer": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+      "payout": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+      "issued_at": "2026-10-11T18:04:05.123Z",
+      "message": "Sato Hub referral name\naction: create\nname: -\nsigner: 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266\npayout: 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266\nissued_at: 2026-10-11T18:04:05.123Z",
+      "signature": "0x154f0598f480ee584e98ae8337c1cdd58062e4eb2f8ee5e007dd08dafa676a83421d2e5364c40808f8514d65d2a03054b42d1e7cdb5c3f6c2a824f2059560f181c"
+    },
+    {
+      "label": "solana create, payout = own address",
+      "signer_chain": "solana",
+      "action": "create",
+      "name": "-",
+      "signer": "AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9",
+      "payout": "AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9",
+      "issued_at": "2026-10-11T18:04:05.123Z",
+      "message": "Sato Hub referral name\naction: create\nname: -\nsigner: AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9\npayout: AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9\nissued_at: 2026-10-11T18:04:05.123Z",
+      "signature": "5DFi32es9SNWcrKPYaS4AiHGLZcbHWhALP9so6AxwVWD3wpYP9eJCWoa6oVs4V2Y4LgveEPw1erCUYxtjRn2eg3c"
+    },
+    {
+      "label": "evm create, payout on the other chain",
+      "signer_chain": "base",
+      "action": "create",
+      "name": "-",
+      "signer": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+      "payout": "AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9",
+      "issued_at": "2026-10-11T18:04:05.123Z",
+      "message": "Sato Hub referral name\naction: create\nname: -\nsigner: 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266\npayout: AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9\nissued_at: 2026-10-11T18:04:05.123Z",
+      "signature": "0x36adc17cd4d650e1ebf1ba1be3e752b456b25bb31b11802794733282a1677e126942820d43f8f70dc53a4d6b4d766a8a3e9078835da71ba8e0a08614335471951b"
+    },
+    {
+      "label": "evm set_payout",
+      "signer_chain": "base",
+      "action": "set_payout",
+      "name": "sunny-otter",
+      "signer": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+      "payout": "AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9",
+      "issued_at": "2026-10-11T18:09:05.123Z",
+      "message": "Sato Hub referral name\naction: set_payout\nname: sunny-otter\nsigner: 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266\npayout: AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9\nissued_at: 2026-10-11T18:09:05.123Z",
+      "signature": "0xcba78a66e8305a0012693120c54d9523fb5ec85e5b866f1822c56d3dba44e76c051eb0c11f276185043e9159a48581504de3f55cd303db4c0f621bc38a8f35281c"
+    },
+    {
+      "label": "solana set_payout",
+      "signer_chain": "solana",
+      "action": "set_payout",
+      "name": "quiet-heron-7",
+      "signer": "AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9",
+      "payout": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+      "issued_at": "2026-10-11T18:09:05.123Z",
+      "message": "Sato Hub referral name\naction: set_payout\nname: quiet-heron-7\nsigner: AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9\npayout: 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266\nissued_at: 2026-10-11T18:09:05.123Z",
+      "signature": "5Ugsp1MMo46BN2S6MxfZZe6Ey2n2ne4Ux79k2GPW6XD9JwLzmwtaRdNA5ob4jjzKP6PdjMqP2KzeYTnDdXmA7Sqa"
+    }
+  ]
+}

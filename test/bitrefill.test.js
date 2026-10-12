@@ -212,9 +212,13 @@ test("CLI: a Solana-only agent gets a plain explanation for gift cards", () => {
   assert.match(r.stderr, /paid in USDC on Base for now/);
 });
 
-test("only the Bitrefill sign-in signs a message anywhere in the kit", () => {
+test("only the Bitrefill sign-in and the referral name request (v0.3.2) sign a message anywhere in the kit", () => {
   const src = fileURLToPath(new URL("../src/", import.meta.url));
   const files = readdirSync(src, { recursive: true }).filter((f) => f.endsWith(".js"));
-  const signing = files.filter((f) => /signMessage\(|signTypedData\(/.test(readFileSync(join(src, f), "utf8")));
-  assert.deepEqual(signing, ["bitrefill.js"]);
+  const signing = files.filter((f) => /signMessage\(|signTypedData\(/.test(readFileSync(join(src, f), "utf8"))).sort();
+  assert.deepEqual(signing, ["bitrefill.js", "referral-names.js"]);
+  // the referral file signs only the fixed referral message, never text passed in from outside the file
+  const names = readFileSync(join(src, "referral-names.js"), "utf8");
+  assert.doesNotMatch(names, /signTypedData\(/);
+  assert.equal([...names.matchAll(/\.signMessage\(/g)].length, 2, "base signing in signBase and in makeSigner only");
 });

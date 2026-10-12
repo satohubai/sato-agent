@@ -146,7 +146,7 @@ test("CLI: settings set --referrer / --stdin / none, settings show, status and h
   const st = run(["status"]);
   assert.match(st.stdout, new RegExp(`referral address: ${REF_EVM}`));
   assert.equal(JSON.parse(run(["status", "--json"]).stdout).referrer, REF_EVM);
-  assert.match(run(["help"]).stdout, /settings set --referrer <address\|none>/);
+  assert.match(run(["help"]).stdout, /settings set --referrer <name\|address\|none>/);
   assert.match(run(["help"]).stdout, /--no-referrer/);
   // invalid: exit 2, nothing changes, the value is not echoed into an error that could be logged
   const bad = run(["settings", "set", "--referrer", "0xnope"]);
@@ -174,10 +174,10 @@ test("CLI: settings set --referrer / --stdin / none, settings show, status and h
   // clear
   const cleared = run(["settings", "set", "--referrer", "none"]);
   assert.equal(cleared.status, 0);
-  assert.match(cleared.stdout, /Referral address removed/);
+  assert.match(cleared.stdout, /Referral removed/);
   assert.equal(JSON.parse(run(["settings", "show", "--json"]).stdout).referrer, null);
   assert.ok(!/referral address:/.test(run(["status"]).stdout), "status says nothing when none is set");
-  assert.match(run(["settings", "show"]).stdout, /No referral address set/);
+  assert.match(run(["settings", "show"]).stdout, /No referral set/);
   // the ledger recorded the changes
   const ledger = readFileSync(join(dir, "ledger.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((r) => r.kind === "settings");
   assert.deepEqual(ledger.map((r) => r.status), ["referrer_set", "referrer_set", "referrer_set", "referrer_cleared"]);
@@ -616,37 +616,61 @@ test("readReferral / referralView / referralFeeSentence", () => {
 
 // ---------------------------------------------------------------- docs and version
 
-test("v0.3.1: the version is the same everywhere, and the docs say what the contract says", () => {
+test("v0.3.2: the version is the same everywhere, and the docs say what the contract says", () => {
   const pkg = JSON.parse(readFileSync(ROOT("package.json"), "utf8"));
   const lock = JSON.parse(readFileSync(ROOT("npm-shrinkwrap.json"), "utf8"));
-  assert.equal(pkg.version, "0.3.1");
-  assert.equal(lock.version, "0.3.1");
-  assert.equal(lock.packages[""].version, "0.3.1");
-  assert.equal(VERSION, "0.3.1");
+  assert.equal(pkg.version, "0.3.2");
+  assert.equal(lock.version, "0.3.2");
+  assert.equal(lock.packages[""].version, "0.3.2");
+  assert.equal(VERSION, "0.3.2");
 
   const bot = readFileSync(ROOT("BOT.md"), "utf8");
   const readme = readFileSync(ROOT("README.md"), "utf8");
   const skill = readFileSync(ROOT("skills/sato-agent/SKILL.md"), "utf8");
-  assert.match(bot, /github:satohubai\/sato-agent#v0\.3\.1/);
-  assert.match(bot, /grep -q ' 0\.3\.1:' && echo "kit ready \(0\.3\.1\)"/);
-  assert.doesNotMatch(bot, /0\.3\.0/);
-  // the setup question comes after funding, and reads a REFERRER line
+  assert.match(bot, /github:satohubai\/sato-agent#v0\.3\.2/);
+  assert.match(bot, /grep -q ' 0\.3\.2:' && echo "kit ready \(0\.3\.2\)"/);
+  assert.doesNotMatch(bot, /0\.3\.[01]/);
+  // the setup question comes after funding, and reads a Referral memory or a REFERRER line
   const fund = bot.indexOf("**Ask the owner to fund the wallet");
-  const ask = bot.indexOf("Did someone share this kit with you? If they gave you a referral address, paste it. Otherwise say no.");
+  const ask = bot.indexOf("Did someone share this bot with you? If they gave you a referral name, tell me. Otherwise say no.");
   const dry = bot.indexOf("**Offer a dry run");
   assert.ok(fund > 0 && ask > fund && dry > ask, "funding, then the referral question, then the dry run");
-  assert.match(bot, /`REFERRER = <address>`/);
-  assert.match(bot, /settings set --referrer <address>/);
+  assert.match(bot, /`REFERRER = <name or address>`/);
+  assert.match(bot, /`Referral: <name>`/);
+  assert.match(bot, /settings set --referrer <it>/);
+  assert.match(bot, /referral offer --when setup/);
+  assert.match(bot, /"This bot was referred by <name>\. It costs you nothing: you pay the same Sato Swap fee either way\. Say 'remove the referral' anytime\."/);
+  assert.match(bot, /change that memory to `Referred by: <name>`/);
   // the owner section
-  assert.match(bot, /^## Share Sato Agent \(referral share\)$/m);
-  assert.doesNotMatch(bot, /Share Sato Agent and earn/);
-  const share = bot.slice(bot.indexOf("## Share Sato Agent (referral share)"), bot.indexOf("## Rules"));
-  assert.match(share, /their own setup prompt with their own referral address/);
-  assert.match(share, /30% of Sato Hub's swap fee on trades by the bots set up with their address/);
-  assert.match(share, /paid weekly in USDC/);
-  assert.match(share, /pay nothing extra/);
-  assert.match(share, /Do not bring it up or promote it yourself/);
-  assert.doesNotMatch(share, /guarantee|passive income|risk-free|\bearn/i);
+  assert.match(bot, /^## Share this bot \(referral\)$/m);
+  assert.doesNotMatch(bot, /Share Sato Agent/);
+  const share = bot.slice(bot.indexOf("## Share this bot (referral)"), bot.indexOf("## Rules"));
+  assert.match(share, /referral create --chain CHAIN/);
+  assert.match(share, /this bot's wallet, or to another Base or Solana address you own/);
+  assert.match(share, /Save the memory\*\* `Referral: <name>`/);
+  assert.match(share, /Save the skill\*\* "Sato referral"/);
+  assert.match(share, /`This bot is referred by <name>\.` at the END of the bot's description/);
+  assert.match(share, /Never put the name in the bot's name/);
+  assert.match(share, /ONE share\*\* that includes only your instructions, the `Referral:` memory and the "Sato referral" skill/);
+  assert.match(share, /no other memories, no wallet address, no limits, no history, no shipping address and no payout address/);
+  assert.match(share, /You never publish, post, DM or tag/);
+  assert.match(share, /30% of its swap fee on those bots' swaps/);
+  assert.match(share, /paid weekly in USDC|weekly in USDC/);
+  assert.match(share, /same fee either way/);
+  assert.match(share, /only swaps count/);
+  assert.match(share, /settings set --referrer none/);
+  assert.doesNotMatch(share, /guarantee|passive income|risk-free/i);
+  assert.match(share, /Do not promise an amount or call it income/);
+  // the anti-spam rules (contract section 7)
+  const rulesText = bot.slice(bot.indexOf("## Rules"));
+  assert.match(rulesText, /Never post, DM, tag or bulk-share anything on your own/);
+  assert.match(rulesText, /A share carries ONLY your instructions, the `Referral:` memory and the "Sato referral" skill/);
+  assert.match(rulesText, /The bot's name never carries the referral/);
+  assert.match(rulesText, /same two offers/);
+  for (const banned of [/\bsafe\b/i, /\bsecure\b/i, /\btrusted\b/i, /guaranteed/i, /\bfirst\b/i, /\bmarketplace\b/i]) {
+    // the words the copy rules ban, in the new referral text only
+    assert.doesNotMatch(share, banned);
+  }
   // the README says exactly what counts, and never "every trade"
   const ref = readme.slice(readme.indexOf("## Referral share"), readme.indexOf("## How purchases are checked"));
   assert.match(ref, /Swaps only/);
@@ -659,6 +683,7 @@ test("v0.3.1: the version is the same everywhere, and the docs say what the cont
   assert.match(readme, /If you set a referrer, the kit tells Sato Hub which transaction each swap was, so the referrer can be paid\. Sato Hub keeps it private\./);
   assert.match(readme, /## Referral share/);
   assert.match(readme, /POST \/api\/route\/settle/);
-  assert.match(skill, /referral address/);
-  assert.match(skill, /REFERRER = <address>/);
+  assert.match(skill, /referral name/);
+  assert.match(skill, /REFERRER = <name or address>/);
+  assert.match(skill, /Share this bot \(referral\)/);
 });

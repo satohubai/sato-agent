@@ -8,11 +8,12 @@ import { parseArgs } from "node:util";
 import { createHash } from "node:crypto";
 import { addresses, initWallet, walletExists } from "../src/wallet.js";
 import { allowedChains, evaluate, isLegacySwapsOff, loadPolicy, purchasesAsk, setPolicy, swapsEnabled } from "../src/policy.js";
-import { NeedsApproval, Pending, Refused } from "../src/errors.js";
+import { NeedsApproval, Pending, PlainError, Refused } from "../src/errors.js";
 import { VALUE_KINDS, actions, read, recordCheckEvent, spentLast24h } from "../src/ledger.js";
 import { purchaseChain, purchaseGate } from "../src/purchase.js";
-import { SHIP_FIELDS, clearShipTo, parseReferrerInput, referrer as savedReferrer, scrubAddress, setReferrer, setShipTo, settingsFromJson, shipTo, shipToLines, shipToStatus } from "../src/settings.js";
+import { SHIP_FIELDS, clearShipTo, isReferralName, parseReferrerInput, referrer as savedReferrer, scrubAddress, setReferrer, setShipTo, settingsFromJson, shipTo, shortReferrer, shipToLines, shipToStatus } from "../src/settings.js";
 import { reportSettlement, settlementLine } from "../src/swap/referral.js";
+import { REFERRAL_SHARE_PERCENT, createReferralName, declineOffer, lookupReferralName, ownReferral, referralShow, setReferralPayout, shareTextLines, shareTexts, swapOffer, takeOffer } from "../src/referral-names.js";
 import { readFileSync } from "node:fs";
 import { assertBaseAgent, buyGiftcard, codesLine, invoiceStatus, productDetail, saveCodes, savedCodes, searchProducts } from "../src/bitrefill.js";
 import { localOrders, orderStatus, ordersAvailable, placeOrder, statusLines } from "../src/commerce.js";
@@ -48,15 +49,27 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
   settings show | settings set --stdin  (a JSON object of name, line1, line2, city, state, postalCode, country, email)
                | settings set --ship-name <n> --ship-line1 <l> [--ship-line2 <l>] --ship-city <c> --ship-state <XX>
                               --ship-zip <z> --ship-country US --ship-email <e> | settings set --ship-clear
-               | settings set --referrer <address|none>     (or a "referrer" key with --stdin)
+               | settings set --referrer <name|address|none>     (or a "referrer" key with --stdin)
                                          the shipping address for Amazon orders. It stays on this computer (mode 600) and
                                          is sent only inside an order request to Sato Hub; never logged. --stdin keeps it
                                          out of the command line.
-                                         --referrer: the payout address of whoever shared this kit with the owner (a Base or
-                                         Solana address). Sato Hub pays it 30% of its swap fee on this agent's swaps, weekly
-                                         in USDC. It does not change what the owner pays. With one set, each swap request
+                                         --referrer: the referral name (like sunny-otter) or the payout address (a Base or
+                                         Solana address) of whoever shared this kit with the owner. A name is checked with
+                                         Sato Hub before it is saved. Sato Hub pays it ${REFERRAL_SHARE_PERCENT}% of its swap fee on this agent's swaps,
+                                         weekly in USDC. It does not change what the owner pays. With one set, each swap request
                                          carries it, and after a confirmed swap the kit reports the transaction to Sato Hub
                                          (once, never retried; Sato Hub keeps it private). "none" clears it
+  referral create --chain base|solana [--payout <address>]
+  referral set-payout <address>
+  referral show | referral share-text
+  referral offer --when setup|swap | referral decline
+                                         share this bot: Sato Hub gives it a referral name (sunny-otter). Bots copied from the
+                                         owner's share are referred by that name, and ${REFERRAL_SHARE_PERCENT}% of Sato Hub's swap fee on their swaps
+                                         is paid to the payout address weekly in USDC (they pay the same fee). create signs
+                                         one message with this bot's own key on that chain (no payment, no gas); the payout
+                                         defaults to that wallet's address. share-text prints the three texts a share carries.
+                                         offer prints the one-time offer (once per setup / swap) when this bot has no name
+                                         and has not said no; decline records the no. Nothing here posts or sends anything
   buy <request|link|ASIN> [--chain base|solana] [--approve <code>] [--dry-run]
                                          reads what it is given and hands it to checkout, order or pay; changes nothing itself.
                                          A link it pays (x402, a Coinbase checkout) is a purchase: price card, owner's yes
@@ -170,6 +183,8 @@ try {
       "ship-clear": { type: "boolean" },
       referrer: { type: "string" },
       "no-referrer": { type: "boolean" },
+      payout: { type: "string" },
+      when: { type: "string" },
       stdin: { type: "boolean" },
       available: { type: "boolean" },
       wait: { type: "string" },
@@ -497,7 +512,10 @@ async function main(command = cmd, args = positionals.slice(1)) {
       // never retried, and nothing here can change the result or the exit code. With no referrer nothing is sent at all.
       const settlement = await reportSettlement(d, r);
       const settleNote = settlement ? `\n${settlementLine(settlement)}` : "";
-      return out(`Swapped. ${r.explorer}${rebuilt}${r.received ? `\nReceived ${r.received.amount} ${r.received.asset}.` : r.amount_out ? `\nReceived ${r.amount_out} base units of ${d.buy.asset}.` : ""}${r.warnings?.length ? `\nNote: ${r.warnings.join("; ")}` : ""}${settleNote}`, { ...r, plan: d, ...(settlement ? { referral_settlement: settlement } : {}) });
+      // Once ever, after a confirmed swap only (never a dry run, a failure, exit 4/5, or another command): the offer to share this
+      // bot. It never changes the swap's result or exit code (swapOffer cannot throw).
+      const offer = swapOffer();
+      return out(`Swapped. ${r.explorer}${rebuilt}${r.received ? `\nReceived ${r.received.amount} ${r.received.asset}.` : r.amount_out ? `\nReceived ${r.amount_out} base units of ${d.buy.asset}.` : ""}${r.warnings?.length ? `\nNote: ${r.warnings.join("; ")}` : ""}${settleNote}${offer ? `\n\n${offer}` : ""}`, { ...r, plan: d, ...(settlement ? { referral_settlement: settlement } : {}), ...(offer ? { referral_offer: offer } : {}) });
     }
     case "token": {
       const input = rest[0];
@@ -626,7 +644,8 @@ async function main(command = cmd, args = positionals.slice(1)) {
           // Only when one is set: an agent with no address says nothing about Amazon (it is off until Sato Hub turns it on).
           shipToStatus() === "set" ? "shipping address: set (for Amazon orders; `settings show` prints it)" : null,
           // Only when one is set: the public payout address of whoever shared this kit (30% of Sato Hub's swap fee, weekly in USDC).
-          savedReferrer() ? `referral address: ${savedReferrer()} (30% of Sato Hub's swap fee goes to it; it does not change what you pay)` : null,
+          savedReferrer() ? `referral ${isReferralName(savedReferrer()) ? "name" : "address"}: ${savedReferrer()} (${REFERRAL_SHARE_PERCENT}% of Sato Hub's swap fee goes to it; it does not change what you pay)` : null,
+          ownReferral().name ? `own referral name: ${ownReferral().name} (\`referral show\`)` : null,
           `spent in the last 24 hours: $${roundUsd(spent.usd)}`,
           spent.unreadable.length ? `⚠ ledger lines ${spent.unreadable.join(", ")} are unreadable; spending is stopped until the owner looks` : null,
           `changes (latest 5):\n${changes.map((e) => `  ${c(e.ts, 40)} ${c(e.status, 40)}${e.raises?.length ? ` (${c(e.raises.join("; "), 300)})` : ""}`).join("\n") || "  (none)"}`,
@@ -658,28 +677,87 @@ async function main(command = cmd, args = positionals.slice(1)) {
           if (!Object.keys(ship).length && refRaw === undefined) {
             throw new Error(`settings set needs at least one of: ${SHIP_FIELDS.map(([, f]) => f).join(", ")}, --referrer`);
           }
-          if (refRaw !== undefined) parseReferrerInput(refRaw); // refused before anything is written
+          const parsedRef = refRaw !== undefined ? parseReferrerInput(refRaw) : null; // refused before anything is written
+          // A referral name is checked with Sato Hub before anything is saved (not found or no answer: refused, nothing written).
+          if (parsedRef?.referrer && isReferralName(parsedRef.referrer)) await lookupReferralName(parsedRef.referrer);
           if (Object.keys(ship).length) s = setShipTo(ship);
           if (refRaw !== undefined) ref = setReferrer(refRaw);
         } catch (err) {
+          if (err instanceof PlainError) throw err;
           throw new UsageError(err.message); // names the flag, never echoes a value
         }
         const shipText = s ? `Shipping address saved on this computer only (mode 600). It is sent only inside an Amazon order request to Sato Hub, and never written to the spend log.\n${shipToLines(s).map((l) => `  ${l}`).join("\n")}\nRead it back to the owner to confirm it.` : null;
         const refText = ref
           ? ref.referrer
-            ? `Referral address ${ref.changed ? "saved" : "unchanged"}: ${ref.referrer}\nSato Hub pays it 30% of its swap fee on this agent's swaps, weekly in USDC. It does not change what the owner pays or where the fee goes. After each confirmed swap the kit tells Sato Hub which transaction it was (once; Sato Hub keeps it private).`
+            ? `Referral ${isReferralName(ref.referrer) ? "name" : "address"} ${ref.changed ? "saved" : "unchanged"}: ${ref.referrer}\nSato Hub pays it ${REFERRAL_SHARE_PERCENT}% of its swap fee on this agent's swaps, weekly in USDC. It does not change what the owner pays or where the fee goes. After each confirmed swap the kit tells Sato Hub which transaction it was (once; Sato Hub keeps it private).`
             : ref.changed
-              ? "Referral address removed. Swaps no longer carry one, and nothing is reported to Sato Hub after a swap."
-              : "No referral address was set."
+              ? "Referral removed. Swaps no longer carry one, and nothing is reported to Sato Hub after a swap."
+              : "No referral was set."
           : null;
         return out([shipText, refText].filter(Boolean).join("\n"), { ...(s ? { ship_to: s } : {}), ...(ref ? { referrer: ref.referrer, referrer_changed: ref.changed } : {}) });
       }
-      if (rest[0] !== undefined && rest[0] !== "show") throw new UsageError("settings show | settings set --ship-name <n> --ship-line1 <l> [--ship-line2 <l>] --ship-city <c> --ship-state <s> --ship-zip <z> --ship-country US --ship-email <e> | settings set --ship-clear | settings set --referrer <address|none>");
+      if (rest[0] !== undefined && rest[0] !== "show") throw new UsageError("settings show | settings set --ship-name <n> --ship-line1 <l> [--ship-line2 <l>] --ship-city <c> --ship-state <s> --ship-zip <z> --ship-country US --ship-email <e> | settings set --ship-clear | settings set --referrer <name|address|none>");
       const s = shipTo();
       const ref = savedReferrer();
       const shipText = s ? `Shipping address (kept on this computer only):\n${shipToLines(s).map((l) => `  ${l}`).join("\n")}` : "No shipping address set. Amazon orders need one: `settings set --stdin` with a JSON object of name, line1, line2, city, state, postalCode, country, email on standard input.";
-      const refText = ref ? `Referral address: ${ref} (Sato Hub pays it 30% of its swap fee on this agent's swaps, weekly in USDC; \`settings set --referrer none\` removes it)` : "No referral address set (`settings set --referrer <address>` if someone shared this kit with you).";
+      const refText = ref ? `Referral ${isReferralName(ref) ? "name" : "address"}: ${ref} (Sato Hub pays it ${REFERRAL_SHARE_PERCENT}% of its swap fee on this agent's swaps, weekly in USDC; \`settings set --referrer none\` removes it)` : "No referral set (`settings set --referrer <name or address>` if someone shared this kit with you).";
       return out(`${shipText}\n${refText}`, { ship_to: s, referrer: ref });
+    }
+    case "referral": {
+      const sub = rest[0];
+      const usage = "referral create --chain base|solana [--payout <address>] | referral set-payout <address> | referral show | referral share-text | referral offer --when setup|swap | referral decline";
+      if (sub === "create") {
+        if (rest.length > 1) throw new UsageError(usage);
+        const chain = (flags.chain || "").toLowerCase();
+        if (!["base", "solana"].includes(chain)) throw new UsageError("referral create --chain base|solana [--payout <address>]");
+        const r = await createReferralName({ chain, payout: flags.payout });
+        const texts = shareTexts(r.name);
+        const where = r.payout
+          ? `Payouts go to ${shortReferrer(r.payout)} on ${r.payout_chain === "solana" ? "Solana" : "Base"}, weekly in USDC.`
+          : `The payout address stays as Sato Hub already has it (a repeat create does not change it). \`referral set-payout <address>\` sets it.`;
+        return out(
+          [
+            r.created ? `Created. This bot's referral name: ${r.name}` : `This bot already had a referral name: ${r.name}`,
+            where,
+            `Bots copied from your share are referred by ${r.name}: ${REFERRAL_SHARE_PERCENT}% of Sato Hub's swap fee on their swaps, paid weekly in USDC. They pay the same fee either way. Only swaps count, and no amount is promised.`,
+            "",
+            "What a share carries (these three texts, nothing else):",
+            ...shareTextLines(r.name),
+            "",
+            "Nothing was posted or sent. The owner reviews the share and publishes it.",
+          ].join("\n"),
+          { name: r.name, created: r.created, signing_chain: r.chain, payout: r.payout ? shortReferrer(r.payout) : null, payout_chain: r.payout_chain, share_text: texts },
+        );
+      }
+      if (sub === "set-payout") {
+        if (!rest[1] || rest.length > 2) throw new UsageError("referral set-payout <address>");
+        const r = await setReferralPayout(rest[1]);
+        return out(r.changed ? `Payouts for ${r.name} now go to ${shortReferrer(r.payout)} on ${r.payout_chain === "solana" ? "Solana" : "Base"}, weekly in USDC.` : `Payouts for ${r.name} already go to ${shortReferrer(r.payout)}. Nothing changed.`, { name: r.name, changed: r.changed, payout: shortReferrer(r.payout), payout_chain: r.payout_chain });
+      }
+      if (sub === "show") {
+        if (rest.length > 1) throw new UsageError(usage);
+        const v = referralShow(savedReferrer());
+        return out(v.text, v.data);
+      }
+      if (sub === "share-text") {
+        if (rest.length > 1) throw new UsageError(usage);
+        const own = ownReferral();
+        if (!own.name) throw new PlainError("Run referral create first.");
+        return out(shareTextLines(own.name).join("\n"), { name: own.name, share_text: shareTexts(own.name) });
+      }
+      if (sub === "offer") {
+        if (rest.length > 1 || !["setup", "swap"].includes(flags.when ?? "")) throw new UsageError("referral offer --when setup|swap");
+        const offer = takeOffer(flags.when);
+        if (flags.json) return out("", { when: flags.when, offer });
+        if (offer) console.log(offer);
+        return;
+      }
+      if (sub === "decline") {
+        if (rest.length > 1) throw new UsageError(usage);
+        const recorded = declineOffer();
+        return out(recorded ? "Noted. The offer to share this bot will not come up again." : "Already noted. The offer will not come up again.", { declined: true, recorded });
+      }
+      throw new UsageError(usage);
     }
     case "buy": {
       const input = rest[0];
@@ -896,6 +974,10 @@ main().catch((err) => {
     if (flags.json) console.log(scrubAddress(json({ refused: err.refusals })));
     else errLine(err.message);
     process.exit(3);
+  }
+  if (err instanceof PlainError) {
+    errLine(err.message.split("\n").map((l) => clean(l, 600)).join("\n")); // its own sentences, one cleaned line each (some quote Sato Hub)
+    process.exit(1);
   }
   if (err instanceof Pending) {
     if (flags.json) console.log(scrubAddress(json({ pending: err.details, message: err.message })));

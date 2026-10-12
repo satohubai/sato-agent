@@ -23,6 +23,9 @@ export class Pending extends Error {
   }
 }
 
+/** A refusal with its own sentence for the owner (no "error:" prefix), nothing spent or signed onchain. CLI exit code 1. */
+export class PlainError extends Error {}
+
 /** A broadcast the node definitely refused: it never entered the mempool. */
 export class Rejected extends Error {}
 

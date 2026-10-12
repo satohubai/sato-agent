@@ -8,6 +8,7 @@ import { generateKeyPairSync, createPublicKey } from "node:crypto";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { getBase58Decoder } from "@solana/kit";
 import { paths, readJson, writePrivate } from "./store.js";
+import { isEvm } from "./chains.js";
 
 const b58 = getBase58Decoder(); // bytes -> base58 string
 
@@ -47,6 +48,12 @@ export function loadWallet() {
 export function addresses(w = loadWallet()) {
   return { base: w.evm.address, solana: w.solana.address };
 }
+
+/**
+ * The wallet's address on a chain, given by its key: every EVM chain uses the one 0x key, kept under `addresses().base`
+ * (the name the wallet file and every JSON output already use), and Solana has its own.
+ */
+export const addressFor = (chain, a = addresses()) => (isEvm(chain) ? a.base : a[chain]);
 
 export function evmAccount(w = loadWallet()) {
   return privateKeyToAccount(w.evm.private_key);

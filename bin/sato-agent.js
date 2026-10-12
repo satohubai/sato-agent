@@ -6,7 +6,8 @@
 
 import { parseArgs } from "node:util";
 import { createHash } from "node:crypto";
-import { addresses, initWallet, walletExists } from "../src/wallet.js";
+import { addressFor, addresses, initWallet, walletExists } from "../src/wallet.js";
+import { DEFAULT_EVM_CHAIN, chainKeys, chainsWith, defaultStable, evmChain, explorerAddress, getChain, isEvm, isKnownChain, labelOf, orList, pipeList, stableBySymbol, stablesOf } from "../src/chains.js";
 import { allowedChains, evaluate, isLegacySwapsOff, loadPolicy, purchasesAsk, setPolicy, swapsEnabled } from "../src/policy.js";
 import { NeedsApproval, Pending, PlainError, Refused } from "../src/errors.js";
 import { VALUE_KINDS, actions, read, recordCheckEvent, spentLast24h } from "../src/ledger.js";
@@ -32,13 +33,22 @@ import { checkBuilds, renderReceipts } from "../src/build-check.js";
 import { normalizeCluster } from "../src/receipts.js";
 import { clean, cleanBody, cleanStrings } from "../src/text.js";
 
+// The chains a command takes, as `a|b` in its usage line: from the registry's feature flags (src/chains.js).
+const CHAIN_ALL = pipeList(chainKeys());
+const CHAIN_SEND = pipeList(chainsWith("send"));
+const CHAIN_SWAP = pipeList(chainsWith("swap"));
+const CHAIN_PAY = pipeList(chainsWith("x402"));
+const CHAIN_BUY = pipeList(chainsWith("checkout"));
+const CHAIN_ORDER = pipeList(chainsWith("amazon"));
+const CHAIN_SET = `${CHAIN_ALL}|${chainKeys().join(",")}`; // policy set --chains: one chain, or a comma-separated list
+
 const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, with the owner's limits
 
   init                                   create this agent's own wallet (never replaces one)
   address                                the wallet address(es) for this agent's chain(s)
   balance                                USDC + gas balance on this agent's chain(s)
   policy show
-  policy set --chains <base|solana|base,solana> --per-tx <usd|none> --per-day <usd|none>
+  policy set --chains <${CHAIN_SET}> --per-tx <usd|none> --per-day <usd|none>
              [--allow <addr,addr> | --allow any] [--check-gate off|no|caution]
              [--on-check-unavailable allow|refuse] [--approval auto|ask]
              [--swaps on|off] [--swap-slippage-bps <1-500>|none] [--max-trades-per-day <n|none>]
@@ -72,7 +82,7 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
                                          full address, then the same command with --approve <code> signs it. share-text prints the three texts a share carries.
                                          offer prints the one-time offer (once per setup / swap) when this bot has no name
                                          and has not said no; decline records the no. Nothing here posts or sends anything
-  buy <request|link|ASIN> [--chain base|solana] [--approve <code>] [--dry-run]
+  buy <request|link|ASIN> [--chain ${CHAIN_BUY}] [--approve <code>] [--dry-run]
                                          reads what it is given and hands it to checkout, order or pay; changes nothing itself.
                                          A link it pays (x402, a Coinbase checkout) is a purchase: price card, owner's yes
   giftcard search <words> [--country US] [--kind giftcard|esim|topup]   (shows the values on offer)
@@ -84,15 +94,15 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
                                          Paid but not delivered within --wait (default 240 s) exits 4: do not buy again.
                                          search and buy (a dry run too) sign in to Bitrefill: a sign-in message, not a payment
   order --available                      whether Sato Hub has switched Amazon orders on ("on" or "off")
-  order <amazon.com link|ASIN> [--chain base|solana] [--approve <code>] [--dry-run]
+  order <amazon.com link|ASIN> [--chain ${CHAIN_ORDER}] [--approve <code>] [--dry-run]
   orders [order id]
                                          Amazon US, shipped to the owner's address, through Sato Hub (when Sato Hub has switched
                                          it on). Shows item, tax, shipping and total; the payment is decoded and simulated first
   checkout <solana:...|ethereum:...> [--approve <code>] [--dry-run]
-  checkout --to <address> --amount <usdc> --chain base|solana [--approve <code>] [--dry-run]
+  checkout --to <address> --amount <usdc> --chain ${CHAIN_SEND} [--approve <code>] [--dry-run]
                                          pay a Solana Pay request (USDC or SOL), a USDC-on-Base payment link (EIP-681), or an
                                          exact amount to a deposit address (a Stripe crypto deposit address)
-  swap --chain base|solana --from <asset> --to <asset> --amount <n|all> [--slippage-bps <n>] [--no-referrer] [--approve <code>] [--dry-run]
+  swap --chain ${CHAIN_SWAP} --from <asset> --to <asset> --amount <n|all> [--slippage-bps <n>] [--no-referrer] [--approve <code>] [--dry-run]
                                          (--no-referrer: leave the saved referral address out of this one swap)
                                          swap with a major on one side: USDC, ETH or WETH on Base; USDC or SOL on Solana. The other
                                          side can be any token, by its 0x address (Base), its mint (Solana) or a link; Sato Hub's
@@ -102,12 +112,12 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
                                          per trade (50 bps between majors, 150 with a token; --slippage-bps overrides, at most 500).
                                          A trade with high slippage, a large price impact, a poor sell-back test or an issuer power
                                          over the token needs the owner's approval (exit 5) even when the agent acts on its own.
-  token <address|mint|link> [--chain base|solana]
+  token <address|mint|link> [--chain ${CHAIN_ALL}]
                                          what is at an address: name, decimals, program, price and liquidity (dated), a Solana token's
                                          authorities and extensions, and Sato Hub's token check. Read-only; spends nothing.
-  send --chain base|solana --to <address> --amount <usdc> [--approve <code>]
+  send --chain ${CHAIN_SEND} --to <address> --amount <usdc> [--approve <code>]
                                          send USDC (Sato Hub checks the recipient first)
-  pay <url> [--chain base|solana] [--method POST --data <body> --header 'k: v' ...] [--approve <code>]
+  pay <url> [--chain ${CHAIN_PAY}] [--method POST --data <body> --header 'k: v' ...] [--approve <code>]
                                          pay for an x402 resource in USDC on this agent's chain (--chain is
                                          needed when the owner chose both chains). It asks the server's price
                                          first (one unpaid request); the owner approves that price and payee,
@@ -316,8 +326,8 @@ async function main(command = cmd, args = positionals.slice(1)) {
     case "address": {
       const a = addresses();
       const chains = allowedChains(loadPolicy());
-      const shown = Object.fromEntries(chains.map((c) => [c, a[c]]));
-      return out(chains.map((c) => `${c === "base" ? "Base:  " : "Solana:"} ${a[c]}`).join("\n"), shown);
+      const shown = Object.fromEntries(chains.map((c) => [c, addressFor(c, a)]));
+      return out(chains.map((c) => `${`${labelOf(c)}:`.padEnd(7)} ${addressFor(c, a)}`).join("\n"), shown);
     }
     case "balance": {
       const a = addresses();
@@ -326,16 +336,18 @@ async function main(command = cmd, args = positionals.slice(1)) {
       await Promise.all(
         chains.map(async (c) => {
           try {
-            res[c] = c === "base" ? await baseChain.balances(a.base) : await solana.balances(a.solana);
+            res[c] = isEvm(c) ? await baseChain.balances(addressFor(c, a), c) : await solana.balances(a.solana);
           } catch (err) {
-            res[c] = { address: a[c], error: err.message };
+            res[c] = { address: addressFor(c, a), error: err.message };
           }
         }),
       );
       const line = (c) => {
         const r = res[c];
-        const gas = c === "base" ? "eth" : "sol";
-        return `${c === "base" ? "Base  " : "Solana"}  ${r.error ? `${r.address}: unavailable (${r.error})` : `${r.address}: ${r.usdc} USDC, ${r[gas]} ${gas.toUpperCase()}`}`;
+        // Every stablecoin the chain holds, then its gas coin: "12 USDC, 0.01 ETH".
+        const gas = getChain(c).native.symbol;
+        const held = [...stablesOf(c).map(([s]) => `${r[s.toLowerCase()]} ${s}`), `${r[gas.toLowerCase()]} ${gas}`].join(", ");
+        return `${labelOf(c).padEnd(6)}  ${r.error ? `${r.address}: unavailable (${r.error})` : `${r.address}: ${held}`}`;
       };
       return out(chains.map(line).join("\n"), res);
     }
@@ -375,12 +387,13 @@ async function main(command = cmd, args = positionals.slice(1)) {
     }
     case "send": {
       const chain = (flags.chain || "").toLowerCase();
-      if (!["base", "solana"].includes(chain) || !flags.to || !flags.amount) throw new UsageError("send --chain base|solana --to <address> --amount <usdc>");
+      if (!chainsWith("send").includes(chain) || !flags.to || !flags.amount) throw new UsageError(`send --chain ${CHAIN_SEND} --to <address> --amount <usdc>`);
       const a = addresses();
       // One Preflight call checks ONE target, and `token` outranks `address`, so
       // never pass a token here: this must be the recipient check (Sato Scan).
-      const checkArgs = { address: flags.to, chain: chain === "base" ? "Base" : "Solana", from: chain === "base" ? a.base : a.solana };
-      const usd = unitsToUsd(usdcUnits(flags.amount)); // refuses malformed amounts before anything else
+      const checkArgs = { address: flags.to, chain: getChain(chain).hubName, from: addressFor(chain, a) };
+      const stable = defaultStable(chain);
+      const usd = unitsToUsd(usdcUnits(flags.amount, stable.decimals, stable.symbol), stable.decimals); // refuses malformed amounts before anything else
       const check = await beforeSpend({
         chain,
         intent: { cmd: "send", chain, to: flags.to, amount: flags.amount },
@@ -391,15 +404,15 @@ async function main(command = cmd, args = positionals.slice(1)) {
         precheck: chain === "solana" ? () => solana.assertWalletRecipient(flags.to) : undefined,
       });
       if (flags["dry-run"]) {
-        const d = chain === "base" ? await baseChain.dryRunSendUsdc({ to: flags.to, amount: flags.amount }) : await solana.dryRunSendUsdc({ to: flags.to, amount: flags.amount });
-        return out(`DRY RUN: the checks and the simulation passed for ${d.usd} USDC on ${chain} to ${d.to}. Nothing was signed or sent, and nothing counts against the limits.`, { ...d, sato_hub_check: check });
+        const d = isEvm(chain) ? await baseChain.dryRunSendStable({ to: flags.to, amount: flags.amount, chain }) : await solana.dryRunSendUsdc({ to: flags.to, amount: flags.amount });
+        return out(`DRY RUN: the checks and the simulation passed for ${d.usd} ${stable.symbol} on ${chain} to ${d.to}. Nothing was signed or sent, and nothing counts against the limits.`, { ...d, sato_hub_check: check });
       }
-      const r = chain === "base" ? await baseChain.sendUsdc({ to: flags.to, amount: flags.amount }) : await solana.sendUsdc({ to: flags.to, amount: flags.amount });
-      return out(`Sent ${r.usd} USDC on ${chain} to ${r.to}\n  ${r.explorer}`, { ...r, chain, sato_hub_check: check });
+      const r = isEvm(chain) ? await baseChain.sendStable({ to: flags.to, amount: flags.amount, chain }) : await solana.sendUsdc({ to: flags.to, amount: flags.amount });
+      return out(`Sent ${r.usd} ${stable.symbol} on ${chain} to ${r.to}\n  ${r.explorer}`, { ...r, chain, sato_hub_check: check });
     }
     case "pay": {
       const url = rest[0];
-      if (!url) throw new UsageError("pay <url> [--chain base|solana] [--method POST --data <body> --header 'k: v']");
+      if (!url) throw new UsageError(`pay <url> [--chain ${CHAIN_PAY}] [--method POST --data <body> --header 'k: v']`);
       const headers = parseHeaders();
       const method = (flags.method || "GET").toUpperCase();
       // The chain comes from the owner's policy, exactly like `send`: --chain must be
@@ -461,7 +474,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
         card: viaBuy
           ? [
               `Pay a link: ${clean(url, 300)}`,
-              chosen ? `Price: ${chosen.usd} USDC on ${payChain === "base" ? "Base" : "Solana"}, paid to ${chosen.pay_to} (the price the server asked just now; a higher one at pay time is refused).` : `Price: not stated before the real request; the server can charge up to $${perTx} (the per-transaction limit), and the payee is not known yet.`,
+              chosen ? `Price: ${chosen.usd} USDC on ${labelOf(payChain)}, paid to ${chosen.pay_to} (the price the server asked just now; a higher one at pay time is refused).` : `Price: not stated before the real request; the server can charge up to $${perTx} (the per-transaction limit), and the payee is not known yet.`,
             ]
           : [],
       });
@@ -487,8 +500,8 @@ async function main(command = cmd, args = positionals.slice(1)) {
     }
     case "swap": {
       const chain = (flags.chain || "").toLowerCase();
-      if (!["base", "solana"].includes(chain) || !flags.from || !flags.to || !flags.amount) {
-        throw new UsageError("swap --chain base|solana --from <asset> --to <asset> --amount <n|all> [--slippage-bps <n>] [--approve <code>] [--dry-run]");
+      if (!chainsWith("swap").includes(chain) || !flags.from || !flags.to || !flags.amount) {
+        throw new UsageError(`swap --chain ${CHAIN_SWAP} --from <asset> --to <asset> --amount <n|all> [--slippage-bps <n>] [--approve <code>] [--dry-run]`);
       }
       let slippageBps;
       if (flags["slippage-bps"] !== undefined) {
@@ -521,9 +534,9 @@ async function main(command = cmd, args = positionals.slice(1)) {
     }
     case "token": {
       const input = rest[0];
-      if (!input || rest.length > 1) throw new UsageError("token <address|mint|link> [--chain base|solana]");
+      if (!input || rest.length > 1) throw new UsageError(`token <address|mint|link> [--chain ${CHAIN_ALL}]`);
       const chain = flags.chain === undefined ? undefined : flags.chain.toLowerCase();
-      if (chain !== undefined && !["base", "solana"].includes(chain)) throw new UsageError("--chain must be base or solana");
+      if (chain !== undefined && !isKnownChain(chain)) throw new UsageError(`--chain must be ${orList(chainKeys())}`);
       const card = await describeToken(input, { chain });
       if (flags.json) {
         // Names, symbols and resolver fields are outside text: cleaned. Sato Hub's evidence text keeps its lines (control characters dropped).
@@ -555,8 +568,9 @@ async function main(command = cmd, args = positionals.slice(1)) {
         x402Support: Boolean(flags["x402-support"]),
         again: flags.again,
         resume: flags.resume,
+        chain: DEFAULT_EVM_CHAIN,
       });
-      return out(`Registered as ERC-8004 agent ${r.agent_id} on Base (${r.registry}), registration file stored onchain.\n  ${r.explorer}`, r);
+      return out(`Registered as ERC-8004 agent ${r.agent_id} on ${labelOf(DEFAULT_EVM_CHAIN)} (${r.registry}), registration file stored onchain.\n  ${r.explorer}`, r);
     }
     case "check": {
       const command = rest.join(" ");
@@ -607,21 +621,23 @@ async function main(command = cmd, args = positionals.slice(1)) {
       const chains = allowedChains(loadPolicy());
       const list = actions();
       const onchain = list.filter((x) => x.explorer && ["confirmed", "registered"].includes(x.status));
-      const agentId = [...list].reverse().find((x) => x.kind === "register" && x.agent_id)?.agent_id ?? null;
+      const agentRow = [...list].reverse().find((x) => x.kind === "register" && x.agent_id);
+      const agentId = agentRow?.agent_id ?? null;
+      const registered = evmChain(isEvm(agentRow?.chain) ? agentRow.chain : DEFAULT_EVM_CHAIN);
       const spent = onchain.filter((x) => VALUE_KINDS.includes(x.kind)).reduce((s, x) => s + (Number(x.usd) || 0), 0);
       const card = [
         "Sato Agent: proof of activity",
         `generated ${new Date().toISOString()} by sato-agent ${VERSION}`,
         "",
-        ...chains.map((c) => `${c === "base" ? "Base wallet:  " : "Solana wallet:"} ${a[c]}  ${c === "base" ? `https://basescan.org/address/${a.base}` : `https://solscan.io/account/${a.solana}`}`),
-        agentId ? `ERC-8004 agent: ${agentId} on Base (registry 0x8004A169FB4a3325136EB29fA0ceB6D2e539a432)` : "ERC-8004 agent: not registered",
+        ...chains.map((c) => `${`${labelOf(c)} wallet:`.padEnd(14)} ${addressFor(c, a)}  ${explorerAddress(c, addressFor(c, a))}`),
+        agentId ? `ERC-8004 agent: ${agentId} on ${registered.label} (registry ${registered.erc8004Registry})` : "ERC-8004 agent: not registered",
         `confirmed onchain actions: ${onchain.length} · value moved (sends, payments, swaps and purchases, in USD): $${roundUsd(spent)}`,
         "",
         ...onchain.slice(-15).map((x) => `${x.first_ts.slice(0, 16).replace("T", " ")}Z  ${kindLabel(x)}  ${x.kind.startsWith("register") ? `agent ${x.agent_id}` : `$${roundUsd(Number(x.usd) || 0)}`}  ${x.explorer}`),
         "",
         "Every line links to the chain. Check it yourself. Built with Sato Hub: https://github.com/satohubai/sato-agent",
       ].join("\n");
-      return out(card, { addresses: Object.fromEntries(chains.map((c) => [c, a[c]])), agent_id: agentId, confirmed_actions: onchain, usdc_moved: roundUsd(spent) });
+      return out(card, { addresses: Object.fromEntries(chains.map((c) => [c, addressFor(c, a)])), agent_id: agentId, confirmed_actions: onchain, usdc_moved: roundUsd(spent) });
     }
     case "status": {
       const p = loadPolicy();
@@ -785,15 +801,16 @@ async function main(command = cmd, args = positionals.slice(1)) {
       const input = rest[0];
       if (!input && rest.length === 0 && (flags.to !== undefined || flags.amount !== undefined)) {
         // An exact amount to a deposit address (a Stripe crypto deposit address): a purchase, with its card and the owner's yes.
-        if (!flags.to || !flags.amount || !flags.chain) throw new UsageError("checkout --to <address> --amount <usdc> --chain base|solana");
+        if (!flags.to || !flags.amount || !flags.chain) throw new UsageError(`checkout --to <address> --amount <usdc> --chain ${CHAIN_SEND}`);
         const chain = purchaseChain(flags.chain);
-        const usd = unitsToUsd(usdcUnits(flags.amount)); // refuses a malformed amount
+        const stable = defaultStable(chain);
+        const usd = unitsToUsd(usdcUnits(flags.amount, stable.decimals, stable.symbol), stable.decimals); // refuses a malformed amount
         const a = addresses();
-        const card = [`Deposit payment: pay exactly ${flags.amount} USDC on ${chain === "base" ? "Base" : "Solana"} to ${flags.to}. Only this exact amount, on this network, is matched to the order.`];
+        const card = [`Deposit payment: pay exactly ${flags.amount} ${stable.symbol} on ${labelOf(chain)} to ${flags.to}. Only this exact amount, on this network, is matched to the order.`];
         const check = await beforeSpend({
           chain,
           intent: { cmd: "checkout", kind: "deposit", chain, to: flags.to, amount: flags.amount },
-          checkArgs: { address: flags.to, chain: chain === "base" ? "Base" : "Solana", from: a[chain] },
+          checkArgs: { address: flags.to, chain: getChain(chain).hubName, from: addressFor(chain, a) },
           expectKind: "address",
           usd,
           to: flags.to,
@@ -801,30 +818,33 @@ async function main(command = cmd, args = positionals.slice(1)) {
           purchase: true,
           card,
         });
-        const mod = chain === "base" ? baseChain : solana;
+        const mod = isEvm(chain)
+          ? { dryRun: (x) => baseChain.dryRunSendStable({ ...x, chain }), send: (x) => baseChain.sendStable({ ...x, chain }) }
+          : { dryRun: solana.dryRunSendUsdc, send: solana.sendUsdc };
         if (flags["dry-run"]) {
-          const d = await mod.dryRunSendUsdc({ to: flags.to, amount: flags.amount });
+          const d = await mod.dryRun({ to: flags.to, amount: flags.amount });
           return out(`${card.join("\n")}\nDRY RUN: the checks and the simulation passed. Nothing was signed or sent, and nothing counts against the limits.`, { ...d, card, sato_hub_check: check });
         }
         say(card.join("\n"));
-        const r = await mod.sendUsdc({ to: flags.to, amount: flags.amount, checkout: "deposit" });
-        return out(`Paid ${r.usd} USDC on ${chain === "base" ? "Base" : "Solana"} to ${r.to}\n  ${r.explorer}`, { ...r, chain, kind: "deposit", sato_hub_check: check });
+        const r = await mod.send({ to: flags.to, amount: flags.amount, checkout: "deposit" });
+        return out(`Paid ${r.usd} ${stable.symbol} on ${labelOf(chain)} to ${r.to}\n  ${r.explorer}`, { ...r, chain, kind: "deposit", sato_hub_check: check });
       }
-      if (!input || rest.length > 1) throw new UsageError("checkout <solana:...|ethereum:...> | checkout --to <address> --amount <usdc> --chain base|solana  [--approve <code>] [--dry-run]");
+      if (!input || rest.length > 1) throw new UsageError(`checkout <solana:...|ethereum:...> | checkout --to <address> --amount <usdc> --chain ${CHAIN_SEND}  [--approve <code>] [--dry-run]`);
       const { kind } = classifyBuy(input);
       if (kind === "eip681") {
         const req = parseEip681(input);
-        purchaseChain("base");
+        const chain = purchaseChain(req.chain); // the chain the link names, if the owner chose it
+        const stable = req.symbol ? stableBySymbol(chain, req.symbol) : defaultStable(chain);
         const a = addresses();
-        const card = [`Payment link: pay exactly ${req.amount} USDC on Base to ${req.to} (the amount written in the link).`];
-        const check = await beforeSpend({ chain: "base", intent: { cmd: "checkout", kind, chain: "base", to: req.to, amount: req.amount }, checkArgs: { address: req.to, chain: "Base", from: a.base }, expectKind: "address", usd: unitsToUsd(req.units), to: req.to, purchase: true, card });
+        const card = [`Payment link: pay exactly ${req.amount} ${stable.symbol} on ${labelOf(chain)} to ${req.to} (the amount written in the link).`];
+        const check = await beforeSpend({ chain, intent: { cmd: "checkout", kind, chain, to: req.to, amount: req.amount }, checkArgs: { address: req.to, chain: getChain(chain).hubName, from: addressFor(chain, a) }, expectKind: "address", usd: unitsToUsd(req.units, stable.decimals), to: req.to, purchase: true, card });
         if (flags["dry-run"]) {
-          const d = await baseChain.dryRunSendUsdc({ to: req.to, amount: req.amount });
+          const d = await baseChain.dryRunSendStable({ to: req.to, amount: req.amount, chain, symbol: stable.symbol });
           return out(`${card.join("\n")}\nDRY RUN: the checks and the simulation passed. Nothing was signed or sent, and nothing counts against the limits.`, { ...d, card, sato_hub_check: check });
         }
         say(card.join("\n"));
-        const r = await baseChain.sendUsdc({ to: req.to, amount: req.amount, checkout: "eip681" });
-        return out(`Paid ${r.usd} USDC on Base to ${r.to}\n  ${r.explorer}`, { ...r, chain: "base", kind, sato_hub_check: check });
+        const r = await baseChain.sendStable({ to: req.to, amount: req.amount, checkout: "eip681", chain, symbol: stable.symbol });
+        return out(`Paid ${r.usd} ${stable.symbol} on ${labelOf(chain)} to ${r.to}\n  ${r.explorer}`, { ...r, chain, kind, sato_hub_check: check });
       }
       if (kind === "solana-pay-transfer" || kind === "solana-pay-transaction") {
         purchaseChain("solana");
@@ -939,7 +959,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
       if (!input || rest.length > 1) throw new UsageError("order <amazon.com link|ASIN> [--chain base|solana] [--approve <code>] [--dry-run] | order --available");
       const r = await placeOrder({ input, chain: flags.chain, approve: flags.approve, dryRun: Boolean(flags["dry-run"]) });
       if (r.dry_run) return out(`${r.card.join("\n")}\nDRY RUN: the quote, the address match and the payment simulation passed. Nothing was signed or paid, and nothing counts against the limits. (Crossmint holds an unpaid quote; it expires on its own.)`, r);
-      return out(`${r.card.join("\n")}\nPaid ${Number(r.price.total_base_units) / 1e6} USDC on ${r.chain === "base" ? "Base" : "Solana"} for order ${r.order_id}.\n  ${r.explorer}\nFollow it with \`orders ${r.order_id}\`.`, r);
+      return out(`${r.card.join("\n")}\nPaid ${unitsToUsd(r.price.total_base_units, stableBySymbol(r.chain, "USDC").decimals)} USDC on ${labelOf(r.chain)} for order ${r.order_id}.\n  ${r.explorer}\nFollow it with \`orders ${r.order_id}\`.`, r);
     }
     case "orders": {
       const id = rest[0];

@@ -18,11 +18,16 @@ import { isAddress as isEvmAddress } from "viem";
 import { isAddress as isSolanaAddress } from "@solana/kit";
 import { paths, readJson, writePrivate } from "./store.js";
 import { entries, recordPolicyChange } from "./ledger.js";
+import { chainKeys } from "./chains.js";
 
 export { Refused } from "./errors.js";
 
 export const POLICY_SCHEMA = "sato-agent.policy/v2";
-export const CHAINS = ["base", "solana"];
+// The chains an owner can choose: every chain in the registry (src/chains.js).
+export const CHAINS = chainKeys();
+// What a v0.1 policy (no `chains` field) meant: both chains that existed then. Pinned, so a chain added to the registry later
+// never becomes allowed by a policy that never chose it.
+const LEGACY_CHAINS = Object.freeze(["base", "solana"]);
 // How strictly a Sato Hub check gates a spend (owner's choice; unset = it only informs).
 export const CHECK_GATES = ["off", "no", "caution"]; // "no": refuse on a `no` verdict; "caution": refuse on `caution` or `no`
 export const APPROVAL_MODES = ["auto", "ask"]; // "ask": every spend needs the owner's approval of that exact intent
@@ -88,7 +93,7 @@ export function raisesBetween(prev, next) {
     if (next.allow_recipients === null) r.push("allow_recipients removed");
     else if (next.allow_recipients.some((a) => !prev.allow_recipients.map(norm).includes(norm(a)))) r.push("allow_recipients widened");
   }
-  if (Array.isArray(prev.chains) && (next.chains ?? CHAINS).some((c) => !prev.chains.includes(c))) r.push("chains widened");
+  if (Array.isArray(prev.chains) && (next.chains ?? LEGACY_CHAINS).some((c) => !prev.chains.includes(c))) r.push("chains widened");
   // Gates order strictest-last; a move toward "off" (or unset) loosens.
   if (looser(["off", "no", "caution"], next.check_gate, prev.check_gate)) r.push("check_gate loosened");
   if (prev.approval === "ask" && next.approval !== "ask") r.push("approval: ask -> auto");
@@ -199,7 +204,7 @@ export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, a
 }
 
 /** The chains this policy allows (a v1 policy with no `chains` allows both). */
-export const allowedChains = (policy) => (policy && Array.isArray(policy.chains) ? policy.chains : CHAINS);
+export const allowedChains = (policy) => (policy && Array.isArray(policy.chains) ? policy.chains : LEGACY_CHAINS);
 
 /**
  * Check one spend against the limits. Returns the refusals (empty = allowed).

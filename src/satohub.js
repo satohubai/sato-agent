@@ -10,6 +10,7 @@
 // refuses on `caution` or `no`, unset/"off" only informs. A `go` never means
 // the spend is safe; it means nothing on record stood in the way.
 
+import { isKnownChain } from "./chains.js";
 import { USER_AGENT } from "./version.js";
 
 export const DEFAULT_MCP_URL = "https://satohub.ai/api/mcp";
@@ -109,7 +110,7 @@ export async function resolveTokenViaHub(input, { chain, call = callTool, verify
   if (r?.isError || !s || typeof s !== "object") return { ok: false, reason: "unavailable", error: String(r?.text ?? "no answer").slice(0, 300) };
   if (s.resolved === false) return { ok: false, reason: "not_resolved", code: s.code ?? null, error: String(s.error ?? "Sato Hub could not resolve this").slice(0, 300) };
   const chainName = String(s.chain ?? "").toLowerCase();
-  if (typeof s.address !== "string" || !s.address || !["base", "solana"].includes(chainName)) return { ok: false, reason: "unavailable", error: "the answer names no token" };
+  if (typeof s.address !== "string" || !s.address || !isKnownChain(chainName)) return { ok: false, reason: "unavailable", error: "the answer names no token" };
   let signature = { ok: false, error: "not checked" };
   try {
     const v = verifySignature ?? (await import("./hub-signature.js")).verifyHubSignature;

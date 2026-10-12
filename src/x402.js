@@ -32,14 +32,16 @@ import { evaluate, loadPolicy } from "./policy.js";
 import { record, release, reserve, spentLast24h } from "./ledger.js";
 import { Pending, Refused } from "./errors.js";
 import { evmAccount } from "./wallet.js";
-import { USDC_BASE } from "./base.js";
-import { unitsToUsd } from "./amount.js";
+import { USDC_DECIMALS, unitsToUsd, usdToUnits } from "./amount.js";
+import { chainsWith, evmChain, evmChainKeys, explorerAddress, explorerTx, getChain, isEvm, labelOf, stableByAddress } from "./chains.js";
 import { clean, cleanOrNull } from "./text.js";
 import { USER_AGENT } from "./version.js";
 
-export const BASE_NETWORK = "eip155:8453";
+/** Base's x402 network name (CAIP-2), under its v0.3 name; every chain's is in src/chains.js. */
+export const BASE_NETWORK = evmChain("base").x402.caip2;
 export const MAX_AUTH_WINDOW_S = 300;
-export const PAY_CHAINS = ["base", "solana"];
+/** The chains this kit pays x402 on: every chain in the registry with the `x402` feature. */
+export const PAY_CHAINS = chainsWith("x402");
 
 // Headers the x402 exchange itself uses (v1 and v2), and our own user-agent: a
 // caller's value would break or spoof the payment, so they are refused.
@@ -66,15 +68,15 @@ export function resolvePayChain(policy, requested) {
   return { chain, refusals };
 }
 
-// x402 v1 servers say `maxAmountRequired` (not `amount`) and name networks "base" / "solana".
+// x402 v1 servers say `maxAmountRequired` (not `amount`) and name networks by a short name ("base" / "solana").
 // Every check below runs on a normalized view, so v1 and v2 pass the SAME guard.
-const V1_NETWORKS = { base: BASE_NETWORK, solana: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp" };
+const V1_NETWORKS = Object.fromEntries(PAY_CHAINS.map((k) => [getChain(k).x402.v1Name, getChain(k).x402.caip2]));
 
 /** The requirement as the guard sees it: canonical CAIP-2 network, atomic amount, same window/asset/payTo. */
 export function view(req, version) {
   const v1 = version === 1;
   return {
-    network: v1 ? V1_NETWORKS[req.network] : req.network, // v1: only "base" and "solana" are understood
+    network: v1 ? V1_NETWORKS[req.network] : req.network, // v1: only the registry's short names are understood
     asset: req.asset,
     amount: v1 ? req.maxAmountRequired : req.amount,
     maxTimeoutSeconds: req.maxTimeoutSeconds,
@@ -83,8 +85,8 @@ export function view(req, version) {
     raw: req,
   };
 }
-// The server's amount is atomic USDC (6 decimals): digits only, positive, and small
-// enough to convert to dollars exactly (src/amount.js, the same on both chains).
+// The server's amount is atomic USDC (the chain's USDC decimals, 6): digits only, positive, and small
+// enough to convert to dollars exactly (src/amount.js, the same on every chain).
 // Anything else is refused, never rounded or coerced.
 const MAX_UNITS = BigInt(Number.MAX_SAFE_INTEGER);
 const unitsOf = (v) => {
@@ -94,11 +96,17 @@ const unitsOf = (v) => {
   if (units <= 0n || units > MAX_UNITS) throw new Error("amount is not a positive USDC amount");
   return units;
 };
-const usdOf = (v) => unitsToUsd(unitsOf(v));
-const isBaseUsdc = (v) => v.network === BASE_NETWORK && String(v.asset).toLowerCase() === USDC_BASE.toLowerCase();
+const usdOf = (v, decimals = USDC_DECIMALS) => unitsToUsd(unitsOf(v), decimals);
+/** Does this offer ask for an EIP-3009 stable of the EVM chain `key` (on that chain's x402 network)? */
+const acceptsEvmStable = (key) => (v) => {
+  const c = evmChain(key);
+  const s = stableByAddress(key, String(v.asset));
+  return v.network === c.x402.caip2 && s !== null && s.eip3009 === true;
+};
 
 // A settlement receipt names a transaction only in that chain's own form.
-const TX_ID = { base: /^0x[0-9a-fA-F]{64}$/, solana: /^[1-9A-HJ-NP-Za-km-z]{64,88}$/ };
+const EVM_TX_ID = /^0x[0-9a-fA-F]{64}$/;
+const TX_ID = { ...Object.fromEntries(evmChainKeys().map((k) => [k, EVM_TX_ID])), solana: /^[1-9A-HJ-NP-Za-km-z]{64,88}$/ };
 export const validTxId = (chainName, tx) => (typeof tx === "string" && TX_ID[chainName]?.test(tx) ? tx : null);
 
 /** The receipt as stored and printed: only checked or cleaned fields, never the raw header. */
@@ -126,9 +134,13 @@ class SignedPayloadRejected extends Error {
   }
 }
 
-/** Base checks on the requirements alone, before anything is reserved or signed. Returns refusals. */
-function basePreSign(v) {
+/** "use --chain solana to pay on Solana": the other chains a payment can be made on instead of `key`. */
+const elsewhere = (key) => `use ${PAY_CHAINS.filter((k) => k !== key).map((k) => `--chain ${k} to pay on ${labelOf(k)}`).join(" or ")}`;
+
+/** EVM checks on the requirements alone, before anything is reserved or signed. Returns refusals. */
+const evmPreSign = (key) => (v) => {
   const out = [];
+  const label = labelOf(key);
   // @x402/evm signs a permit2 offer through a payload with no validBefore: it could
   // not be bounded, and would be signed and then counted for nothing. EIP-3009 only.
   const method = v.extra?.assetTransferMethod;
@@ -136,25 +148,27 @@ function basePreSign(v) {
     out.push({ rule: "transfer_method", limit: "eip3009", observed: method, message: "the server asks for a transfer method other than an EIP-3009 authorization; this kit signs EIP-3009 authorizations and nothing else" });
   }
   if (typeof v.payTo !== "string" || !isAddress(v.payTo)) {
-    out.push({ rule: "pay_to", limit: "a Base address", observed: v.payTo ?? null, message: "the recipient is not a valid Base address" });
+    out.push({ rule: "pay_to", limit: `a ${label} address`, observed: v.payTo ?? null, message: `the recipient is not a valid ${label} address` });
   }
   return out;
-}
+};
 
-const baseChain = (account, scheme) => ({
-  name: "base",
+const evmX402Chain = (key, account, scheme, c = evmChain(key), stable = c.stables[c.defaultStable]) => ({
+  name: key,
+  decimals: stable.decimals,
+  assetSymbol: stable.symbol,
   scheme: scheme ?? new ExactEvmScheme(account),
   schemeV1: scheme ?? new ExactEvmSchemeV1(account),
-  v1Network: "base",
-  networkPattern: BASE_NETWORK,
-  walletUrl: `https://basescan.org/address/${account.address}`,
-  asset: USDC_BASE,
-  accepts: isBaseUsdc,
-  limit: `USDC on ${BASE_NETWORK}`,
-  refusal: "only USDC on Base is paid on this chain (use --chain solana to pay on Solana)",
+  v1Network: c.x402.v1Name,
+  networkPattern: c.x402.caip2,
+  walletUrl: explorerAddress(key, account.address),
+  asset: stable.address,
+  accepts: acceptsEvmStable(key),
+  limit: `${stable.symbol} on ${c.x402.caip2}`,
+  refusal: `only ${stable.symbol} on ${c.label} is paid on this chain (${elsewhere(key)})`,
   signedThing: "authorization",
-  preSign: basePreSign,
-  txUrl: (hash) => `https://basescan.org/tx/${hash}`,
+  preSign: evmPreSign(key),
+  txUrl: (hash) => explorerTx(key, hash),
   // Belt and braces: check what was actually signed, before it is sent anywhere.
   async afterSign({ paymentPayload, selectedRequirements }, { units, version }, seen) {
     const req = view(selectedRequirements, version);
@@ -181,6 +195,8 @@ async function solanaChain({ signer, scheme, rpc, rpcTimeoutMs }) {
   const owner = s.address;
   return {
     name: "solana",
+    decimals: USDC_DECIMALS,
+    assetSymbol: "USDC",
     // A hung RPC while the scheme builds the transaction aborts the payment (nothing sent, released).
     scheme: scheme ?? sol.solanaScheme(s, rpcTimeoutMs ? { timeoutMs: rpcTimeoutMs } : {}),
     schemeV1: scheme ?? sol.solanaSchemeV1(s, rpcTimeoutMs ? { timeoutMs: rpcTimeoutMs } : {}),
@@ -190,11 +206,11 @@ async function solanaChain({ signer, scheme, rpc, rpcTimeoutMs }) {
     owner,
     accepts: sol.isSolanaUsdc,
     limit: `USDC (${sol.USDC_MINT}) on ${sol.SOLANA_NETWORK}`,
-    refusal: "only USDC on Solana mainnet is paid on this chain (use --chain base to pay on Base)",
+    refusal: `only USDC on Solana mainnet is paid on this chain (${elsewhere("solana")})`,
     signedThing: "transaction",
     preSign: (v) => sol.preSignRefusals(v, owner),
-    txUrl: (sig) => `https://solscan.io/tx/${sig}`,
-    walletUrl: `https://solscan.io/account/${owner}`,
+    txUrl: (sig) => explorerTx("solana", sig),
+    walletUrl: explorerAddress("solana", owner),
     // Decode the transaction that was just signed and compare it with what was reserved.
     async afterSign({ paymentPayload, selectedRequirements }, { units, version }) {
       const req = view(selectedRequirements, version);
@@ -229,7 +245,7 @@ async function solanaChain({ signer, scheme, rpc, rpcTimeoutMs }) {
 function boundTerms({ maxUsd, payTo } = {}) {
   if (maxUsd === undefined) return null;
   if (typeof maxUsd !== "number" || !Number.isFinite(maxUsd) || !(maxUsd > 0)) throw new Error("maxUsd must be a positive number of dollars");
-  return { maxUsd, maxUnits: BigInt(Math.round(maxUsd * 1e6)), payTo };
+  return { maxUsd, payTo };
 }
 const samePayee = (a, b) => (String(b).startsWith("0x") ? String(a).toLowerCase() === String(b).toLowerCase() : a === b);
 
@@ -255,12 +271,12 @@ function check(policy, raw, chain, version, bound = null) {
   if (extra.length) return extra;
   let usd;
   try {
-    usd = usdOf(req);
+    usd = usdOf(req, chain.decimals);
   } catch {
     return [{ rule: "amount", limit: "positive integer atomic units", observed: req.amount ?? null, message: "the server's amount is not a positive whole number of atomic USDC units that can be counted exactly" }];
   }
   if (bound) {
-    if (unitsOf(req) > bound.maxUnits) {
+    if (unitsOf(req) > usdToUnits(bound.maxUsd, chain.decimals)) {
       return [{ rule: "price_changed", limit: bound.maxUsd, observed: usd, message: `the server now asks $${usd}, more than the $${bound.maxUsd} the owner approved; nothing was signed` }];
     }
     if (bound.payTo !== undefined && !samePayee(req.payTo, bound.payTo)) {
@@ -278,7 +294,7 @@ async function prepare({ chain: requestedChain, headers, account, signer, scheme
   if (refusals.length) throw new Refused(refusals);
   const reserved = Object.keys(headers).filter((k) => RESERVED_HEADERS.includes(k.toLowerCase()));
   if (reserved.length) throw new Error(`header ${reserved.join(", ")} is reserved for the payment exchange`);
-  const chain = chainName === "solana" ? await solanaChain({ signer, scheme, rpc, rpcTimeoutMs }) : baseChain(account ?? evmAccount(), scheme);
+  const chain = isEvm(chainName) ? evmX402Chain(chainName, account ?? evmAccount(), scheme) : await solanaChain({ signer, scheme, rpc, rpcTimeoutMs });
   return { policy, chain };
 }
 
@@ -366,7 +382,7 @@ export async function quoteX402(url, { chain: requestedChain, method = "GET", bo
       if (r.length) return refusals.push(...cleanRefusals(r));
       const req = view(raw, version);
       const units = unitsOf(req);
-      found.push({ index, units, offer: { usd: unitsToUsd(units), pay_to: clean(req.payTo, 100), network: req.network, version, chain: chain.name, amount_atomic: units.toString() } });
+      found.push({ index, units, offer: { usd: unitsToUsd(units, chain.decimals), pay_to: clean(req.payTo, 100), network: req.network, version, chain: chain.name, amount_atomic: units.toString() } });
     } catch (err) {
       refusals.push(...cleanRefusals([{ rule: "terms_unreadable", limit: "x402 v1 or v2 payment terms", observed: null, message: `an offer could not be read (${clean(err.message, 120)})` }]));
     }
@@ -428,7 +444,7 @@ export async function pay(url, { chain: requestedChain, method = "GET", body, he
     }
     const req = view(raw, version);
     try {
-      entry = await reserve(loadPolicy(), { ...tagFields, kind: "x402", chain: chain.name, asset: "USDC", usd: usdOf(req), to: req.payTo, url });
+      entry = await reserve(loadPolicy(), { ...tagFields, kind: "x402", chain: chain.name, asset: chain.assetSymbol, usd: usdOf(req, chain.decimals), to: req.payTo, url });
       units = unitsOf(req);
     } catch (err) {
       if (err instanceof Refused) {

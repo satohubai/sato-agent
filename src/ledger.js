@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto";
 import { appendLine, paths, readLines, withLock } from "./store.js";
 import { evaluate } from "./policy.js";
 import { Refused } from "./errors.js";
+import { DEFAULT_EVM_CHAIN, explorerTx, isKnownChain } from "./chains.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -85,7 +86,8 @@ export function actions(ledger = read()) {
 export function explorerFor(a) {
   const tx = Array.isArray(a.tx) ? a.tx[0] : a.tx;
   if (!tx || typeof tx !== "string") return null;
-  return a.chain === "solana" ? `https://solscan.io/tx/${tx}` : `https://basescan.org/tx/${tx}`;
+  // A row with no (or an unknown) chain is read as the EVM chain every v0.1 row was on.
+  return explorerTx(isKnownChain(a.chain) ? a.chain : DEFAULT_EVM_CHAIN, tx);
 }
 
 /** Take a reservation back out. Only for spends that provably never went out. */

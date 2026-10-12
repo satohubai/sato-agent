@@ -19,7 +19,7 @@
 //      Solana with Sato's signed fee disclosure), then the chain module's own
 //      verification and simulation (pinned contracts/programs, balance deltas)
 //   5. USDC <-> ETH and USDC <-> SOL: the quote's implied price must sit near the oracle
-//      price (ORACLE_TOLERANCE_PCT), or nothing is signed. A token pair has no independent
+//      price (the feed's tolerance, src/chains.js), or nothing is signed. A token pair has no independent
 //      price, so this check does not apply; the market figures are shown instead.
 //   6. slippage: the owner's flag, else the owner's cap, else a default picked for the
 //      trade (50 bps between majors, 150 bps with a token, plus a Solana token's own
@@ -37,10 +37,11 @@ import { evaluate, loadPolicy } from "../policy.js";
 import { spentLast24h } from "../ledger.js";
 import { NeedsApproval, Refused } from "../errors.js";
 import { consumeApproval, requestApproval } from "../approvals.js";
-import { oraclePrice, quoteWithinOracle, ORACLE_TOLERANCE_PCT, PriceUnavailable } from "../price.js";
+import { oraclePrice, oracleTolerancePct, quoteWithinOracle, PriceUnavailable } from "../price.js";
+import { DEFAULT_EVM_CHAIN, chainKeys, chainsWith, evmChain, evmChainKeys, getChain, isEvm, isKnownChain, isStableSymbol, labelOf, oracleChainOf, orList } from "../chains.js";
 import { callTool, looksLikeLink, resolveTokenViaHub, runCheck } from "../satohub.js";
 import { verifyHubSignature } from "../hub-signature.js";
-import { addresses } from "../wallet.js";
+import { addressFor, addresses } from "../wallet.js";
 import { usdcUnits, roundUsd } from "../amount.js";
 import { clean, cleanBody } from "../text.js";
 import { clients as baseClients } from "../base.js";
@@ -62,15 +63,34 @@ export const SLIPPAGE_HARD_CAP_BPS = 500;
 /** The slippage picked per trade when neither the owner's flag nor the owner's cap says: between majors, and with a token. */
 export const DEFAULT_SLIPPAGE_BPS = Object.freeze({ majors: 50, token: 150 });
 
+// The major assets of each chain, by symbol: its decimals, and the oracle asset that prices it (the volatile ones). An EVM
+// chain's are its registry entry's: every stable (no oracle), then the native coin and the wrapped native (both priced as the native).
+const evmMajors = (key) => {
+  const c = evmChain(key);
+  return {
+    ...Object.fromEntries(Object.values(c.stables).map((s) => [s.symbol, { decimals: s.decimals }])),
+    [c.native.symbol]: { decimals: c.native.decimals, oracle: c.native.oracle },
+    [c.wrappedNative.symbol]: { decimals: c.wrappedNative.decimals, oracle: c.native.oracle },
+  };
+};
 const MAJORS = {
-  base: { USDC: { decimals: 6 }, ETH: { decimals: 18, oracle: "ETH" }, WETH: { decimals: 18, oracle: "ETH" } },
+  ...Object.fromEntries(evmChainKeys().map((k) => [k, evmMajors(k)])),
   solana: { USDC: { decimals: 6 }, SOL: { decimals: 9, oracle: "SOL" } },
 };
+/**
+ * Is this resolved asset one of the chain's stablecoins, by the symbol it is shown under? Its amount is its USD value. A
+ * long-tail token is always shown with its short address beside its symbol, so it can never pass for one.
+ */
+const isStableAsset = (chain, asset) => isStableSymbol(chain, asset.symbol);
+/** The options an oracle read takes on this chain: an EVM chain reads its own feeds; Solana's SOL/USD is read where Chainlink publishes it. */
+const oracleOpts = (chain) => (isEvm(chain) ? { chain } : {});
 /** Symbols a token must not be shown under without its address: a scam token can call itself USDC. */
 /** A long-tail token is always shown with its short address ("PEPE 0x6982…1933", "DezX…B263"): its symbol is whatever its creator wrote. */
 export const shortBaseAddress = (a) => `${String(a).slice(0, 6)}…${String(a).slice(-4)}`;
 export const shortMint = (a) => `${String(a).slice(0, 4)}…${String(a).slice(-4)}`;
-const isBaseAddress = (s) => /^0x[0-9a-fA-F]{40}$/.test(s);
+const isEvmAddress = (s) => /^0x[0-9a-fA-F]{40}$/.test(s);
+/** What an EVM chain module is given besides the caller's own deps: the chain the call is about. */
+const evmDeps = (deps, chain) => ({ ...(deps.baseDeps ?? {}), chain });
 const isSolanaMint = (s) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s);
 
 const withTimeout = (p, ms = 20_000) =>
@@ -126,17 +146,17 @@ async function resolveAsset(chain, raw, deps, label) {
   const { input, hub } = await inputToAddress(chain, raw, deps);
   const generic = () =>
     new Error(
-      chain === "base"
-        ? `${label}: on base the kit swaps USDC, ETH, WETH, or a token by its 0x contract address (or a link); "${clean(raw, 60)}" is none of those`
+      isEvm(chain)
+        ? `${label}: on ${chain} the kit swaps ${Object.keys(MAJORS[chain]).join(", ")}, or a token by its 0x contract address (or a link); "${clean(raw, 60)}" is none of those`
         : `${label}: on solana the kit swaps USDC, SOL, or a token by its mint address (or a link); "${clean(raw, 60)}" is none of those`,
     );
   let asset;
   try {
-    if (chain === "base") {
-      const t = await (deps.resolveBaseToken ?? evm.resolveBaseToken)(input, deps.baseDeps ?? {});
+    if (isEvm(chain)) {
+      const t = await (deps.resolveBaseToken ?? evm.resolveBaseToken)(input, evmDeps(deps, chain));
       const short = shortBaseAddress(t.address);
       const shown = t.major ? t.symbol : t.symbol === short ? short : `${t.symbol} ${short}`;
-      asset = { kind: t.major ? "major" : "token", symbol: shown, id: t.address, decimals: t.decimals, oracle: t.major ? MAJORS.base[t.symbol]?.oracle : undefined, arg: t, name: t.name ?? null, info: t };
+      asset = { kind: t.major ? "major" : "token", symbol: shown, id: t.address, decimals: t.decimals, oracle: t.major ? MAJORS[chain][t.symbol]?.oracle : undefined, arg: t, name: t.name ?? null, info: t };
     } else {
       const t = await (deps.resolveSolanaToken ?? sol.resolveSolanaToken)(input, deps.solDeps ?? {});
       (deps.assertSolanaTokenTradable ?? sol.assertSolanaTokenTradable)(t);
@@ -144,7 +164,7 @@ async function resolveAsset(chain, raw, deps, label) {
     }
   } catch (err) {
     if (err instanceof Refused) throw err;
-    const looksRight = chain === "base" ? isBaseAddress(input) : isSolanaMint(input);
+    const looksRight = isEvm(chain) ? isEvmAddress(input) : isSolanaMint(input);
     if (!looksRight && !(input.toUpperCase() in MAJORS[chain])) throw generic();
     throw new Error(`${label}: ${err.message}`);
   }
@@ -188,9 +208,9 @@ export function compareHubWithChain(chain, hub, info) {
 /** The wallet's whole balance of a token, read from the chain (base units). */
 async function defaultTokenBalance(chain, asset, deps) {
   const a = addresses();
-  if (chain === "base") {
-    const pub = (deps.baseDeps?.c ?? baseClients()).pub;
-    return BigInt(await withTimeout(pub.readContract({ address: asset.id, abi: erc20Abi, functionName: "balanceOf", args: [a.base] })));
+  if (isEvm(chain)) {
+    const pub = (deps.baseDeps?.c ?? baseClients(undefined, chain)).pub;
+    return BigInt(await withTimeout(pub.readContract({ address: asset.id, abi: erc20Abi, functionName: "balanceOf", args: [addressFor(chain, a)] })));
   }
   const r = deps.solDeps?.rpc ?? solanaRpc();
   const res = await withTimeout(r.getTokenAccountsByOwner(solAddress(a.solana), { mint: solAddress(asset.id) }, { encoding: "jsonParsed" }).send());
@@ -266,8 +286,8 @@ const merge = (...lists) => {
 
 /** Validate the request against the owner's choices and size it in USD from an independent price (where one exists). */
 export async function sizeSwap({ chain, from, to, amount, slippageBps }, deps = {}) {
-  const table = MAJORS[chain];
-  if (!table) throw new Error("--chain must be base or solana");
+  const table = chainsWith("swap").includes(chain) ? MAJORS[chain] : undefined;
+  if (!table) throw new Error(`--chain must be ${orList(chainsWith("swap"))}`);
   const policy = deps.policy ?? loadPolicy();
 
   // Cheap refusals first (chain, swaps on, trade count, a slippage the owner's cap forbids): nothing is read from a chain for a swap the owner hasn't allowed.
@@ -279,9 +299,9 @@ export async function sizeSwap({ chain, from, to, amount, slippageBps }, deps = 
   if (fromAsset.id === toAsset.id) throw new Error("--from and --to are the same asset");
   const tailIn = fromAsset.kind === "token";
   const tailOut = toAsset.kind === "token";
-  if (tailIn && tailOut) throw refuse("token_to_token", `one side of a swap must be ${chain === "base" ? "USDC, ETH or WETH" : "USDC or SOL"}; swapping one token straight for another is not supported yet`);
+  if (tailIn && tailOut) throw refuse("token_to_token", `one side of a swap must be ${orList(Object.keys(table))}; swapping one token straight for another is not supported yet`);
   const longTail = tailIn ? "in" : tailOut ? "out" : null;
-  if (!longTail && fromAsset.symbol !== "USDC" && toAsset.symbol !== "USDC") throw new Error("one side of a swap must be USDC (this version)");
+  if (!longTail && !isStableAsset(chain, fromAsset) && !isStableAsset(chain, toAsset)) throw new Error("one side of a swap must be USDC (this version)");
   const tail = tailIn ? fromAsset : tailOut ? toAsset : null;
 
   // The amount: a number, or `all` for the whole balance of a token being sold (read from the chain).
@@ -310,7 +330,7 @@ export async function sizeSwap({ chain, from, to, amount, slippageBps }, deps = 
   let oracle = null;
   if (oracleAsset) {
     try {
-      oracle = await (deps.oraclePrice ?? oraclePrice)(oracleAsset);
+      oracle = await (deps.oraclePrice ?? oraclePrice)(oracleAsset, oracleOpts(chain));
     } catch (err) {
       if (err instanceof PriceUnavailable) throw refuse("price_unavailable", `no independent ${oracleAsset} price right now (${err.message}); the kit does not swap without one`);
       throw err;
@@ -319,8 +339,9 @@ export async function sizeSwap({ chain, from, to, amount, slippageBps }, deps = 
   let usd = null;
   let usdBasis = "after_quote";
   if (!tailIn) {
-    usd = roundUsd(fromAsset.symbol === "USDC" ? amountNum : amountNum * oracle.usd);
-    usdBasis = fromAsset.symbol === "USDC" ? "usdc_amount" : "oracle";
+    const fromStable = isStableAsset(chain, fromAsset);
+    usd = roundUsd(fromStable ? amountNum : amountNum * oracle.usd);
+    usdBasis = fromStable ? "usdc_amount" : "oracle";
   }
 
   // The owner's caps, before anything is quoted (the reservation re-checks under the lock).
@@ -347,7 +368,7 @@ export async function sizeSwap({ chain, from, to, amount, slippageBps }, deps = 
     // A link names the token only through Sato Hub: say which address it became, so the owner sees what is really traded.
     resolvedFromLink: [fromAsset, toAsset].filter((a) => a.hub).map((a) => ({ symbol: a.symbol, address: a.id, chain })),
     notes: [
-      ...[fromAsset, toAsset].filter((a) => a.hub).map((a) => `The link resolved to ${a.id} on ${chain === "base" ? "Base" : "Solana"} (Sato Hub's signed answer); the chain was read for that address, not the link.`),
+      ...[fromAsset, toAsset].filter((a) => a.hub).map((a) => `The link resolved to ${a.id} on ${labelOf(chain)} (Sato Hub's signed answer); the chain was read for that address, not the link.`),
       ...fromAsset.disagreements,
       ...toAsset.disagreements,
     ],
@@ -359,11 +380,11 @@ export async function sizeSwap({ chain, from, to, amount, slippageBps }, deps = 
 /** The quote's implied USD price for the volatile side, from a verified plan. */
 function impliedPrice(sized, sell, buy) {
   // sell/buy are plain numbers in whole units; USDC is one side.
-  return sized.from === "USDC" ? sell / buy : buy / sell;
+  return isStableSymbol(sized.chain, sized.from) ? sell / buy : buy / sell;
 }
 
 function checkAgainstOracle(sized, implied) {
-  const tol = ORACLE_TOLERANCE_PCT[sized.volatile];
+  const tol = oracleTolerancePct(sized.volatile, oracleChainOf(sized.chain));
   const q = quoteWithinOracle({ usdOracle: sized.oracle.usd, usdQuote: implied, tolerancePct: tol });
   if (!q.ok) {
     throw refuse(
@@ -379,7 +400,7 @@ function checkAgainstOracle(sized, implied) {
 /** A new Chainlink reading for a rebuilt plan; no price, no swap. */
 async function freshOracle(sized, deps) {
   try {
-    return { ...sized, oracle: await (deps.oraclePrice ?? oraclePrice)(sized.volatile) };
+    return { ...sized, oracle: await (deps.oraclePrice ?? oraclePrice)(sized.volatile, oracleOpts(sized.chain)) };
   } catch (err) {
     if (err instanceof PriceUnavailable) throw refuse("price_unavailable", `no independent ${sized.volatile} price right now (${err.message}); the kit does not swap without one`);
     throw err;
@@ -403,14 +424,14 @@ async function presizeTokenSale(sized, deps) {
   let out = null;
   try {
     if (deps.publicQuote) out = await deps.publicQuote(sized);
-    else if (sized.chain === "base") out = await evm.kyberPublicOut({ tokenIn: sized.fromAsset.arg, tokenOut: sized.toAsset.arg, amountIn: toUnits(sized.amount, sized.fromAsset.decimals, sized.from) }, deps.baseDeps ?? {});
+    else if (isEvm(sized.chain)) out = await evm.kyberPublicOut({ tokenIn: sized.fromAsset.arg, tokenOut: sized.toAsset.arg, amountIn: toUnits(sized.amount, sized.fromAsset.decimals, sized.from), chain: sized.chain }, deps.baseDeps ?? {});
     else out = await sol.publicQuoteOut({ inputMint: sized.fromAsset.id, outputMint: sized.toAsset.id, units: toUnits(sized.amount, sized.fromAsset.decimals, sized.from), slippageBps: sized.slippageBps }, deps.solDeps ?? {});
   } catch {
     out = null;
   }
   if (out === null || out === undefined) return;
   const whole = Number(out) / 10 ** sized.toAsset.decimals;
-  const usd = roundUsd(sized.toAsset.symbol === "USDC" ? whole : whole * (sized.oracle?.usd ?? NaN));
+  const usd = roundUsd(isStableAsset(sized.chain, sized.toAsset) ? whole : whole * (sized.oracle?.usd ?? NaN));
   if (!(usd > 0)) return;
   recheckLimits(sized, usd, deps);
 }
@@ -521,11 +542,11 @@ export function swapIntent(sized, reasonCodes = [], { skipCheck = false } = {}) 
  */
 export async function prepareSwap(req, deps = {}) {
   const sized = deps.sized ?? (await sizeSwap(req, deps));
-  return sized.chain === "base" ? prepareBase(sized, deps) : prepareSolana(sized, deps);
+  return isEvm(sized.chain) ? prepareEvm(sized, deps) : prepareSolana(sized, deps);
 }
 
-async function prepareBase(sized, deps) {
-  const baseDeps = deps.baseDeps ?? {};
+async function prepareEvm(sized, deps) {
+  const baseDeps = evmDeps(deps, sized.chain);
   await presizeTokenSale(sized, deps); // before Sato Hub is asked: its quote writes a public record
   const plan = await (deps.planAndVerifyBaseSwap ?? evm.planAndVerifyBaseSwap)(
     { from: sized.fromAsset.arg, to: sized.toAsset.arg, amount: sized.amount, slippageBps: sized.slippageBps },
@@ -538,7 +559,7 @@ async function prepareBase(sized, deps) {
   let held;
   let basis = sized.usdBasis;
   if (sized.longTail === "in") {
-    if (sized.toAsset.symbol === "USDC") {
+    if (isStableAsset(sized.chain, sized.toAsset)) {
       held = plan.usd; // the USDC the simulation measured coming back (fee included)
       basis = "usdc_received";
     } else {
@@ -561,7 +582,7 @@ async function prepareBase(sized, deps) {
     confirm,
     display: {
       ...s,
-      chain: "base",
+      chain: sized.chain,
       slippage: sized.slippage,
       usd_held_to_limits: held,
       usd_basis: basis,
@@ -580,7 +601,7 @@ const solDecimals = (plan, side, sized) => plan.tokens?.[side]?.decimals ?? (sid
 function majorOutUsd(plan, sized, oracleUsd) {
   const out = BigInt(plan.quote.out_amount) + (plan.fee?.leg === "output" ? BigInt(plan.fee.max_units ?? 0) : 0n);
   const whole = Number(out) / 10 ** solDecimals(plan, "out", sized);
-  return roundUsd(sized.toAsset.symbol === "USDC" ? whole : whole * oracleUsd);
+  return roundUsd(isStableAsset(sized.chain, sized.toAsset) ? whole : whole * oracleUsd);
 }
 
 async function prepareSolana(sized, deps) {
@@ -598,7 +619,7 @@ async function prepareSolana(sized, deps) {
   let basis = sized.usdBasis;
   if (sized.longTail === "in") {
     held = majorOutUsd(plan, sized, sized.oracle?.usd);
-    basis = sized.toAsset.symbol === "USDC" ? "usdc_received" : "oracle_on_received";
+    basis = isStableAsset(sized.chain, sized.toAsset) ? "usdc_received" : "oracle_on_received";
     if (!(held > 0)) throw refuse("usd_unknown", "the quote did not show what the major leg of this sale is worth, so it cannot be held to your limits; nothing was signed");
     recheckLimits(sized, held, deps);
   } else if (sized.longTail === "out") {
@@ -672,7 +693,7 @@ async function prepareSolana(sized, deps) {
         } else {
           checkAgainstOracle(fresh, impliedPrice(fresh, sized.amountNum, Number(plan.quote.out_amount) / 10 ** decimals));
           // SOL sold is valued again at the new price; the larger of the two readings counts against the limits.
-          usdNow = sized.from === "USDC" ? sized.usd : Math.max(sized.usd, roundUsd(sized.amountNum * fresh.oracle.usd));
+          usdNow = isStableAsset(sized.chain, sized.fromAsset) ? sized.usd : Math.max(sized.usd, roundUsd(sized.amountNum * fresh.oracle.usd));
         }
         const result = await (deps.executeSolanaSwap ?? sol.executeSolanaSwap)(plan, { ...(deps.solDeps ?? {}), usdNotional: usdNow, intent: intentFor(plan) });
         // The owner saw the first quote; say plainly that this one replaced it.
@@ -758,7 +779,7 @@ export async function runSwap(req, { approve, dryRun = false, skipCheck = false 
 /** The lines a swap is shown to the owner in (server text is cleaned by the caller). */
 export function swapLines(d) {
   const lines = [];
-  const chainName = d.chain === "base" ? "Base" : "Solana";
+  const chainName = labelOf(d.chain);
   lines.push(`${chainName} swap via ${d.venue}: sell ${d.sell.amount} ${d.sell.asset} for about ${d.buy.quoted} ${d.buy.asset} (at least ${d.buy.minimum}, slippage ${d.buy.slippage_bps} bps)`);
   if (d.slippage) {
     const why = { owner: "set by the owner for this trade", owner_cap: `the owner's cap, below the ${d.slippage.default_bps} bps this trade would otherwise get`, default: d.slippage.includes_transfer_fee_bps ? `picked for this trade: ${DEFAULT_SLIPPAGE_BPS.token} bps for a token plus its ${d.slippage.includes_transfer_fee_bps} bps transfer fee` : d.long_tail ? `picked for this trade: ${DEFAULT_SLIPPAGE_BPS.token} bps because a token is involved` : `picked for this trade: ${DEFAULT_SLIPPAGE_BPS.majors} bps between major assets` }[d.slippage.source];
@@ -794,8 +815,6 @@ export function swapLines(d) {
 
 // ---------------------------------------------------------------- the token card
 
-const CHAIN_LABEL = { base: "Base", solana: "Solana" };
-
 /**
  * What is at an address, a mint or a link: Sato Hub's resolver for the name, price and liquidity, then the chain for decimals,
  * program and authorities (the chain wins where they differ), then Sato Hub's token check. Read-only: no wallet, no policy.
@@ -804,7 +823,7 @@ const CHAIN_LABEL = { base: "Base", solana: "Solana" };
 export async function describeToken(input, { chain } = {}, deps = {}) {
   const raw = String(input ?? "").trim();
   if (!raw) throw new Error("token needs an address, a mint or a link");
-  if (chain !== undefined && !["base", "solana"].includes(chain)) throw new Error("--chain must be base or solana");
+  if (chain !== undefined && !isKnownChain(chain)) throw new Error(`--chain must be ${orList(chainKeys())}`);
   const link = looksLikeLink(raw);
   const hubRes = await (deps.resolveHub ?? resolveTokenViaHub)(raw, { chain, ...(deps.verifySignature ? { verifySignature: deps.verifySignature } : {}) });
   // A link decides WHICH address the card shows, and the owner trades the card's address: the same rule as swap, an
@@ -820,7 +839,8 @@ export async function describeToken(input, { chain } = {}, deps = {}) {
         : "Sato Hub could not resolve this link right now; send the contract address instead",
     );
   }
-  const guessed = isBaseAddress(raw) ? "base" : isSolanaMint(raw) ? "solana" : null;
+  // A 0x address is on whichever EVM chain `--chain` names, else on the default EVM chain (Base).
+  const guessed = isEvmAddress(raw) ? (isEvm(chain) ? chain : DEFAULT_EVM_CHAIN) : isSolanaMint(raw) ? "solana" : null;
   const where = link ? hub.chain : guessed ?? chain ?? (hub ? hub.chain : null);
   if (!where) throw new Error("token needs a 0x contract address (Base), a Solana mint or a link; for USDC, ETH or SOL by name, add --chain");
   if (chain && chain !== where) throw new Error(`that is a ${where} address, but --chain is ${chain}`);
@@ -835,24 +855,25 @@ export async function describeToken(input, { chain } = {}, deps = {}) {
 
   // The chain, always (decimals, program, authorities, extensions). Refusals to read (no contract, not a mint) come through as Refused.
   let info;
-  if (where === "base") info = await (deps.resolveBaseToken ?? evm.resolveBaseToken)(address, deps.baseDeps ?? {});
+  const onEvm = isEvm(where);
+  if (onEvm) info = await (deps.resolveBaseToken ?? evm.resolveBaseToken)(address, evmDeps(deps, where));
   else info = await (deps.resolveSolanaToken ?? sol.resolveSolanaToken)(address, deps.solDeps ?? {});
   const disagreements = compareHubWithChain(where, hub, info);
 
   // The check is about the token the chain read, by the address the chain gave back (never a link, never a symbol).
-  const checked = where === "base" ? info.address : info.mint;
-  const check = await (deps.runCheck ?? runCheck)({ token: checked, chain: CHAIN_LABEL[where] }, "token");
+  const checked = onEvm ? info.address : info.mint;
+  const check = await (deps.runCheck ?? runCheck)({ token: checked, chain: getChain(where).hubName }, "token");
   const src = (field) => hub?.sources?.find((s) => s.field === field) ?? null;
   const pool = hub?.main_pool ?? null;
   const card = {
     chain: where,
-    address: where === "base" ? info.address : info.mint,
-    name: where === "base" ? info.name ?? hub?.name ?? null : hub?.name ?? null,
-    symbol: where === "base" ? info.symbol : hub?.symbol ?? info.major ?? null,
-    name_source: where === "base" ? (info.name ? "the contract" : hub?.name ? "Sato Hub" : null) : hub?.name ? "Sato Hub" : null,
+    address: onEvm ? info.address : info.mint,
+    name: onEvm ? info.name ?? hub?.name ?? null : hub?.name ?? null,
+    symbol: onEvm ? info.symbol : hub?.symbol ?? info.major ?? null,
+    name_source: onEvm ? (info.name ? "the contract" : hub?.name ? "Sato Hub" : null) : hub?.name ? "Sato Hub" : null,
     decimals: info.decimals,
-    program: where === "base" ? "ERC-20" : info.program_name,
-    major: where === "base" ? (info.major ? info.symbol : null) : info.major ?? null,
+    program: onEvm ? "ERC-20" : info.program_name,
+    major: onEvm ? (info.major ? info.symbol : null) : info.major ?? null,
     price: hub && typeof hub.price_usd === "number" ? { usd: hub.price_usd, source: src("price_usd")?.source ?? "Sato Hub", as_of: src("price_usd")?.as_of ?? hub.checked_at ?? null } : null,
     liquidity: hub && typeof hub.liquidity_usd === "number" ? { usd: hub.liquidity_usd, main_pool: pool, source: src("liquidity_usd")?.source ?? "Sato Hub", as_of: src("liquidity_usd")?.as_of ?? hub.checked_at ?? null } : null,
     sato_hub_resolver: hubRes.ok ? { used: true, signature_checked: hubRes.signature?.ok === true, resolved_from: hub?.resolved_from ?? null, gaps: hub?.gaps ?? [], checked_at: hub?.checked_at ?? null } : { used: false, reason: hubRes.reason, error: hubRes.error ?? null },
@@ -877,7 +898,7 @@ export async function describeToken(input, { chain } = {}, deps = {}) {
   };
   // A name and a symbol are whatever the creator wrote. Every token other than a major is shown with its short address, and a
   // symbol or name with characters outside plain ASCII (homoglyphs, direction marks) is flagged.
-  const shortAddr = where === "base" ? shortBaseAddress(card.address) : shortMint(card.address);
+  const shortAddr = onEvm ? shortBaseAddress(card.address) : shortMint(card.address);
   card.label = card.major ? card.symbol : card.symbol ? `${clean(card.symbol, 30)} ${shortAddr}` : shortAddr;
   card.symbol_non_ascii = !card.major && /[^\x20-\x7E]/.test(`${card.symbol ?? ""}${card.name ?? ""}`);
   if (card.symbol_non_ascii) card.notes.push("The name or symbol contains characters outside plain ASCII (look-alike letters or direction marks), which can make a token pass for another one. Go by the address.");
@@ -888,7 +909,7 @@ export async function describeToken(input, { chain } = {}, deps = {}) {
 export function renderTokenCard(card) {
   const c = (v, max = 200) => clean(v, max);
   const lines = [];
-  lines.push(`${card.name ? `${c(card.name, 60)} ` : ""}${card.label ? `(${c(card.label, 60)}) ` : ""}on ${CHAIN_LABEL[card.chain]}${card.name_source ? ` (name per ${card.name_source}; it is whatever the creator wrote)` : ""}`.trim());
+  lines.push(`${card.name ? `${c(card.name, 60)} ` : ""}${card.label ? `(${c(card.label, 60)}) ` : ""}on ${labelOf(card.chain)}${card.name_source ? ` (name per ${card.name_source}; it is whatever the creator wrote)` : ""}`.trim());
   lines.push(`Address:  ${card.address}`);
   lines.push(`Decimals: ${card.decimals} (read from the chain)`);
   lines.push(`Program:  ${card.program} (read from the chain)`);

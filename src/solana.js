@@ -32,7 +32,7 @@ import {
 import { loadPolicy } from "./policy.js";
 import { record, release, reserve } from "./ledger.js";
 import { Pending, Refused, Rejected } from "./errors.js";
-import { usdcUnits } from "./amount.js";
+import { usdcUnits, unitsToUsd } from "./amount.js";
 import { loadWallet, solanaSecret } from "./wallet.js";
 import { USER_AGENT } from "./version.js";
 
@@ -119,13 +119,13 @@ export async function dryRunSendUsdc({ to, amount }, r = rpc()) {
   const { wire } = await buildUsdcTransfer({ secret: solanaSecret(), to, units, blockhash });
   const sim = await withTimeout(r.simulateTransaction(wire, { encoding: "base64", commitment: "confirmed" }).send());
   if (sim.value.err) throw new Error(`simulation failed: ${JSON.stringify(sim.value.err, (_k, v) => (typeof v === "bigint" ? v.toString() : v))}`);
-  return { dry_run: true, chain: "solana", usd: Number(units) / 1e6, to, simulated: true };
+  return { dry_run: true, chain: "solana", usd: unitsToUsd(units), to, simulated: true };
 }
 
 /** Send USDC on Solana. Throws Refused when the limits say no; nothing is signed then. */
 export async function sendUsdc({ to, amount, checkout }, r = rpc()) {
   const units = toUnits(amount);
-  const usd = Number(units) / 1e6;
+  const usd = unitsToUsd(units);
   await assertWalletRecipient(to, r);
   // A deposit-address checkout is recorded as kind "checkout" (subtype in `checkout`), not as a send.
   const entry = await reserve(loadPolicy(), { kind: checkout ? "checkout" : "send", ...(checkout ? { checkout } : {}), chain: "solana", asset: "USDC", usd, to });

@@ -47,7 +47,7 @@ import { TOKEN_PROGRAM_ADDRESS, findAssociatedTokenPda } from "@solana-program/t
 import { loadPolicy } from "../policy.js";
 import { record, release, reserve } from "../ledger.js";
 import { Pending, Refused, Rejected } from "../errors.js";
-import { usdcUnits } from "../amount.js";
+import { usdcUnits, unitsToUsd } from "../amount.js";
 import { loadWallet, solanaSecret } from "../wallet.js";
 import { USER_AGENT } from "../version.js";
 import { TOKEN_2022_PROGRAM, USDC_MINT, explorer, rpc as defaultRpc } from "../solana.js";
@@ -829,7 +829,7 @@ export async function planSolanaSwap({ from, to, amount, slippageBps }, deps = {
   }
 
   // USD size, where it can be read off a USDC side. A SOL <-> long-tail swap has none: the caller prices it independently.
-  const usd = a.major === "USDC" ? Number(units) / 1e6 : b.major === "USDC" ? Number(outAmount) / 1e6 : null;
+  const usd = a.major === "USDC" ? unitsToUsd(units) : b.major === "USDC" ? unitsToUsd(outAmount) : null;
   const route = (quote.routePlan ?? []).map((r) => r?.swapInfo?.label).filter(Boolean);
   const impactFraction = Number(quote.priceImpactPct);
   const plan = {

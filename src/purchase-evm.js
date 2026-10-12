@@ -20,7 +20,7 @@
 
 import { decodeAbiParameters, encodeFunctionData, erc20Abi, getAddress, isAddress, parseTransaction, toEventSelector } from "viem";
 import { Refused } from "./errors.js";
-import { USDC_BASE } from "./base.js";
+import { DEFAULT_EVM_CHAIN, NATIVE_PLACEHOLDER, defaultStable, evmChain } from "./chains.js";
 import { assetDeltas, defaultSimulate } from "./swap/evm.js";
 
 const TRANSFER_TOPIC = toEventSelector("Transfer(address,address,uint256)");
@@ -44,7 +44,8 @@ const callOk = (c) => c?.status === "0x1" || c?.status === 1 || c?.status === "0
  * unsigned transaction, viem's parseTransaction) or "json" ({ to, data, value?, chainId? }). Gas, nonce and fees in it
  * are ignored: the kit sets its own. Throws Refused on another chain, a value in ETH, or no target.
  */
-export function decodeBaseTx(serialized, encoding = "hex") {
+export function decodeBaseTx(serialized, encoding = "hex", chain = DEFAULT_EVM_CHAIN) {
+  const ch = evmChain(chain);
   let tx;
   try {
     if (encoding === "json") tx = typeof serialized === "string" ? JSON.parse(serialized) : serialized;
@@ -55,18 +56,18 @@ export function decodeBaseTx(serialized, encoding = "hex") {
   }
   const problems = [];
   if (!tx || typeof tx.to !== "string" || !isAddress(tx.to)) problems.push(r("purchase_tx.decode", "the payment transaction names no valid target"));
-  if (tx?.chainId !== undefined && Number(tx.chainId) !== 8453) problems.push(r("purchase_tx.chain", `the payment transaction is for chain ${tx.chainId}, not Base (8453)`, 8453, Number(tx.chainId)));
+  if (tx?.chainId !== undefined && Number(tx.chainId) !== ch.chainId) problems.push(r("purchase_tx.chain", `the payment transaction is for chain ${tx.chainId}, not ${ch.label} (${ch.chainId})`, ch.chainId, Number(tx.chainId)));
   let value = 0n;
   try {
     value = BigInt(tx?.value ?? 0);
   } catch {
     problems.push(r("purchase_tx.decode", "the payment transaction's value is not a number"));
   }
-  if (value !== 0n) problems.push(r("purchase_tx.value", "the payment transaction sends ETH; a purchase moves only USDC", "0", value.toString()));
+  if (value !== 0n) problems.push(r("purchase_tx.value", `the payment transaction sends ${ch.native.symbol}; a purchase moves only USDC`, "0", value.toString()));
   const data = typeof tx?.data === "string" ? tx.data : tx?.input ?? "0x";
   if (typeof data !== "string" || !/^0x([0-9a-fA-F]{2})*$/.test(data)) problems.push(r("purchase_tx.decode", "the payment transaction's data is not hex"));
   if (problems.length) throw new Refused(problems);
-  return { to: getAddress(tx.to), data, value: 0n, chain_id: 8453 };
+  return { to: getAddress(tx.to), data, value: 0n, chain_id: ch.chainId };
 }
 
 async function simulate(calls, agent, deps) {
@@ -87,7 +88,8 @@ async function simulate(calls, agent, deps) {
  * deps: { simulate (tests), c (viem clients) }. Returns { usdc_out, payees, contract_call, approvals_checked, simulated }.
  */
 export async function simulateBasePurchase({ agent, to, data, maxUsdcUnits }, deps = {}) {
-  const usdc = lc(USDC_BASE);
+  const chain = deps.chain ?? DEFAULT_EVM_CHAIN;
+  const usdc = lc(defaultStable(chain).address);
   const me = lc(agent);
   // A plain approve() on USDC is refused before simulating: a payment never needs to leave one behind.
   if (lc(to) === usdc && lc(data).startsWith("0x095ea7b3")) throw new Refused([r("purchase_tx.lingering_approval", "the payment transaction is a USDC approval, not a payment; nothing was signed")]);
@@ -101,7 +103,7 @@ export async function simulateBasePurchase({ agent, to, data, maxUsdcUnits }, de
   if (usdcOut <= 0n) problems.push(r("purchase_tx.no_payment", "in simulation the transaction moves no USDC out of the wallet, so it would not pay for the order"));
   if (usdcOut > maxUsdcUnits) problems.push(r("purchase_tx.over_total", `in simulation the transaction takes ${usdcOut} USDC units, more than the quoted total of ${maxUsdcUnits}`, maxUsdcUnits.toString(), usdcOut.toString()));
   for (const [asset, delta] of deltas) {
-    if (asset !== usdc && delta < 0n) problems.push(r("purchase_tx.other_asset_leaves", `in simulation the transaction also takes ${asset === "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" ? "ETH" : asset} from the wallet; only USDC may leave`, "0", delta.toString()));
+    if (asset !== usdc && delta < 0n) problems.push(r("purchase_tx.other_asset_leaves", `in simulation the transaction also takes ${asset === lc(NATIVE_PLACEHOLDER) ? evmChain(chain).native.symbol : asset} from the wallet; only USDC may leave`, "0", delta.toString()));
   }
   for (const l of leaves) problems.push(r("purchase_tx.other_asset_leaves", `in simulation the transaction moves an ${l.kind} token out of the wallet`, null, l.asset));
 

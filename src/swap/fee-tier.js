@@ -17,13 +17,15 @@
 // kit's own is used. The fee side is always decided by the kit's own majors (USDC / ETH / WETH / SOL), whatever the tier.
 // Where the fee is taken is unchanged: always on the major side, never in the long-tail token (checked elsewhere).
 
+import { stableSymbols } from "../chains.js";
+
 export const FEE_CEILING_BPS = 100;
 export const MAJOR_FEE_CEILING_BPS = 15;
 export const FEE_TIERS = Object.freeze(["stable", "major", "token"]);
 /** Sato Hub's published rate per tier, for display and docs only: the kit enforces the ceilings above, not these. */
 export const PUBLISHED_FEE_BPS = Object.freeze({ stable: 3, major: 15, token: 75 });
-/** Stablecoins among the kit's majors. */
-const STABLE_SYMBOLS = new Set(["USDC"]);
+/** Stablecoins among the kit's majors: the stables of every chain in src/chains.js (today USDC). */
+const STABLE_SYMBOLS = new Set(stableSymbols());
 
 /**
  * The tier of a pair, from the kit's own classification. Each side is the symbol of a major ("USDC", "ETH", "WETH",

@@ -19,14 +19,17 @@
 //     decides what to do without a check; this module never invents a price.
 
 import { createPublicClient, formatUnits, http } from "viem";
-import { base } from "viem/chains";
+import { DEFAULT_EVM_CHAIN, chainlinkFeed, evmChain, rpcUrl } from "./chains.js";
 import { USER_AGENT } from "./version.js";
 
 const RPC_TIMEOUT_MS = 20_000;
 
+// The feeds themselves (addresses, how stale one may be, the tolerance) are pinned per chain in src/chains.js.
+// This table is the Base reading of them, kept under its v0.3 name: ETH/USD (heartbeat 20 min, deviation 0.15%) and
+// SOL/USD (heartbeat 24 h, deviation 0.5%), both read on Base.
 export const FEEDS = {
-  ETH: { address: "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70", maxAgeS: 2 * 3600 }, // heartbeat 20 min, deviation 0.15%
-  SOL: { address: "0x975043adBb80fc32276CbF9Bbcfd4A601a12462D", maxAgeS: 26 * 3600 }, // heartbeat 24 h, deviation 0.5%
+  ETH: (({ address, maxAgeS }) => ({ address, maxAgeS }))(chainlinkFeed("base", "ETH")),
+  SOL: (({ address, maxAgeS }) => ({ address, maxAgeS }))(chainlinkFeed("base", "SOL")),
 };
 
 // How far a quote's implied USD price may sit from the feed before the kit
@@ -41,7 +44,10 @@ export const FEEDS = {
 //          market, and SOL pools are thinner than ETH's.
 // These are judgement calls, not measurements. A quote outside them is a
 // reason to stop and look, not proof that the quote is wrong.
-export const ORACLE_TOLERANCE_PCT = { ETH: 3, SOL: 5 };
+export const ORACLE_TOLERANCE_PCT = { ETH: chainlinkFeed("base", "ETH").tolerancePct, SOL: chainlinkFeed("base", "SOL").tolerancePct };
+
+/** The tolerance (percent) for `asset` priced through chain `chain`'s feeds; null if that chain has no such feed. */
+export const oracleTolerancePct = (asset, chain = DEFAULT_EVM_CHAIN) => chainlinkFeed(chain, asset)?.tolerancePct ?? null;
 
 /** The feed could not give a usable price. Nothing was inferred in its place. */
 export class PriceUnavailable extends Error {
@@ -69,24 +75,23 @@ const aggregatorAbi = [
   },
 ];
 
-// Same transport pattern as base.js: the owner's RPC, a timeout, our name.
-function defaultClient() {
-  const url = process.env.SATO_AGENT_BASE_RPC || "https://mainnet.base.org";
-  return createPublicClient({ chain: base, transport: http(url, { timeout: RPC_TIMEOUT_MS, fetchOptions: { headers: { "user-agent": USER_AGENT } } }) });
+// Same transport pattern as base.js: the owner's RPC for the chain, a timeout, our name.
+function defaultClient(chain) {
+  return createPublicClient({ chain: evmChain(chain).viem, transport: http(rpcUrl(chain), { timeout: RPC_TIMEOUT_MS, fetchOptions: { headers: { "user-agent": USER_AGENT } } }) });
 }
 
 /**
- * The USD price of "ETH" or "SOL" from its Chainlink feed on Base.
- * Returns { asset, usd, updated_at (ISO), age_s, source: "chainlink:base:<address>" }.
+ * The USD price of an asset ("ETH" or "SOL" on Base) from its Chainlink feed on `chain` (default Base).
+ * Returns { asset, usd, updated_at (ISO), age_s, source: "chainlink:<chain>:<address>" }.
  * Throws PriceUnavailable when the read fails, the answer is not above zero,
  * or the feed has not updated within its allowance (2 h ETH, 26 h SOL).
  * `now` (ms) exists for tests.
  */
-export async function oraclePrice(asset, { publicClient, now = Date.now() } = {}) {
-  const feed = FEEDS[asset];
+export async function oraclePrice(asset, { publicClient, now = Date.now(), chain = DEFAULT_EVM_CHAIN } = {}) {
+  const feed = chainlinkFeed(chain, asset);
   if (!feed) throw new PriceUnavailable(`no price feed for ${asset}; only ETH and SOL are supported`, { asset });
-  const source = `chainlink:base:${feed.address}`;
-  const c = publicClient ?? defaultClient();
+  const source = `chainlink:${chain}:${feed.address}`;
+  const c = publicClient ?? defaultClient(chain);
 
   let round;
   let decimals;

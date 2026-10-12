@@ -13,6 +13,7 @@
 
 import { evaluate, loadPolicy, purchasesAsk } from "./policy.js";
 import { spentLast24h } from "./ledger.js";
+import { chainKeys, chainsWith, isKnownChain, orList } from "./chains.js";
 import { NeedsApproval, Refused } from "./errors.js";
 import { consumeApproval, requestApproval } from "./approvals.js";
 
@@ -31,7 +32,7 @@ export function checkLimits({ usd, chain, to, payees = [] }, policy = loadPolicy
 }
 
 /** The chain a purchase is made on: the owner's one chain, or `--chain` when they chose two. Throws Refused / Error. */
-export function purchaseChain(requested, allowed = ["base", "solana"], policy = loadPolicy()) {
+export function purchaseChain(requested, allowed = chainsWith("checkout"), policy = loadPolicy()) {
   const chains = Array.isArray(policy?.chains) ? policy.chains : null;
   if (!policy) throw new Refused(evaluate(null, {}, { usd: 0, unreadable: [] }));
   if (!chains) throw new Refused(evaluate(policy, { usd: 1e-6 }, { usd: 0, unreadable: [] }));
@@ -42,7 +43,7 @@ export function purchaseChain(requested, allowed = ["base", "solana"], policy = 
     else if (usable.length > 1) throw new Error(`this agent may spend on ${chains.join(" and ")}: say which with --chain ${usable.join("|")}`);
     else chain = chains[0];
   }
-  if (!["base", "solana"].includes(chain)) throw new Error("--chain must be base or solana");
+  if (!isKnownChain(chain)) throw new Error(`--chain must be ${orList(chainKeys())}`);
   if (!chains.includes(chain)) throw refuse("chain_not_allowed", `this agent is set to work on ${chains.join(" and ")} only`, chains, chain);
   return chain;
 }

@@ -26,7 +26,9 @@ import { canonicalJson, verifyHubSignature } from "./hub-signature.js";
 import { loadPolicy } from "./policy.js";
 import { actions, record, release, reserve } from "./ledger.js";
 import { Pending, Refused, Rejected } from "./errors.js";
-import { addresses } from "./wallet.js";
+import { addressFor } from "./wallet.js";
+import { chainsWith, explorerTx, isEvm, labelOf, stableBySymbol } from "./chains.js";
+import { unitsToUsd } from "./amount.js";
 import { clean } from "./text.js";
 import { USER_AGENT } from "./version.js";
 import { loadSettings, scrubAddress } from "./settings.js";
@@ -169,7 +171,9 @@ export async function requestOrder({ product, chain, payer, recipient }, deps = 
 }
 
 const money = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0;
-const samePayer = (chain, a, b) => typeof a === "string" && typeof b === "string" && (chain === "base" ? a.toLowerCase() === b.toLowerCase() : a === b);
+const samePayer = (chain, a, b) => typeof a === "string" && typeof b === "string" && (isEvm(chain) ? a.toLowerCase() === b.toLowerCase() : a === b);
+/** USDC's decimals on a chain: an order's price is in USDC base units. */
+const usdcDecimals = (chain) => stableBySymbol(chain, "USDC").decimals;
 
 /**
  * Verify Sato Hub's order answer before anything is shown or signed. ctx: { chain, payer, recipient, now,
@@ -212,7 +216,7 @@ export async function verifyOrderQuote(body, ctx) {
   if (typeof pr.total_base_units !== "string" || !/^[1-9]\d{0,15}$/.test(pr.total_base_units)) bad("its total is not a whole number of USDC units");
   else {
     units = BigInt(pr.total_base_units);
-    if (money(pr.total_usd) && Math.abs(Number(units) / 1e6 - pr.total_usd) > 0.000001) bad("its total in USDC units does not match its total in USD");
+    if (money(pr.total_usd) && Math.abs(unitsToUsd(units, usdcDecimals(chain)) - pr.total_usd) > 0.000001) bad("its total in USDC units does not match its total in USD");
     // No charge hides outside the lines the owner is shown.
     if (money(pr.item_usd) && money(pr.tax_usd) && money(pr.shipping_usd) && money(pr.total_usd) && Math.abs(pr.item_usd + pr.tax_usd + pr.shipping_usd - pr.total_usd) > 0.01) bad("its item, tax and shipping do not add up to its total");
   }
@@ -232,7 +236,7 @@ export async function verifyOrderQuote(body, ctx) {
     price: { item_usd: pr.item_usd, tax_usd: pr.tax_usd, shipping_usd: pr.shipping_usd, total_usd: pr.total_usd, total_base_units: units },
     expires_at: body.expires_at,
     ships_to: { city: clean(st.city, 80), state: clean(st.state, 40), postalCode: clean(st.postalCode, 20) },
-    payment: { encoding: typeof pay.encoding === "string" ? pay.encoding : chain === "base" ? "hex" : "base64", serialized_transaction: pay.serialized_transaction },
+    payment: { encoding: typeof pay.encoding === "string" ? pay.encoding : isEvm(chain) ? "hex" : "base64", serialized_transaction: pay.serialized_transaction },
   };
 }
 
@@ -244,10 +248,10 @@ export async function verifyOrderQuote(body, ctx) {
  */
 export async function checkOrderPayment(quote, { payer, ...deps }) {
   const max = quote.price.total_base_units;
-  if (quote.chain === "base") {
-    const tx = decodeBaseTx(quote.payment.serialized_transaction, quote.payment.encoding);
-    const sim = await simulateBasePurchase({ agent: payer, to: tx.to, data: tx.data, maxUsdcUnits: max }, { ...deps, c: deps.c ?? (deps.simulate ? undefined : baseClients()) });
-    return { ...sim, prepared: { chain: "base", to: tx.to, data: tx.data } };
+  if (isEvm(quote.chain)) {
+    const tx = decodeBaseTx(quote.payment.serialized_transaction, quote.payment.encoding, quote.chain);
+    const sim = await simulateBasePurchase({ agent: payer, to: tx.to, data: tx.data, maxUsdcUnits: max }, { ...deps, chain: quote.chain, c: deps.c ?? (deps.simulate ? undefined : baseClients(undefined, quote.chain)) });
+    return { ...sim, prepared: { chain: quote.chain, to: tx.to, data: tx.data } };
   }
   const rpc = deps.rpc ?? solanaRpc();
   let tx;
@@ -293,23 +297,23 @@ export async function executeOrder(quote, check, { usd, payer, ...deps }) {
     merchant: "crossmint",
     title: quote.title.slice(0, 120),
   });
-  if (quote.chain === "base") {
-    const c = deps.c ?? baseClients();
+  if (isEvm(quote.chain)) {
+    const c = deps.c ?? baseClients(undefined, quote.chain);
     let receipt;
     try {
       // The gas limit is the kit's own simulation's, plus 30%, never more than the simulation's cap: no estimateGas call
       // on a contract someone else chose.
-      receipt = await (deps.signAndSend ?? signAndSend)(c, { to: check.prepared.to, data: check.prepared.data, gas: orderGasLimit(check.gas_used) }, (hash) => record({ id: entry.id, status: "signed", tx: hash }));
+      receipt = await (deps.signAndSend ?? signAndSend)(c, { to: check.prepared.to, data: check.prepared.data, gas: orderGasLimit(check.gas_used) }, (hash) => record({ id: entry.id, status: "signed", tx: hash }), { chain: quote.chain });
     } catch (err) {
       if (!(err instanceof Pending)) release(entry, err instanceof Rejected ? "rejected; never landed" : "failed before broadcast", { error: clean(err.shortMessage || err.message, 300) });
       throw err;
     }
     if (receipt.status !== "success") {
       release(entry, "reverted onchain", { tx: receipt.transactionHash });
-      throw new Error(`the payment reverted: https://basescan.org/tx/${receipt.transactionHash}`);
+      throw new Error(`the payment reverted: ${explorerTx(quote.chain, receipt.transactionHash)}`);
     }
     record({ id: entry.id, status: "confirmed", tx: receipt.transactionHash });
-    return { tx: receipt.transactionHash, explorer: `https://basescan.org/tx/${receipt.transactionHash}` };
+    return { tx: receipt.transactionHash, explorer: explorerTx(quote.chain, receipt.transactionHash) };
   }
   const rpc = deps.rpc ?? solanaRpc();
   let built;
@@ -334,7 +338,7 @@ const usd2 = (n) => `$${Number(n).toFixed(2)}`;
  */
 export async function placeOrder({ input, chain: requested, approve, dryRun = false }, deps = {}) {
   const policy = loadPolicy();
-  const chain = purchaseChain(requested, ["base", "solana"], policy);
+  const chain = purchaseChain(requested, chainsWith("amazon"), policy);
   checkLimits({ usd: undefined, chain }, policy);
   const { product, asin } = amazonProduct(input);
   const settings = loadSettings();
@@ -342,11 +346,11 @@ export async function placeOrder({ input, chain: requested, approve, dryRun = fa
   if (!ship) throw refuse("ship_to_not_set", "no shipping address is set on this bot. The owner gives it once, and it is saved with `settings set --stdin` (a JSON object of name, line1, line2, city, state, postalCode, country, email on standard input, so it is never on a command line); it stays on this computer.");
   if (ship.country !== "US") throw refuse("amazon_us_only", "Amazon orders ship to US addresses only, and this bot's shipping address is outside the US");
   const recipient = recipientOf(ship);
-  const payer = addresses()[chain];
+  const payer = addressFor(chain);
 
   const body = await requestOrder({ product, chain, payer, recipient }, deps);
   const quote = await verifyOrderQuote(body, { chain, payer, recipient, asin, now: deps.now?.(), verifySignature: deps.verifySignature, jwks: deps.jwks });
-  const usd = Number(quote.price.total_base_units) / 1e6;
+  const usd = unitsToUsd(quote.price.total_base_units, usdcDecimals(chain));
   checkLimits({ usd, chain }, policy); // before the transaction is even read
   const check = await checkOrderPayment(quote, { payer, ...deps });
   checkLimits({ usd, chain, to: check.payees[0], payees: check.payees }, policy);
@@ -354,17 +358,17 @@ export async function placeOrder({ input, chain: requested, approve, dryRun = fa
   const p = quote.price;
   const card = [
     `Amazon order: ${quote.title}${quote.asin ? ` (ASIN ${quote.asin})` : ""}`,
-    `Item ${usd2(p.item_usd)} · tax ${usd2(p.tax_usd)} · shipping ${usd2(p.shipping_usd)} · total ${usd} USDC on ${chain === "base" ? "Base" : "Solana"}. No Sato Hub fee.`,
+    `Item ${usd2(p.item_usd)} · tax ${usd2(p.tax_usd)} · shipping ${usd2(p.shipping_usd)} · total ${usd} USDC on ${labelOf(chain)}. No Sato Hub fee.`,
     `Ships to: ${clean(ship.name, 80)}, ${quote.ships_to.city}, ${quote.ships_to.state} ${quote.ships_to.postalCode}`,
     `Sold and shipped through Crossmint. Quote valid until ${String(quote.expires_at).replace(/\.\d+Z$/, "Z")}.`,
     `Paid to: ${check.payees.length ? check.payees.join(", ") : "(no direct USDC recipient seen in the simulation)"}.`,
-    chain === "base"
+    isEvm(chain)
       ? `Checked before signing: the payment moves only USDC from this wallet, at most ${usd}, plus network fees (simulated).`
       : `Checked before signing: the payment moves only USDC from this wallet, at most ${usd}, plus network fees and, if the merchant's USDC account must be created, about 0.002 SOL of rent (simulated).`,
   ];
   // Bound to the product, total, payees and address (the address by its local id: the ledger, where intents are written,
   // never holds it). A new quote that pays someone else is a new approval.
-  const intent = { cmd: "order", chain, product, title: quote.title.slice(0, 120), total_base_units: quote.price.total_base_units.toString(), payees: [...check.payees].map((x) => (chain === "base" ? x.toLowerCase() : x)).sort(), ship_to_id: settings.ship_to_id ?? null };
+  const intent = { cmd: "order", chain, product, title: quote.title.slice(0, 120), total_base_units: quote.price.total_base_units.toString(), payees: [...check.payees].map((x) => (isEvm(chain) ? x.toLowerCase() : x)).sort(), ship_to_id: settings.ship_to_id ?? null };
   const summary = { order_id: quote.order_id, chain, title: quote.title, asin: quote.asin, price: { ...p, total_base_units: p.total_base_units.toString() }, expires_at: quote.expires_at, simulated: check.simulated, contract_call: Boolean(check.contract_call) };
   if (dryRun) return { dry_run: true, card, ...summary };
   await purchaseGate(intent, { approve, card }, policy);

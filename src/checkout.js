@@ -9,7 +9,7 @@
 //                                 transaction as untrusted (src/purchase-solana.js): allowed programs only, the
 //                                 agent as fee payer and the only signature added, simulated balance changes, the
 //                                 cost the owner approves is the cost the simulation showed.
-//   EIP-681                       ethereum:<USDC>@8453/transfer?address=<to>&uint256=<n>. USDC on Base only; paid
+//   EIP-681                       ethereum:<USDC>@<chain id>/transfer?address=<to>&uint256=<n>. USDC on Base only; paid
 //                                 for the exact amount through the kit's `send` path, with its checks.
 //   Coinbase Business checkout    its `x402_url` is an x402 resource: `pay`.
 //   Stripe deposit address        an address plus an exact amount: that is `send --amount <exact>`.
@@ -36,10 +36,10 @@ import { loadPolicy } from "./policy.js";
 import { release, reserve } from "./ledger.js";
 import { Refused } from "./errors.js";
 import { addresses, solanaSecret } from "./wallet.js";
-import { roundUsd, usdcUnits, unitsToUsd } from "./amount.js";
+import { roundUsd, usdcUnits, unitsToText, unitsToUsd } from "./amount.js";
+import { chainsWith, evmChain, isEvm, orList } from "./chains.js";
 import { clean } from "./text.js";
 import { USER_AGENT } from "./version.js";
-import { USDC_BASE } from "./base.js";
 import { USDC_MINT, assertWalletRecipient, broadcastAndConfirm, rpc as solanaRpc } from "./solana.js";
 import { oraclePrice, PriceUnavailable } from "./price.js";
 import { looksLikeAmazon } from "./commerce.js";
@@ -50,11 +50,17 @@ const HTTP_TIMEOUT_MS = 15_000;
 const MAX_REFERENCES = 10;
 const MAX_MEMO_BYTES = 200;
 
+/** The EVM chains whose payment links the kit pays (registry feature `checkout`), and every (chain, stable) pair on them. */
+const eip681Chains = () => chainsWith("checkout").filter(isEvm).map(evmChain);
+const eip681Targets = () => eip681Chains().flatMap((chain) => Object.values(chain.stables).map((stable) => ({ chain, stable })));
+/** A payment link of the shape the kit pays, with `token` written as given: `ethereum:<token>@<chain id>/transfer?address=...&uint256=...`. */
+const eip681Shape = (token = "<token>") => `ethereum:${token}@${eip681Chains()[0].chainId}/transfer?address=...&uint256=...`;
+
 // ---------------------------------------------------------------- buy: what was given?
 
 export const BUY_ACCEPTS = [
   "a Solana Pay request (solana:...): a transfer request or a transaction request link",
-  "an Ethereum payment link for USDC on Base (ethereum:0x8335...@8453/transfer?address=...&uint256=...)",
+  `an Ethereum payment link for ${orList(eip681Targets().map((t) => `${t.stable.symbol} on ${t.chain.label}`))} (${eip681Shape(`${eip681Targets()[0].stable.address.slice(0, 6)}...`)})`,
   "an Amazon US product link (amazon.com/.../dp/<ASIN>) or an ASIN",
   "an x402 link, including a Coinbase Business checkout's x402_url",
 ];
@@ -376,17 +382,26 @@ function uintOf(v) {
 }
 
 /**
- * Parse an EIP-681 payment link. Only `ethereum:<USDC on Base>@8453/transfer?address=<to>&uint256=<atomic>` is accepted.
- * Returns { chain: "base", to, units, amount } (amount: the USDC amount as a decimal string). Throws Refused / Error.
+ * Parse an EIP-681 payment link. Only `ethereum:<a stable on a supported chain>@<its chain id>/transfer?address=<to>&uint256=<atomic>`
+ * is accepted (today USDC on Base). Returns { chain, to, units, amount } (amount: the stable's amount as a decimal string);
+ * `symbol` is added only when the link's token is not the chain's default stable. Throws Refused / Error.
  */
 export function parseEip681(uri) {
   const s = String(uri ?? "").trim();
   const m = /^ethereum:(?:pay-)?(0x[0-9a-fA-F]{40})(?:@(\d+))?(?:\/([A-Za-z0-9_]+))?(?:\?(.*))?$/i.exec(s);
-  if (!m) throw new Error("not an EIP-681 payment link this kit can read (ethereum:<token>@8453/transfer?address=...&uint256=...)");
+  if (!m) throw new Error(`not an EIP-681 payment link this kit can read (${eip681Shape()})`);
   const [, target, chainId, fn, query] = m;
-  if (target.toLowerCase() !== USDC_BASE.toLowerCase()) throw refuse("checkout_token", "this link asks for a payment other than USDC on Base; the kit pays EIP-681 links in USDC on Base only", USDC_BASE, target);
-  if (chainId === undefined) throw refuse("checkout_chain", "this link names no chain, which means Ethereum mainnet; the kit pays on Base (chain 8453) only", 8453, "1");
-  if (chainId !== "8453") throw refuse("checkout_chain", `this link is for chain ${chainId}; the kit pays on Base (chain 8453) only`, 8453, Number(chainId));
+  const targets = eip681Targets();
+  const accepted = orList(targets.map((t) => `${t.stable.symbol} on ${t.chain.label}`));
+  const where = orList(eip681Chains().map((c) => `${c.label} (chain ${c.chainId})`));
+  const first = eip681Chains()[0];
+  if (!targets.some((t) => t.stable.address.toLowerCase() === target.toLowerCase())) throw refuse("checkout_token", `this link asks for a payment other than ${accepted}; the kit pays EIP-681 links in ${accepted} only`, targets[0].stable.address, target);
+  if (chainId === undefined) throw refuse("checkout_chain", `this link names no chain, which means Ethereum mainnet; the kit pays on ${where} only`, first.chainId, "1");
+  const linked = eip681Chains().find((c) => String(c.chainId) === chainId);
+  if (!linked) throw refuse("checkout_chain", `this link is for chain ${chainId}; the kit pays on ${where} only`, first.chainId, Number(chainId));
+  const hit = targets.find((t) => t.chain === linked && t.stable.address.toLowerCase() === target.toLowerCase());
+  // The token is one the kit pays, but not on the chain the link names.
+  if (!hit) throw refuse("checkout_token", `this link asks for a payment other than ${orList(Object.values(linked.stables).map((st) => `${st.symbol} on ${linked.label}`))}; the kit pays EIP-681 links in those only`, Object.values(linked.stables)[0].address, target);
   if (fn !== "transfer") throw refuse("checkout_function", `this link calls ${clean(fn ?? "nothing", 40)}; the kit pays only a USDC transfer`);
   const params = {};
   for (const [k, v] of queryPairs(query ?? "")) {
@@ -404,7 +419,7 @@ export function parseEip681(uri) {
   }
   const units = params.uint256 === undefined ? null : uintOf(params.uint256);
   if (units === null || units <= 0n || units > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("the link's amount (uint256) is not a positive whole number of USDC units");
-  const whole = units / 1_000_000n;
-  const frac = (units % 1_000_000n).toString().padStart(6, "0").replace(/0+$/, "");
-  return { chain: "base", to: getAddress(params.address), units, amount: frac ? `${whole}.${frac}` : whole.toString() };
+  const isDefault = hit.stable.symbol === hit.chain.defaultStable;
+  return { chain: hit.chain.key, to: getAddress(params.address), units, amount: unitsToText(units, hit.stable.decimals), ...(isDefault ? {} : { symbol: hit.stable.symbol }) };
 }
+

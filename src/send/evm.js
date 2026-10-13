@@ -14,7 +14,7 @@
 import { encodeFunctionData, erc20Abi, isAddress, zeroAddress } from "viem";
 import { Pending, Rejected } from "../errors.js";
 import { assertClientChain, clients, signAndSend } from "../base.js";
-import { NATIVE_PLACEHOLDER, evmChain, explorerTx, isStableSymbol, sendL1ReserveWei } from "../chains.js";
+import { NATIVE_PLACEHOLDER, evmChain, explorerTx, isStableSymbol, otherStableByAddress, otherStablesOf, sendL1ReserveWei } from "../chains.js";
 import { loadPolicy } from "../policy.js";
 import { record, release, reserve } from "../ledger.js";
 import { PriceUnavailable, oraclePrice } from "../price.js";
@@ -38,13 +38,24 @@ export const GAS_RESERVE_FACTOR = 2n;
 /** The asset a send names, read from the chain. No `--asset` means the chain's default stablecoin. */
 export async function resolveEvmAsset(chain, raw, deps = {}) {
   const spec = evmChain(chain);
-  const input = raw === undefined || raw === null || raw === "" ? spec.defaultStable : String(raw).trim();
+  let input = raw === undefined || raw === null || raw === "" ? spec.defaultStable : String(raw).trim();
+  // A stablecoin the registry lists beyond the chain's own (USDC.e, DAI, ...) can be named by its symbol; it is then read by its address.
+  const listed = otherStablesOf(chain).find((o) => o.symbol.toLowerCase() === input.toLowerCase());
+  if (listed) input = listed.address;
   let t;
   try {
     t = await resolveBaseToken(input, { chain, ...(deps.c ? { c: deps.c } : {}) });
   } catch (err) {
     if (err instanceof Error && !err.refusals) throw new Error(`--asset: ${err.message}`);
     throw err;
+  }
+  const known = t.major ? null : otherStableByAddress(chain, t.address);
+  if (known) {
+    // Counted 1:1 on the registry's word for WHICH token this is; the chain's decimals must agree with the pin or the token is refused.
+    if (t.decimals !== known.decimals) {
+      throw refuse("stable_decimals_mismatch", `the contract at ${t.address} reports ${t.decimals} decimals, but the kit pins ${known.symbol} at ${known.decimals}; it is not counted as a stablecoin and nothing was signed`, known.decimals, t.decimals);
+    }
+    return { kind: "stable", symbol: known.symbol, name: t.name ?? null, address: t.address, decimals: t.decimals, label: tokenLabel(known.symbol, t.address), id: t.address };
   }
   if (!t.major) {
     const symbol = cleanTokenText(t.symbol, 24);
@@ -82,6 +93,12 @@ const uintOf = (hex) => {
 };
 /** A uint256 a call returned (a balance), or null when the call failed or returned something else. */
 const returnedUint = (call) => (callOk(call) && typeof call.returnData === "string" && call.returnData.length >= 66 ? uintOf(call.returnData.slice(0, 66)) : null);
+
+/** A call that returned a 32-byte bool of false (or any zero word as its first word of 32 or more bytes). Empty or short returns are not read as false. */
+export function returnedFalse(call) {
+  const rd = call?.returnData;
+  return typeof rd === "string" && rd.length >= 66 && /^0x0{64}/.test(rd);
+}
 
 function revertText(call) {
   const msg = call?.error?.message ?? call?.error?.data ?? null;
@@ -213,6 +230,8 @@ export async function planEvmSend({ chain, to, amount, asset: rawAsset }, deps =
   const got = await simulate({ c, chain, calls, deps });
   const xfer = got[native ? 0 : 2];
   if (!callOk(xfer)) throw refuse("send_would_fail", `this transfer would revert (${revertText(xfer)}); nothing was signed`, null, revertText(xfer));
+  // A token whose transfer returns `false` instead of reverting has refused the transfer. An empty return (USDT-style) is fine.
+  if (!native && returnedFalse(xfer)) throw refuse("transfer_returned_false", `the token's transfer answers false in the simulation, which is how a token says it did not transfer; nothing was signed`);
 
   // What the recipient ends up holding. A token: its balance before and after in the simulation, else the Transfer logs. The
   // native coin: the traced transfer (a node that does not trace it leaves this unknown, and the plan says so).
@@ -237,7 +256,7 @@ export async function planEvmSend({ chain, to, amount, asset: rawAsset }, deps =
   let gas = used === null ? (native ? CONTRACT_RECIPIENT_GAS : 200_000n) : native && used === EOA_TRANSFER_GAS ? EOA_TRANSFER_GAS : (used * 3n) / 2n + 25_000n;
   if (gas > spec.simulation.maxGas) gas = spec.simulation.maxGas;
   if (spec.simulation.exactGasEstimate) gas = await exactGasLimit(c, chain, tx, gas, { deps, what: "send" });
-  if (native && units + gas * feeCap > balance) {
+  if (native && units + gas * feeCap + sendL1ReserveWei(chain) > balance) {
     throw refuse(`not_enough_${spec.native.symbol.toLowerCase()}`, `${unitsToText(units, asset.decimals)} ${asset.symbol} plus its gas is more than the wallet holds (${unitsToText(balance, asset.decimals)}); use --amount all to send everything and keep what the gas needs`);
   }
 

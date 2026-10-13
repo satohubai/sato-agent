@@ -30,7 +30,7 @@ import * as solana from "../src/solana.js";
 import { RESERVED_HEADERS, pay, quoteX402, resolvePayChain } from "../src/x402.js";
 import { MCP_URL, checkInstall, customEndpoint, gateRefusals, recommend, runCheck } from "../src/satohub.js";
 import { usdcUnits, unitsToUsd } from "../src/amount.js";
-import { executeSend, isAll, planSend, sendFields, sendIntent, sendLines } from "../src/send/index.js";
+import { approvalBound, executeSend, isAll, planSend, sendFields, sendIntent, sendLines, verifyBound } from "../src/send/index.js";
 import { describeToken, renderTokenCard, runSwap, swapLines } from "../src/swap/run.js";
 import { checkBuilds, renderReceipts } from "../src/build-check.js";
 import { normalizeCluster } from "../src/receipts.js";
@@ -356,8 +356,11 @@ async function main(command = cmd, args = positionals.slice(1)) {
       if (walletExists()) {
         const a = addresses();
         // On a shared computer every bot keeps its own folder (~/.sato-agent/NAME). A wallet here may be ANOTHER bot's: say so, and what to do.
-        const name = basename(home());
-        const notice = `A wallet already exists for ${name} (address ${a.base}). If you are a new bot, do not use it: pick a new NAME (for example ${name}-2), write a new launcher, and run init there. Never replace, move or delete another bot's wallet.`;
+        // NAME is the launcher's folder name; with no SATO_AGENT_HOME the folder is ~/.sato-agent itself and there is no name to repeat.
+        const name = process.env.SATO_AGENT_HOME ? basename(home()) : null;
+        const notice = name
+          ? `A wallet already exists for ${name} (address ${a.base}). If you are a new bot, do not use it: pick a new NAME (for example ${name}-2), write a new launcher, and run init there. Never replace, move or delete another bot's wallet.`
+          : `A wallet already exists here (address ${a.base}). If you are a new bot, do not use it: pick a new NAME, write a new launcher, and run init there. Never replace, move or delete another bot's wallet.`;
         return out(`${notice}\n  Base:   ${a.base}\n  Solana: ${a.solana}`, { existing: true, name, notice, ...a });
       }
       const a = initWallet();
@@ -462,11 +465,12 @@ async function main(command = cmd, args = positionals.slice(1)) {
         const intent = { ...sendIntent(plan), skip_check: Boolean(flags["skip-check"]) };
         if (policy?.approval === "ask") {
           if (!flags.approve) {
-            const err = new NeedsApproval(intent, await requestApproval(intent));
+            const bound = approvalBound(plan);
+            const err = new NeedsApproval(intent, await requestApproval(intent, bound ? { bound, ledgerIntent: { ...intent, max_units: bound.max_units } } : {}));
             err.card = lines;
             throw err;
           }
-          await consumeApproval(flags.approve, intent);
+          await consumeApproval(flags.approve, intent, { verify: verifyBound(plan) });
         }
         say(lines.join("\n"));
         const r = await executeSend(plan);

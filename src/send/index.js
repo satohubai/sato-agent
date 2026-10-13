@@ -5,7 +5,7 @@ import { isEvm } from "../chains.js";
 import { executeEvmSend, planEvmSend } from "./evm.js";
 import { executeSolanaSend, planSolanaSend } from "./solana.js";
 
-export { isAll, ledgerSpend, sendFields, sendIntent, sendLines, NO_FEE_LINE, UNPRICED_LINE } from "./common.js";
+export { approvalBound, isAll, ledgerSpend, verifyBound, sendFields, sendIntent, sendLines, NO_FEE_LINE, UNPRICED_LINE } from "./common.js";
 
 /** Work out and prove one send (reads the chain; signs and sends nothing). */
 export const planSend = (req, deps = {}) => (isEvm(req.chain) ? planEvmSend(req, deps) : planSolanaSend(req, deps));

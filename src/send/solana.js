@@ -15,7 +15,9 @@ import {
   AccountRole,
   address,
   appendTransactionMessageInstructions,
+  compileTransaction,
   createKeyPairSignerFromBytes,
+  createNoopSigner,
   createTransactionMessage,
   getAddressEncoder,
   getBase64EncodedWireTransaction,
@@ -30,10 +32,11 @@ import {
 import { TOKEN_PROGRAM_ADDRESS, findAssociatedTokenPda, getCreateAssociatedTokenIdempotentInstruction, getTransferCheckedInstruction } from "@solana-program/token";
 import { Refused } from "../errors.js";
 import { loadPolicy } from "../policy.js";
-import { reserve } from "../ledger.js";
+import { release, reserve } from "../ledger.js";
 import { PriceUnavailable, oraclePrice } from "../price.js";
 import { unitsToText, unitsToUsd } from "../amount.js";
-import { solanaSecret } from "../wallet.js";
+import { loadWallet, solanaSecret } from "../wallet.js";
+import { otherStableByMint, otherStablesOf } from "../chains.js";
 import { TOKEN_2022_PROGRAM, USDC_MINT, broadcastAndConfirm, explorer, rpc as defaultRpc } from "../solana.js";
 import { WSOL_MINT, parseMintAccount, solLamports, tokenUnits } from "../swap/solana.js";
 import { clean } from "../text.js";
@@ -79,13 +82,15 @@ function describePowers(info) {
   }
   if (info.freeze_authority) notes.push(`A freeze authority is set (${info.freeze_authority}): it can freeze a token account for this mint, this wallet's or the recipient's.`);
   if (d.PausableConfig) notes.push(`Transfers of this mint can be paused by ${d.PausableConfig.authority ?? "its authority"}.`);
-  if (d.DefaultAccountState?.state === "frozen") notes.push("New token accounts for this mint start frozen: the recipient's new account would too, and what arrives could not be moved until the issuer thaws it.");
   return { notes, powers };
 }
 
 /** The asset a send names, read from the chain. No `--asset` means USDC. */
 export async function resolveSolanaAsset(raw, r) {
-  const input = raw === undefined || raw === null || raw === "" ? "USDC" : String(raw).trim();
+  let input = raw === undefined || raw === null || raw === "" ? "USDC" : String(raw).trim();
+  // USDT and PYUSD (the registry's extra stablecoins) can be named by symbol; they are then read by their mint.
+  const listed = otherStablesOf("solana").find((o) => o.symbol.toLowerCase() === input.toLowerCase());
+  if (listed) input = listed.mint;
   if (/^sol$/i.test(input)) return { kind: "native", symbol: "SOL", name: "Solana", mint: null, address: null, decimals: 9, label: "SOL", id: "SOL", program: null, info: null };
   if (/^usdc$/i.test(input) || input === USDC_MINT) return { kind: "stable", symbol: "USDC", name: "USD Coin", mint: USDC_MINT, address: USDC_MINT, decimals: 6, label: "USDC", id: "USDC", program: TOKEN_PROGRAM_ADDRESS, info: null };
   if (!isAddress(input)) throw new Error(`--asset: "${clean(input, 60)}" is not SOL, USDC or a Solana mint address (a base58 address, 32 to 44 characters)`);
@@ -106,6 +111,14 @@ export async function resolveSolanaAsset(raw, r) {
   const stops = (info.refusals ?? []).filter((x) => !/DefaultAccountState/.test(x.message));
   if (stops.length) throw new Refused(stops.map((x) => ({ ...x, rule: "send.token_extension_refused" })));
   const wrapped = input === WSOL_MINT;
+  const known = otherStableByMint(input);
+  if (known) {
+    // Counted 1:1 on the registry's word for WHICH mint this is; the chain's program and decimals must agree with the pin.
+    if (info.decimals !== known.decimals || info.program !== known.program) {
+      throw refuse("stable_mismatch", `the mint ${shortMint(input)} is ${info.program_name} with ${info.decimals} decimals, but the kit pins ${known.symbol} as ${known.program === TOKEN_2022_PROGRAM ? "Token-2022" : "Token"} with ${known.decimals}; it is not counted as a stablecoin and nothing was signed`);
+    }
+    return { kind: "stable", symbol: known.symbol, name: null, mint: input, address: input, decimals: info.decimals, label: tokenLabel(known.symbol, input, 4), id: input, program: info.program, info };
+  }
   return {
     kind: wrapped ? "wrapped" : "token",
     symbol: wrapped ? "wSOL" : shortMint(input),
@@ -175,9 +188,11 @@ async function hookAccounts(mint, hookProgram) {
   ];
 }
 
-/** Build and sign the send in memory (nothing is broadcast). */
-export async function buildSolanaSend({ secret, to, asset, units, blockhash, createAta, fee = null, hook = null }) {
-  const signer = await createKeyPairSignerFromBytes(secret);
+/**
+ * The send as a transaction message for `signer`. A plan or a dry run passes a NOOP signer (the wallet's address and no key): the message
+ * is the same one, it is only compiled, and `simulateTransaction` runs it with `sigVerify: false`. `executeSolanaSend` passes the real signer.
+ */
+export async function buildSolanaMessage({ signer, to, asset, units, blockhash, createAta, fee = null, hook = null }) {
   let instructions;
   if (asset.kind === "native") {
     instructions = [systemTransferIx({ signer, to, lamports: units })];
@@ -197,14 +212,23 @@ export async function buildSolanaSend({ secret, to, asset, units, blockhash, cre
       extras.length ? { ...transfer, accounts: [...transfer.accounts, ...extras] } : transfer,
     ];
   }
-  const message = pipe(
+  return pipe(
     createTransactionMessage({ version: 0 }),
     (m) => setTransactionMessageFeePayerSigner(signer, m),
     (m) => setTransactionMessageLifetimeUsingBlockhash(blockhash, m),
     (m) => appendTransactionMessageInstructions(instructions, m),
   );
+}
+
+/** The unsigned transaction, base64: every signature slot zero. This is the only form a plan or a dry run ever hands to an RPC. */
+export const unsignedWire = (message) => getBase64EncodedWireTransaction(compileTransaction(message));
+
+/** Build and sign the send. Only `executeSolanaSend` calls this, after the limits, the approval and the reservation. */
+export async function buildSolanaSend({ secret, ...spec }) {
+  const signer = await createKeyPairSignerFromBytes(secret);
+  const message = await buildSolanaMessage({ ...spec, signer });
   const tx = await signTransactionMessageWithSigners(message);
-  return { wire: getBase64EncodedWireTransaction(tx), signature: getSignatureFromTransaction(tx), from: signer.address, instructions: instructions.length };
+  return { wire: getBase64EncodedWireTransaction(tx), signature: getSignatureFromTransaction(tx), from: signer.address };
 }
 
 /**
@@ -217,9 +241,8 @@ export async function buildSolanaSend({ secret, to, asset, units, blockhash, cre
 export async function planSolanaSend({ to, amount, asset: rawAsset }, deps = {}) {
   const r = deps.rpc ?? defaultRpc();
   if (!isAddress(to)) throw new Error(`not a Solana address: ${to}`);
-  const secret = deps.secret ?? solanaSecret();
-  const signer = await createKeyPairSignerFromBytes(secret);
-  const me = signer.address;
+  // A plan needs the wallet's ADDRESS only. The key is not touched until `executeSolanaSend`.
+  const me = deps.agent ?? loadWallet().solana.address;
   const asset = await resolveSolanaAsset(rawAsset, r);
   const native = asset.kind === "native";
   const all = /^all$/i.test(String(amount));
@@ -326,6 +349,11 @@ export async function planSolanaSend({ to, amount, asset: rawAsset }, deps = {})
     const [destination] = await findAssociatedTokenPda({ owner: address(to), mint: address(asset.mint), tokenProgram: address(asset.program) });
     const destInfo = (await read("the recipient's token account", r.getAccountInfo(destination, { encoding: "base64", commitment: "confirmed" }).send())).value;
     if (!destInfo) {
+      // A mint whose new accounts start frozen would leave the recipient with a frozen account: what arrives could not be moved until the
+      // issuer thaws it. Creating that account is refused; to a recipient who already has one, the send is fine.
+      if (info?.extension_details?.DefaultAccountState?.state === "frozen") {
+        throw refuse("recipient_account_would_be_frozen", `${asset.label} starts every new token account frozen, and ${shortMint(to)} has none yet, so what arrives could not be moved until the issuer thaws it; nothing was signed`, null, to);
+      }
       createAta = true;
       let lam = TOKEN_ACCOUNT_RENT_LAMPORTS;
       try {
@@ -357,10 +385,13 @@ export async function planSolanaSend({ to, amount, asset: rawAsset }, deps = {})
     valuation = { basis: "none" };
   }
 
-  // Build, sign in memory and simulate. A simulation that fails refuses the send; nothing is broadcast.
+  // Simulate the transaction UNSIGNED (no signature at all, `sigVerify: false`, a fresh blockhash the node substitutes): nothing a
+  // plan or a dry run sends to an RPC can be broadcast. The real transaction is signed in `executeSolanaSend`, after the limits, the
+  // owner's approval and the reservation. A simulation that fails refuses the send.
   const { value: blockhash } = await read("a recent blockhash", r.getLatestBlockhash({ commitment: "confirmed" }).send());
-  const built = await buildSolanaSend({ secret, to, asset, units, blockhash, createAta, fee, hook });
-  const sim = await read("the simulation", r.simulateTransaction(built.wire, { encoding: "base64", commitment: "confirmed" }).send());
+  const spec = { to, asset, units, createAta, fee, hook };
+  const wire = unsignedWire(await buildSolanaMessage({ signer: createNoopSigner(address(me)), blockhash, ...spec }));
+  const sim = await read("the simulation", r.simulateTransaction(wire, { encoding: "base64", sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed" }).send());
   if (sim.value.err) throw refuse("simulation_failed", `the simulation of this transfer failed (${jsonSafe(sim.value.err).slice(0, 200)}); nothing was signed or sent`, null, jsonSafe(sim.value.err).slice(0, 200));
 
   return {
@@ -378,16 +409,27 @@ export async function planSolanaSend({ to, amount, asset: rawAsset }, deps = {})
     powers,
     stays,
     rent,
-    built,
+    spec,
+    unsignedWire: wire,
     explorer,
   };
 }
 
-/** Reserve the send against the limits, record the signature, broadcast, poll. Never retried; unclear stays counted (Pending). */
+/**
+ * Reserve the send against the limits, THEN sign it with a fresh blockhash, record the signature, broadcast, poll. Never retried; unclear
+ * stays counted (Pending). The key is first used here: after the limits, the approval and the reservation.
+ */
 export async function executeSolanaSend(plan, deps = {}) {
   const r = deps.rpc ?? defaultRpc();
   const entry = await reserve(deps.policy ?? loadPolicy(), ledgerSpend(plan));
-  const out = await broadcastAndConfirm(entry, plan.built, r, deps.confirm ?? {});
+  let built;
+  try {
+    const { value: blockhash } = await withTimeout(r.getLatestBlockhash({ commitment: "confirmed" }).send());
+    built = await buildSolanaSend({ secret: deps.secret ?? solanaSecret(), blockhash, ...plan.spec });
+  } catch (err) {
+    release(entry, "failed before signing; nothing sent", { error: String(err.message) });
+    throw err;
+  }
+  const out = await broadcastAndConfirm(entry, built, r, deps.confirm ?? {});
   return { tx: out.tx, explorer: out.explorer };
 }
-

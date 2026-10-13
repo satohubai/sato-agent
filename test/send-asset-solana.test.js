@@ -12,7 +12,7 @@ freshHome();
 const { initWallet, addresses, solanaSecret } = await import("../src/wallet.js");
 const { setPolicy } = await import("../src/policy.js");
 const { Pending, Refused } = await import("../src/errors.js");
-const { actions, spentLast24h } = await import("../src/ledger.js");
+const { actions, entries, spentLast24h } = await import("../src/ledger.js");
 const { PriceUnavailable } = await import("../src/price.js");
 const { SATO_FEE_ACCOUNTS, SATO_REFERRAL_ACCOUNT } = await import("../src/swap/solana.js");
 const { TOKEN_2022_PROGRAM, USDC_MINT } = await import("../src/solana.js");
@@ -93,7 +93,7 @@ const ataOf = async (owner, mint, program = TOKEN_PROGRAM_ADDRESS) => (await fin
 
 /** The signed transaction, read back: its account keys and each instruction's program, accounts and data. */
 function decode(plan) {
-  const tx = getTransactionDecoder().decode(getBase64Encoder().encode(plan.built.wire));
+  const tx = getTransactionDecoder().decode(getBase64Encoder().encode(plan.unsignedWire));
   const msg = getCompiledTransactionMessageDecoder().decode(tx.messageBytes);
   return {
     keys: [...msg.staticAccounts],
@@ -229,13 +229,92 @@ test("Token-2022 with a permanent delegate and a transfer hook: both are SHOWN a
   await send.executeSend(p, { rpc: w.rpc, ...confirm });
 });
 
-test("Token-2022 refusals and the frozen-by-default note: a non-transferable mint is refused, a frozen default only told", async () => {
+test("Token-2022 refusals: a non-transferable mint is refused; a frozen-by-default mint is refused only when the recipient's account would have to be created", async () => {
   const none = mintAccount({ program: TOKEN_2022_PROGRAM, ext: [[9, Buffer.alloc(0)]] });
   assert.equal(await rule(plan({ amount: "1", asset: MINT_2022 }, chain({ accounts: { [MINT_2022]: none } }))), "send.token_extension_refused");
   const frozen = mintAccount({ program: TOKEN_2022_PROGRAM, ext: [[6, Buffer.from([2])]] });
-  const p = await plan({ amount: "1", asset: MINT_2022 }, chain({ held: [await tokenAccount(MINT_2022, 5_000_000n, TOKEN_2022_PROGRAM)], accounts: { [MINT_2022]: frozen } }));
-  assert.match(p.notes.join("\n"), /New token accounts for this mint start frozen/);
+  const held = [await tokenAccount(MINT_2022, 5_000_000n, TOKEN_2022_PROGRAM)];
+  assert.equal(await rule(plan({ amount: "1", asset: MINT_2022 }, chain({ held, accounts: { [MINT_2022]: frozen } }))), "recipient_account_would_be_frozen");
+  const there = chain({ held, accounts: { [MINT_2022]: frozen, [await ataOf(TO, MINT_2022, TOKEN_2022_PROGRAM)]: { owner: TOKEN_2022_PROGRAM, data: ["", "base64"] } } });
+  const p = await plan({ amount: "1", asset: MINT_2022 }, there);
+  assert.equal(p.rent, null);
+  assert.doesNotMatch(p.notes.join("\n"), /frozen/, "no note: an existing account is not affected");
 });
+
+// ------------------------------------------------------------------ nothing signed leaves the machine before the limits, the approval and the reservation
+
+const sigsOf = (wire) => getTransactionDecoder().decode(getBase64Encoder().encode(wire)).signatures;
+const unsigned = (wire) => Object.values(sigsOf(wire)).every((sig) => sig === null || Buffer.from(sig).every((b) => b === 0));
+
+test("a plan simulates an UNSIGNED copy (sigVerify off, the node's own blockhash) and sends nothing; the key is first used by execute, after the reservation, with a fresh blockhash", async () => {
+  const held = [await tokenAccount(USDC_MINT, 50_000_000n)];
+  const w = chain({ held });
+  const seen = [];
+  const order = [];
+  const spentRows = () => entries().filter((e) => e.kind === "send" && e.status === "submitted").length;
+  const sim = w.rpc.simulateTransaction;
+  w.rpc.simulateTransaction = (wire, cfg) => (seen.push({ wire, cfg }), sim(wire, cfg));
+  const bh = w.rpc.getLatestBlockhash;
+  w.rpc.getLatestBlockhash = (cfg) => (order.push(spentRows()), bh(cfg));
+  const p = await plan({ amount: "3" }, w);
+  assert.equal(seen.length, 1);
+  assert.ok(unsigned(seen[0].wire), "the wire handed to the RPC carries no signature");
+  assert.deepEqual([seen[0].cfg.sigVerify, seen[0].cfg.replaceRecentBlockhash], [false, true]);
+  assert.equal(w.calls.filter(([n]) => n === "send").length, 0);
+  const msg = getCompiledTransactionMessageDecoder().decode(getTransactionDecoder().decode(getBase64Encoder().encode(seen[0].wire)).messageBytes);
+  assert.equal(msg.header.numSignerAccounts, 1, "the wallet is still marked as the signer: it is the same message that is signed later");
+  assert.equal(p.unsignedWire, seen[0].wire);
+  assert.equal(order.length, 1);
+  // execute: reserved first, then a fresh blockhash, then the signed wire is broadcast
+  const before = spentRows();
+  await send.executeSend(p, { rpc: w.rpc, ...confirm });
+  assert.equal(order.length, 2);
+  assert.equal(order[1], before + 1, "the blockhash for signing was asked for after the reservation");
+  const sentWire = w.calls.find(([n]) => n === "send")[1][0];
+  assert.ok(!unsigned(sentWire), "what is broadcast is signed");
+  assert.equal(seen.length, 1, "execute simulates nothing more");
+});
+
+test("a dry run, a refused plan and an ask-mode plan never hand a signature to the RPC; the v0.4.0 Solana USDC dry run is the same", async () => {
+  const held = [await tokenAccount(USDC_MINT, 50_000_000n)];
+  const w = chain({ held });
+  const wires = [];
+  const sim = w.rpc.simulateTransaction;
+  w.rpc.simulateTransaction = (wire, cfg) => (wires.push(wire), sim(wire, cfg));
+  await plan({ amount: "1" }, w); // what a dry run and an ask-mode run both do
+  const { dryRunSendUsdc } = await import("../src/solana.js");
+  await dryRunSendUsdc({ to: TO, amount: "1" }, w.rpc);
+  assert.equal(wires.length, 2);
+  assert.ok(wires.every(unsigned), "no signature-valid wire was sent");
+  assert.equal(w.calls.filter(([n]) => n === "send").length, 0);
+  const failing = chain({ held, simErr: { InstructionError: [0, "x"] } });
+  const seen = [];
+  const sim2 = failing.rpc.simulateTransaction;
+  failing.rpc.simulateTransaction = (wire, cfg) => (seen.push(wire), sim2(wire, cfg));
+  await rule(plan({ amount: "1" }, failing));
+  assert.ok(seen.length === 1 && seen.every(unsigned));
+});
+
+// ------------------------------------------------------------------ the extra stablecoins count 1:1
+
+const STABLES = (await import("../src/chains.js")).otherStablesOf("solana");
+for (const entry of STABLES) {
+  test(`stable solana ${entry.symbol} ${entry.mint}: counted 1:1 (${entry.decimals} decimals), by mint and by symbol, ${entry.program === TOKEN_2022_PROGRAM ? "Token-2022 with its powers shown" : "Token program"}`, async () => {
+    const t22 = entry.program === TOKEN_2022_PROGRAM;
+    const mint = mintAccount({ program: entry.program, decimals: entry.decimals, freeze: true, ext: t22 ? [feeConfig({ olderBps: 0, newerBps: 0 }), permanentDelegate] : [] });
+    const w = chain({ held: [await tokenAccount(entry.mint, 90_000_000n, entry.program)], accounts: { [entry.mint]: mint } });
+    for (const asset of [entry.mint, entry.symbol, entry.symbol.toLowerCase()]) {
+      const p = await plan({ amount: "12.34", asset }, w);
+      assert.deepEqual([p.asset.kind, p.usd, p.unpriced, p.units], ["stable", 12.34, false, 12_340_000n]);
+      assert.equal(p.asset.label, `${entry.symbol} ${entry.mint.slice(0, 4)}…${entry.mint.slice(-4)}`);
+      assert.equal(send.sendIntent(p).asset, entry.mint);
+    }
+    if (t22) assert.match((await plan({ amount: "1", asset: entry.symbol }, w)).notes.join("\n"), /permanent delegate/);
+    // the same address on another program is not counted
+    const wrong = mintAccount({ program: t22 ? TOKEN_PROGRAM_ADDRESS : TOKEN_2022_PROGRAM, decimals: entry.decimals });
+    assert.equal(await rule(plan({ amount: "1", asset: entry.mint }, chain({ accounts: { [entry.mint]: wrong } }))), "stable_mismatch");
+  });
+}
 
 // ------------------------------------------------------------------ outcomes, and no fee
 

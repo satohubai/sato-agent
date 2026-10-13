@@ -2,6 +2,7 @@
 // the shape of the ledger row a send writes.
 
 import { Refused } from "../errors.js";
+import { unitsToText } from "../amount.js";
 
 /** A policy-style refusal (exit 3, nothing signed) with a rule name and a plain sentence. */
 export const refuse = (rule, message, limit = null, observed = null) => new Refused([{ rule, limit, observed, message }]);
@@ -55,6 +56,20 @@ export function sendIntent(plan) {
   };
 }
 
+/**
+ * The ceiling an approval of this send carries, or null. A native `--amount all` is bound by the word "all" AND by the units computed when the
+ * owner was asked: the gas it keeps rises and falls with the fee, so a re-run may send fewer units (gas rose) but never more.
+ */
+export const approvalBound = (plan) => (plan.all && plan.asset.kind === "native" ? { max_units: plan.units.toString(), asset: plan.asset.id } : null);
+
+/** `verify` for `consumeApproval`: this send must not move more units than the owner was shown. */
+export const verifyBound = (plan) => (bound) => {
+  if (bound.asset !== plan.asset.id || !/^\d+$/.test(String(bound.max_units))) throw new Error("this approval's limit does not fit this send; ask the owner again");
+  if (plan.units > BigInt(bound.max_units)) {
+    throw new Error(`this send would move ${plan.amountText} ${plan.asset.label}, more than the ${unitsToText(BigInt(bound.max_units), plan.asset.decimals)} ${plan.asset.label} the owner approved (the gas reserve is smaller than when they were asked); ask the owner again`);
+  }
+};
+
 /** The lines a send is shown in, before it is approved or signed. */
 export function sendLines(plan) {
   const where = plan.chain;
@@ -63,7 +78,8 @@ export function sendLines(plan) {
     : plan.valuation.basis === "stable"
       ? `Counts as $${plan.usd} against your USD limits (a stablecoin, 1:1).`
       : `Counts as about $${plan.usd} against your USD limits (${plan.valuation.oracle.asset} at $${Number(plan.valuation.oracle.usd).toFixed(2)}, Chainlink, ${plan.valuation.oracle.age_s} s old).`;
-  return [`Send ${plan.amountText} ${plan.asset.label} on ${where} to ${plan.to}`, `  ${value}`, ...plan.notes.map((n) => `  ${n}`), `  ${NO_FEE_LINE}`];
+  const ceiling = approvalBound(plan);
+  return [`Send ${plan.amountText} ${plan.asset.label} on ${where} to ${plan.to}`, `  ${value}`, ...(ceiling ? [`  An approval of this covers at most ${plan.amountText} ${plan.asset.label}; if gas costs more when it is used, less is sent.`] : []), ...plan.notes.map((n) => `  ${n}`), `  ${NO_FEE_LINE}`];
 }
 
 /** The fields a send adds to its --json output. */

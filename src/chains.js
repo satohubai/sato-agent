@@ -14,6 +14,22 @@
 
 import { arbitrum, base, bsc, polygon } from "viem/chains";
 
+// STABLECOINS A SEND COUNTS 1:1 (owner ruling 2026-10-12: "stables 1:1"). Besides the chain's own `stables` (the ones the kit pays and swaps
+// against), a send of any of these counts its amount as dollars, decimals-aware. Each entry is pinned: the symbol and decimals were read
+// from the chain (2026-10-12; `test/send-asset-evm.test.js` re-reads them with SATO_AGENT_LIVE_READ=1) and the address is the one the
+// issuer or the chain's explorer publishes. The kit refuses a token at one of these addresses whose chain-read decimals differ.
+// Nothing else is priced here: a wrapped BTC (WBTC, cbBTC) or any other token is unpriced and counts $0.
+//   USDbC (Base)         Coinbase's bridged USDC: basescan.org/token/0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA
+//   DAI / USDS           Sky (MakerDAO): the issuer's per-chain list, docs.sky.money/developers/deployments (Base, Arbitrum)
+//   USDT (Base)          Tether's bridged native token: tether.to/en/supported-protocols
+//   USDC.e (Arbitrum)    Arbitrum's bridged USDC (symbol "USDC" on chain): docs.arbitrum.io/for-devs/dev-tools-and-resources/chain-info
+//   USDC.e, DAI (Polygon)  the long-published PoS-bridge tokens: polygonscan.com/token/0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174 (not
+//                        re-read from the chain 2026-10-12: no Polygon endpoint answered from the research Mac)
+//   BUSD, FDUSD, DAI, USD1 (BNB Chain)  bscscan.com token pages / each issuer's published BSC address
+//   USDT (Solana)        tether.to/en/supported-protocols; Token program, 6 decimals
+//   PYUSD (Solana)       developer.paypal.com/docs/pyusd; Token-2022, 6 decimals
+const stable = (symbol, address, decimals) => ({ symbol, address, decimals });
+
 /** The placeholder KyberSwap (and Sato Hub's gate) use for a chain's native coin. */
 export const NATIVE_PLACEHOLDER = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
 
@@ -55,6 +71,12 @@ const REGISTRY = deepFreeze({
     stables: { USDC: { symbol: "USDC", name: "USD Coin", address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", decimals: 6, eip3009: true } },
     /** The stable a send / pay / checkout uses when the owner names none. */
     defaultStable: "USDC",
+    otherStables: [
+      stable("USDbC", "0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA", 6),
+      stable("DAI", "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb", 18),
+      stable("USDT", "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2", 6),
+      stable("USDS", "0x820C137fa70C8691f0e44Dc420a5e53c168921Dc", 18),
+    ],
     chainlink: {
       // ETH/USD on Base. Heartbeat 20 min, deviation 0.15%.
       native: { address: "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70", maxAgeS: 2 * 3600, tolerancePct: 3 },
@@ -73,6 +95,11 @@ const REGISTRY = deepFreeze({
     x402: { v1Name: "base", caip2: "eip155:8453" },
     /** What the kit's own eth_simulateV1 needs to look like this chain: block time, and the tip used when the node cannot say. */
     simulation: { blockTimeS: 2, tipFallbackWei: 1_000_000n, prevRandao: true, timedBlocks: true, zeroBaseFee: false, swapGas: 2_000_000n, maxGas: 4_000_000n, exactGasEstimate: false },
+    // Base is an OP-stack chain: a transaction also pays a fee for posting its data to Ethereum, which the node adds to the cost it checks the
+    // balance against and which neither the gas price nor eth_simulateV1 shows. A native `send --amount all` keeps this pad on top of its
+    // gas reserve: 0.00005 ETH. Measured 2026-10-12 with GasPriceOracle.getL1Fee (0x4200…000F) for a 112-byte transfer: 644,950,146 wei, so the pad
+    // is far above what a transfer pays there and still covers a spike in Ethereum's gas price.
+    sendReserve: { l1DataWei: 50_000_000_000_000n },
     // amazon: Crossmint orders (dark until switched on); giftcards: Bitrefill's agent API takes this chain.
     features: { send: true, swap: true, x402: true, giftcards: true, register: true, checkout: true, amazon: true },
   },
@@ -98,6 +125,12 @@ const REGISTRY = deepFreeze({
       USDC: { symbol: "USDC", name: "USD Coin", address: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", decimals: 18, eip3009: false },
     },
     defaultStable: "USDT",
+    otherStables: [
+      stable("BUSD", "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56", 18),
+      stable("FDUSD", "0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409", 18),
+      stable("DAI", "0x1AF3F329e8BE154074D8769D1FFa4eE058B1DBc3", 18),
+      stable("USD1", "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d", 18),
+    ],
     chainlink: {
       // BNB/USD: heartbeat 27 s, deviation 0.1%, rounds about every 33 s. Five minutes without an update is stale.
       native: { address: "0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE", maxAgeS: 300, tolerancePct: 3 },
@@ -132,6 +165,11 @@ const REGISTRY = deepFreeze({
       USDT: { symbol: "USDT", name: "Tether USD (USDT0)", address: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", decimals: 6, eip3009: true },
     },
     defaultStable: "USDC",
+    otherStables: [
+      stable("USDC.e", "0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8", 6),
+      stable("DAI", "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1", 18),
+      stable("USDS", "0x6491c05A82219b8D1479057361ff1654749b876b", 18),
+    ],
     chainlink: {
       // ETH/USD: heartbeat 1755 s (29 min), deviation 0.05%. Two hours matches Base's ETH feed.
       native: { address: "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612", maxAgeS: 2 * 3600, tolerancePct: 3 },
@@ -178,6 +216,10 @@ const REGISTRY = deepFreeze({
       USDT: { symbol: "USDT", name: "Tether USD (USDT0)", address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", decimals: 6, eip3009: false },
     },
     defaultStable: "USDC",
+    otherStables: [
+      stable("USDC.e", "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", 6),
+      stable("DAI", "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063", 18),
+    ],
     chainlink: {
       // The POL price is Chainlink's MATIC/USD feed (no separate POL/USD): heartbeat 27 s, deviation 0.25%. POL is thinner than ETH, so
       // the quote may sit 5% from the feed.
@@ -203,6 +245,10 @@ const REGISTRY = deepFreeze({
     native: { symbol: "SOL", name: "Solana", decimals: 9, oracle: "SOL" },
     stables: { USDC: { symbol: "USDC", name: "USD Coin", mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", decimals: 6 } },
     defaultStable: "USDC",
+    otherStables: [
+      { symbol: "USDT", mint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", decimals: 6, program: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" },
+      { symbol: "PYUSD", mint: "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", decimals: 6, program: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb" },
+    ],
     // Chainlink publishes SOL/USD on Base, not on Solana: the independent SOL price is read through that chain's feeds.
     chainlink: { via: "base" },
     x402: { v1Name: "solana", caip2: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp" },
@@ -294,6 +340,12 @@ export const isStableSymbol = (key, symbol) => Object.hasOwn(getChain(key).stabl
 /** The stable entry on an EVM chain whose address is `address` (any letter case), or null. */
 export const stableByAddress = (key, address) => stablesOf(key).map(([, s]) => s).find((s) => s.address && String(s.address).toLowerCase() === String(address).toLowerCase()) ?? null;
 export const stableBySymbol = (key, symbol) => getChain(key).stables?.[String(symbol ?? "").toUpperCase()] ?? null;
+/** The extra stablecoins a send counts 1:1 on a chain (see the list above), as the registry has them. */
+export const otherStablesOf = (key) => getChain(key).otherStables ?? [];
+/** The extra stablecoin on an EVM chain at `address` (any letter case), or null. */
+export const otherStableByAddress = (key, address) => otherStablesOf(key).find((s) => s.address && String(s.address).toLowerCase() === String(address).toLowerCase()) ?? null;
+/** The extra stablecoin on Solana with this mint, or null. */
+export const otherStableByMint = (mint) => otherStablesOf("solana").find((s) => s.mint === mint) ?? null;
 /** The stable a send / pay uses by default on this chain. */
 export const defaultStable = (key) => {
   const c = getChain(key);
@@ -348,7 +400,7 @@ export const lockName = (key, what) => `${getChain(key).key}-${what}`;
 /** Checked at load: a malformed entry stops the kit rather than being used. */
 for (const key of evmChainKeys()) {
   const c = REGISTRY[key];
-  const addrs = [c.wrappedNative.address, c.kyber.router, c.kyber.executor, c.erc8004Registry, ...Object.values(c.stables).map((s) => s.address), ...Object.values(c.chainlink.other ?? {}).map((f) => f.address), c.chainlink.native.address, ...(c.chainlink.sequencer ? [c.chainlink.sequencer.address] : [])];
+  const addrs = [...(c.otherStables ?? []).map((s) => s.address), c.wrappedNative.address, c.kyber.router, c.kyber.executor, c.erc8004Registry, ...Object.values(c.stables).map((s) => s.address), ...Object.values(c.chainlink.other ?? {}).map((f) => f.address), c.chainlink.native.address, ...(c.chainlink.sequencer ? [c.chainlink.sequencer.address] : [])];
   for (const a of addrs) if (!EVM_ADDRESS.test(a)) throw new Error(`chains.js: ${key} has a malformed address ${String(a).slice(0, 50)}`);
   if (c.caip2 !== `eip155:${c.chainId}` || c.viem.id !== c.chainId || c.x402.caip2 !== c.caip2) throw new Error(`chains.js: ${key}'s chain id disagrees with its caip2 / viem chain / x402 network`);
   if (!c.stables[c.defaultStable]) throw new Error(`chains.js: ${key}'s defaultStable is not one of its stables`);
@@ -357,5 +409,10 @@ for (const key of evmChainKeys()) {
   if (c.features.x402 && (d.eip3009 !== true || !c.x402.v1Name)) throw new Error(`chains.js: ${key} has x402 on, but its default stable cannot sign an EIP-3009 authorization (or it has no v1 network name)`);
   if (c.features.giftcards && (d.symbol !== "USDC" || d.eip3009 !== true || d.decimals !== 6)) throw new Error(`chains.js: ${key} has gift cards on, but Bitrefill is paid in 6-decimal Circle USDC`);
   if (c.sendReserve && (typeof c.sendReserve.l1DataWei !== "bigint" || c.sendReserve.l1DataWei < 0n)) throw new Error(`chains.js: ${key}'s sendReserve.l1DataWei must be a bigint of wei`);
+  const seen = new Set([...Object.values(c.stables).map((x) => x.address.toLowerCase()), c.wrappedNative.address.toLowerCase()]);
+  for (const o of c.otherStables ?? []) {
+    if (seen.has(o.address.toLowerCase()) || !Number.isInteger(o.decimals)) throw new Error(`chains.js: ${key}'s otherStables entry ${o.symbol} repeats an address or has no decimals`);
+    seen.add(o.address.toLowerCase());
+  }
   if (!c.rpcDefaults.length) throw new Error(`chains.js: ${key} has no RPC endpoint`);
 }

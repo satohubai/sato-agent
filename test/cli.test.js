@@ -3,7 +3,8 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -69,4 +70,17 @@ test("no private key ever reaches stdout or stderr", () => {
   for (const o of outputs) for (const s of secrets) {
     assert.ok(!o.stdout.includes(s) && !o.stderr.includes(s), "a private key was printed");
   }
+});
+
+test("init on an existing wallet with no SATO_AGENT_HOME names no folder: there is no NAME to suggest a '-2' of (HOME is a temp folder; ~/.sato-agent is never touched)", () => {
+  const fakeHome = mkdtempSync(join(tmpdir(), "sato-agent-nohome-"));
+  const { SATO_AGENT_HOME: _unset, ...rest } = env;
+  const bare = { ...rest, HOME: fakeHome };
+  const first = JSON.parse(execFileSync(process.execPath, [BIN, "init", "--json"], { env: bare, encoding: "utf8" }));
+  const again = JSON.parse(execFileSync(process.execPath, [BIN, "init", "--json"], { env: bare, encoding: "utf8" }));
+  assert.equal(again.existing, true);
+  assert.equal(again.name, null);
+  assert.equal(again.notice, `A wallet already exists here (address ${first.base}). If you are a new bot, do not use it: pick a new NAME, write a new launcher, and run init there. Never replace, move or delete another bot's wallet.`);
+  assert.doesNotMatch(again.notice, /\.sato-agent|-2/);
+  assert.ok(statSync(join(fakeHome, ".sato-agent", "wallet.json")).isFile());
 });

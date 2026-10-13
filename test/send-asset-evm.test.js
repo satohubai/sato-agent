@@ -123,16 +123,18 @@ test("native: no Chainlink price means no send, and an unreadable fee means no s
   assert.equal(await rule(send.planSend({ chain: "base", to: TO, amount: "0.001", asset: "ETH" }, { c: noFee.c, oraclePrice: oracle(), simulate: simulation({ native: true, units: wei(0.001) }) })), "gas_price_unavailable");
 });
 
-test("native --amount all keeps a gas reserve (21,000 gas at the quoted fee, twice over), says what stays, and sends the rest", async () => {
+test("native --amount all keeps a gas reserve (21,000 gas at the quoted fee, twice over, plus Base's data-fee pad), says what stays, and sends the rest", async () => {
   const balance = 10n ** 18n;
   const w = world({ native: balance, fee: 2_000_000_000n });
-  const reserve = 21_000n * 2_000_000_000n * 2n;
+  const pad = evmChain("base").sendReserve.l1DataWei;
+  assert.equal(pad, 50_000_000_000_000n, "Base is an OP-stack chain: the data fee its node adds is covered");
+  const reserve = 21_000n * 2_000_000_000n * 2n + pad;
   const sim = simulation({ native: true, units: balance - reserve });
   const { plan, deps } = await run({ amount: "all", asset: "ETH" }, w, { simulate: sim });
   assert.equal(plan.units, balance - reserve);
   assert.equal(plan.stays.wei, reserve);
   assert.equal(sim.seen[0].calls[0].gas, 21_000n, "the simulated gas fits what all kept");
-  assert.match(plan.notes.join("\n"), /Sending everything except 0\.000084 ETH, which stays in the wallet for gas\./);
+  assert.match(plan.notes.join("\n"), /Sending everything except 0\.000134 ETH, which stays in the wallet for gas\./);
   assert.equal(send.sendIntent(plan).amount, "all", "a native all is bound as all: the gas it keeps moves with the fee");
   await send.executeSend(plan, deps);
   assert.equal(w.state.sent[0].value, balance - reserve);
@@ -140,8 +142,9 @@ test("native --amount all keeps a gas reserve (21,000 gas at the quoted fee, twi
 
 test("native --amount all: a recipient with code reserves for 150,000 gas; nothing left after the reserve is refused", async () => {
   const w = world({ native: 10n ** 18n, code: "0x6080", fee: 2_000_000_000n });
-  const { plan } = await run({ amount: "all", asset: "ETH" }, w, { simulate: simulation({ native: true, units: 10n ** 18n - 150_000n * 2_000_000_000n * 2n, gasUsed: 30_000n }) });
-  assert.equal(plan.stays.wei, 150_000n * 2_000_000_000n * 2n);
+  const reserve = 150_000n * 2_000_000_000n * 2n + evmChain("base").sendReserve.l1DataWei;
+  const { plan } = await run({ amount: "all", asset: "ETH" }, w, { simulate: simulation({ native: true, units: 10n ** 18n - reserve, gasUsed: 30_000n }) });
+  assert.equal(plan.stays.wei, reserve);
   const poor = world({ native: 1000n });
   assert.equal(await rule(send.planSend({ chain: "base", to: TO, amount: "all", asset: "ETH" }, { c: poor.c, oraclePrice: oracle(), simulate: simulation({ native: true, units: 1n }) })), "nothing_to_send");
 });
@@ -319,6 +322,100 @@ test("a signed send whose outcome is unknown stays counted and is not retried; a
   const mid = spentLast24h().usd;
   await assert.rejects(send.executeSend(again.plan, again.deps), /transaction reverted/);
   assert.equal(spentLast24h().usd, mid, "given back");
+});
+
+// ------------------------------------------------------------------ the approval of a native all
+
+test("a native --amount all is approved as 'all' AND bounded by the units shown: a re-run may send fewer (gas rose), never more", async () => {
+  const { requestApproval, consumeApproval } = await import("../src/approvals.js");
+  const balance = 10n ** 18n;
+  const at = async (fee) => {
+    const w = world({ native: balance, fee });
+    return (await run({ amount: "all", asset: "ETH" }, w, { simulate: simulation({ native: true, units: balance }) })).plan;
+  };
+  const shown = await at(2_000_000_000n);
+  const ceiling = send.approvalBound(shown);
+  assert.deepEqual(ceiling, { max_units: shown.units.toString(), asset: "ETH" });
+  assert.equal(send.approvalBound({ ...shown, all: false }), null, "an exact amount needs no ceiling");
+  assert.match(send.sendLines(shown).join("\n"), /An approval of this covers at most 0\.999866 ETH/);
+  const intent = send.sendIntent(shown);
+  assert.equal(intent.amount, "all");
+  // gas rose since the owner was asked: fewer units, the code works
+  const dearer = await at(9_000_000_000n);
+  assert.ok(dearer.units < shown.units);
+  const a = await requestApproval(intent, { bound: ceiling });
+  await consumeApproval(a.code, intent, { verify: send.verifyBound(dearer) });
+  // gas fell: more units than were shown, refused, and the code is NOT spent
+  const cheaper = await at(1_000_000_000n);
+  assert.ok(cheaper.units > shown.units);
+  const b = await requestApproval(intent, { bound: ceiling });
+  await assert.rejects(consumeApproval(b.code, intent, { verify: send.verifyBound(cheaper) }), /more than the 0\.999866 ETH the owner approved/);
+  await consumeApproval(b.code, intent, { verify: send.verifyBound(shown) }); // still unused: the exact amount shown goes through
+  // a code with a ceiling is never spent by a command that does not check it
+  const c = await requestApproval(intent, { bound: ceiling });
+  await assert.rejects(consumeApproval(c.code, intent), /carries a limit this command does not check/);
+  // another asset's ceiling does not fit
+  await assert.rejects(Promise.resolve().then(() => send.verifyBound(shown)({ max_units: "1", asset: "BNB" })), /does not fit this send/);
+});
+
+// ------------------------------------------------------------------ every stablecoin counts 1:1; a wrapped BTC does not
+
+const LISTED = {};
+for (const key of ["base", "bnb", "arbitrum", "polygon"]) LISTED[key] = (await import("../src/chains.js")).otherStablesOf(key);
+for (const [key, list] of Object.entries(LISTED)) {
+  for (const entry of list) {
+    test(`stable ${key} ${entry.symbol} ${entry.address}: counted 1:1 at ${entry.decimals} decimals, by address and by symbol, shown with its short address`, async () => {
+      const w = world({ chainKey: key, native: 10n ** 18n, tokens: { [entry.address]: { balance: 100n * 10n ** BigInt(entry.decimals), decimals: entry.decimals, symbol: "USDC" /* what the contract calls itself */ } } });
+      const units = 12_340_000n * 10n ** BigInt(entry.decimals - 6);
+      for (const asset of [entry.address, entry.symbol, entry.symbol.toLowerCase()]) {
+        const { plan } = await run({ chain: key, amount: "12.34", asset }, w, { simulate: simulation({ units }) });
+        assert.deepEqual([plan.asset.kind, plan.usd, plan.unpriced, plan.units], ["stable", 12.34, false, units]);
+        assert.equal(plan.asset.label, `${entry.symbol} ${entry.address.slice(0, 6)}…${entry.address.slice(-4)}`, "the registry's symbol, not the contract's, and the address with it");
+        assert.equal(plan.asset.address, entry.address);
+      }
+      // a contract at that address that reports other decimals is not counted
+      const odd = world({ chainKey: key, tokens: { [entry.address]: { balance: 10n ** 12n, decimals: entry.decimals === 6 ? 18 : 6 } } });
+      assert.equal(await rule(send.planSend({ chain: key, to: TO, amount: "1", asset: entry.address }, { c: odd.c, simulate: simulation({ units: 1n }) })), "stable_decimals_mismatch");
+    });
+  }
+}
+
+test("a wrapped BTC (WBTC on Arbitrum, cbBTC on Base) has no oracle here: unpriced, $0", async () => {
+  for (const [chain, address] of [["arbitrum", "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f"], ["base", "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf"]]) {
+    const w = world({ chainKey: chain, tokens: { [address]: { balance: 10n ** 9n, decimals: 8, symbol: "BTC" } } });
+    const { plan } = await run({ chain, amount: "0.5", asset: address }, w, { simulate: simulation({ units: 50_000_000n }) });
+    assert.deepEqual([plan.unpriced, plan.usd, plan.asset.kind], [true, null, "token"]);
+  }
+});
+
+test("priced assets by ADDRESS: the default stable's, the wrapped coin's and the native placeholder resolve to the same kinds as their symbols", async () => {
+  const c = evmChain("base");
+  const w = world({ tokens: { [c.stables.USDC.address]: { balance: 100n * 10n ** 6n, decimals: 6 }, [c.wrappedNative.address]: { balance: 10n ** 18n } } });
+  const usdc = (await run({ amount: "5", asset: c.stables.USDC.address }, w, { simulate: simulation({ units: 5_000_000n }) })).plan;
+  assert.deepEqual([usdc.asset.kind, usdc.asset.label, usdc.usd], ["stable", "USDC", 5]);
+  const weth = (await run({ amount: "0.001", asset: c.wrappedNative.address.toLowerCase() }, w, { simulate: simulation({ units: wei(0.001) }) })).plan;
+  assert.deepEqual([weth.asset.kind, weth.asset.label, weth.usd], ["wrapped", "WETH", 3]);
+  const eth = (await run({ amount: "0.001", asset: NATIVE_PLACEHOLDER }, w, { simulate: simulation({ native: true, units: wei(0.001) }) })).plan;
+  assert.deepEqual([eth.asset.kind, eth.asset.label, eth.asset.address, eth.usd], ["native", "ETH", null, 3]);
+});
+
+// ------------------------------------------------------------------ a transfer that answers false
+
+test("a token whose transfer returns false is refused; an empty return and a true are fine", async () => {
+  const w = world({ tokens: { [PEPE]: { balance: 10n ** 21n, symbol: "PEPE" } } });
+  const units = 10n ** 18n;
+  const withReturn = (returnData) => {
+    const base = simulation({ units });
+    return async (req) => {
+      const out = await base(req);
+      out[0].calls[2].returnData = returnData;
+      return out;
+    };
+  };
+  const plan = (rd) => send.planSend({ chain: "base", to: TO, amount: "1", asset: PEPE }, { c: w.c, simulate: withReturn(rd) });
+  assert.equal(await rule(plan(hex(0))), "transfer_returned_false");
+  assert.equal((await plan(hex(1))).units, units);
+  assert.equal((await plan("0x")).units, units);
 });
 
 // ------------------------------------------------------------------ no Sato Hub fee

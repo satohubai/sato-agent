@@ -75,7 +75,9 @@ for (const key of WANTED) {
   }
 
   test(`send fork ${key}: anvil forks ${c.label}; the wallet holds ${c.native.symbol} and an ordinary token`, { skip: !enabled, timeout: 180_000 }, async () => {
-    const p = spawn("anvil", ["--fork-url", await upstream(key), "--port", String(port), "--silent", "--retries", "12", "--fork-retry-backoff", "1500", "--timeout", "60000"], { stdio: "ignore" });
+    // Base is an OP-stack chain: its fork runs in anvil's Optimism mode (deposit transactions, the OP fee fields).
+    const network = key === "base" ? ["--network", "optimism"] : [];
+    const p = spawn("anvil", [...network, "--fork-url", await upstream(key), "--port", String(port), "--silent", "--retries", "12", "--fork-retry-backoff", "1500", "--timeout", "60000"], { stdio: "ignore" });
     procs.push(p);
     for (let i = 0; i < 120; i++) {
       try {
@@ -106,6 +108,16 @@ for (const key of WANTED) {
     const row = actions().filter((a) => a.kind === "send" && a.chain === key).at(-1);
     assert.deepEqual([row.status, row.asset, row.amount, row.asset_address], ["confirmed", c.native.symbol, "0.001", undefined]);
   });
+
+  if (key === "base") {
+    test("send fork base: the registry's data-fee pad is far above what Base's GasPriceOracle charges for a transfer-sized transaction", { skip: !enabled, timeout: 180_000 }, async () => {
+      assert.ok(state.ready, "the fork started");
+      const abi = [{ type: "function", name: "getL1Fee", stateMutability: "view", inputs: [{ name: "_data", type: "bytes" }], outputs: [{ type: "uint256" }] }];
+      const fee = await pub.readContract({ address: "0x420000000000000000000000000000000000000F", abi, functionName: "getL1Fee", args: [`0x${"ab".repeat(112)}`] });
+      assert.ok(fee > 0n, "the oracle answers");
+      assert.ok(fee * 100n < c.sendReserve.l1DataWei, `${fee} wei against a pad of ${c.sendReserve.l1DataWei}`);
+    });
+  }
 
   test(`send fork ${key}: ${c.native.symbol} --amount all leaves the gas reserve and the transfer lands`, { skip: !enabled, timeout: 180_000 }, async () => {
     assert.ok(state.ready, "the fork started");

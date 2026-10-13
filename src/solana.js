@@ -11,7 +11,9 @@
 import {
   address,
   appendTransactionMessageInstructions,
+  compileTransaction,
   createKeyPairSignerFromBytes,
+  createNoopSigner,
   createSolanaRpc,
   createTransactionMessage,
   getBase64EncodedWireTransaction,
@@ -83,9 +85,8 @@ export async function assertWalletRecipient(to, r = rpc()) {
   }
 }
 
-/** Build and sign a USDC transfer. Pure apart from the blockhash it is given. */
-export async function buildUsdcTransfer({ secret, to, units, blockhash }) {
-  const signer = await createKeyPairSignerFromBytes(secret);
+/** The USDC transfer as a transaction message for `signer` (the real one, or a noop signer for a dry run). */
+async function usdcTransferMessage({ signer, to, units, blockhash }) {
   const mint = address(USDC_MINT);
   const owner = address(to);
   const [source] = await findAssociatedTokenPda({ owner: signer.address, mint, tokenProgram: TOKEN_PROGRAM_ADDRESS });
@@ -94,14 +95,24 @@ export async function buildUsdcTransfer({ secret, to, units, blockhash }) {
     getCreateAssociatedTokenIdempotentInstruction({ payer: signer, ata: destination, owner, mint }),
     getTransferCheckedInstruction({ source, mint, destination, authority: signer, amount: units, decimals: 6 }),
   ];
-  const message = pipe(
+  return pipe(
     createTransactionMessage({ version: 0 }),
     (m) => setTransactionMessageFeePayerSigner(signer, m),
     (m) => setTransactionMessageLifetimeUsingBlockhash(blockhash, m),
     (m) => appendTransactionMessageInstructions(instructions, m),
   );
-  const tx = await signTransactionMessageWithSigners(message);
+}
+
+/** Build and sign a USDC transfer. Pure apart from the blockhash it is given. */
+export async function buildUsdcTransfer({ secret, to, units, blockhash }) {
+  const signer = await createKeyPairSignerFromBytes(secret);
+  const tx = await signTransactionMessageWithSigners(await usdcTransferMessage({ signer, to, units, blockhash }));
   return { wire: getBase64EncodedWireTransaction(tx), signature: getSignatureFromTransaction(tx), from: signer.address };
+}
+
+/** The same transfer with NO signature at all (a noop signer for the wallet's address): all a dry run ever hands to an RPC. */
+export async function unsignedUsdcTransferWire({ owner, to, units, blockhash }) {
+  return getBase64EncodedWireTransaction(compileTransaction(await usdcTransferMessage({ signer: createNoopSigner(address(owner)), to, units, blockhash })));
 }
 
 /** Same parser as Base (src/amount.js), kept under its old name for callers. */
@@ -116,8 +127,9 @@ export async function dryRunSendUsdc({ to, amount }, r = rpc()) {
   const units = toUnits(amount);
   await assertWalletRecipient(to, r);
   const { value: blockhash } = await withTimeout(r.getLatestBlockhash({ commitment: "confirmed" }).send());
-  const { wire } = await buildUsdcTransfer({ secret: solanaSecret(), to, units, blockhash });
-  const sim = await withTimeout(r.simulateTransaction(wire, { encoding: "base64", commitment: "confirmed" }).send());
+  // Unsigned: a dry run never lets a signed transaction leave the machine.
+  const wire = await unsignedUsdcTransferWire({ owner: loadWallet().solana.address, to, units, blockhash });
+  const sim = await withTimeout(r.simulateTransaction(wire, { encoding: "base64", sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed" }).send());
   if (sim.value.err) throw new Error(`simulation failed: ${JSON.stringify(sim.value.err, (_k, v) => (typeof v === "bigint" ? v.toString() : v))}`);
   return { dry_run: true, chain: "solana", usd: unitsToUsd(units), to, simulated: true };
 }

@@ -37,23 +37,29 @@ function prune(all, now = Date.now()) {
 /**
  * `options.ledgerIntent`: what the LEDGER line shows instead of the intent itself (the approval still binds the full intent).
  * Used where the intent carries a value the ledger should hold only in short form (a referral payout address).
+ * `options.bound`: a plain object stored with the approval and handed back to `consumeApproval`'s `verify`: a CEILING the owner saw
+ * (a native `send --amount all` keeps a gas reserve that moves with the fee, so its intent says "all" and the units are bounded here).
  */
 export async function requestApproval(intent, options = {}) {
   return withLock(
     async () => {
       const all = prune(readJson(file()) ?? {});
       const code = randomBytes(4).toString("hex");
-      all[code] = { intent: canonical(intent), created_at: Date.now(), expires_at: Date.now() + APPROVAL_TTL_MS, used: false };
+      all[code] = { intent: canonical(intent), created_at: Date.now(), expires_at: Date.now() + APPROVAL_TTL_MS, used: false, ...(options.bound ? { bound: options.bound } : {}) };
       writePrivate(file(), JSON.stringify(all, null, 2) + "\n", { atomic: true });
-      record({ kind: "approval", status: "requested", code, intent: options.ledgerIntent ?? intent });
+      record({ kind: "approval", status: "requested", code, intent: options.ledgerIntent ?? intent, ...(options.bound ? { bound: options.bound } : {}) });
       return { code, expires_at: new Date(all[code].expires_at).toISOString() };
     },
     { name: "approvals" },
   );
 }
 
-/** Consume an approval for exactly this intent, or throw with the reason. */
-export async function consumeApproval(code, intent) {
+/**
+ * Consume an approval for exactly this intent, or throw with the reason. An approval that carries a `bound` is used only when the caller
+ * passes `verify(bound)` and it does not throw: a code with a ceiling is never spent by a command that does not check it. A refused
+ * verify leaves the code unused.
+ */
+export async function consumeApproval(code, intent, { verify } = {}) {
   return withLock(
     async () => {
       const all = readJson(file()) ?? {};
@@ -62,6 +68,10 @@ export async function consumeApproval(code, intent) {
       if (a.used) throw new Error(`approval ${code} was already used`);
       if (Date.now() > a.expires_at) throw new Error(`approval ${code} expired; ask the owner again`);
       if (a.intent !== canonical(intent)) throw new Error(`approval ${code} was given for a different intent; ask the owner again for this one`);
+      if (a.bound) {
+        if (typeof verify !== "function") throw new Error(`approval ${code} carries a limit this command does not check; ask the owner again`);
+        verify(a.bound);
+      }
       a.used = true;
       writePrivate(file(), JSON.stringify(prune(all), null, 2) + "\n", { atomic: true });
       record({ kind: "approval", status: "used", code });

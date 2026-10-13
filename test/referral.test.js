@@ -526,7 +526,12 @@ test("settlement: a failure of any kind is one attempt, one sentence, and never 
     assert.equal(r.calls.length, 1, "one request, never retried");
   }
   // a hung request ends at the timeout
-  const hung = async (_u, init) => new Promise((_res, rej) => init.signal.addEventListener("abort", () => rej(init.signal.reason)));
+  // A real open socket keeps the process alive while it waits; AbortSignal.timeout's timer does not (Node 22 exits the
+  // test file mid-await without it), so the fake holds a timer of its own until the abort.
+  const hung = async (_u, init) => new Promise((_res, rej) => {
+    const alive = setTimeout(() => {}, 10_000);
+    init.signal.addEventListener("abort", () => { clearTimeout(alive); rej(init.signal.reason); });
+  });
   const t0 = Date.now();
   const out = await settleReferral({ routeId: "rt", chain: "base", tx: "0xab" }, { fetchImpl: hung, origin: "https://satohub.test", timeoutMs: 30 });
   assert.equal(out.ok, false);

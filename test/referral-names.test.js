@@ -239,7 +239,11 @@ test("lookup: 200 saves, 404 refuses, no answer / a timeout / another status ref
   await refused({ status: 400, text: async () => JSON.stringify({ error: "bad_request" }) }, again);
   await refused({ status: 200, text: async () => "not json" }, again);
   // a real timeout: fetch that never answers, aborted by the signal
-  await refused((init) => new Promise((_, rej) => init.signal.addEventListener("abort", () => rej(init.signal.reason))), again);
+  // (it holds a timer of its own, as a real socket would: AbortSignal.timeout alone does not keep Node 22 alive)
+  await refused((init) => new Promise((_, rej) => {
+    const alive = setTimeout(() => {}, 10_000);
+    init.signal.addEventListener("abort", () => { clearTimeout(alive); rej(init.signal.reason); });
+  }), again);
 });
 
 test("CLI: settings set --referrer <name> checks the name first; 200 saves it (lower-cased), 404 and no answer save nothing", async () => {

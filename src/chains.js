@@ -16,16 +16,19 @@ import { arbitrum, base, bsc, polygon } from "viem/chains";
 
 // STABLECOINS A SEND COUNTS 1:1 (owner ruling 2026-10-12: "stables 1:1"). Besides the chain's own `stables` (the ones the kit pays and swaps
 // against), a send of any of these counts its amount as dollars, decimals-aware. Each entry is pinned: the symbol and decimals were read
-// from the chain (2026-10-12; `test/send-asset-evm.test.js` re-reads them with SATO_AGENT_LIVE_READ=1) and the address is the one the
+// from the chain (2026-10-12; `test/send-asset-stables-live.test.js` re-reads them with SATO_AGENT_LIVE_READ=1) and the address is the one the
 // issuer or the chain's explorer publishes. The kit refuses a token at one of these addresses whose chain-read decimals differ.
 // Nothing else is priced here: a wrapped BTC (WBTC, cbBTC) or any other token is unpriced and counts $0.
 //   USDbC (Base)         Coinbase's bridged USDC: basescan.org/token/0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA
 //   DAI / USDS           Sky (MakerDAO): the issuer's per-chain list, docs.sky.money/developers/deployments (Base, Arbitrum)
-//   USDT (Base)          Tether's bridged native token: tether.to/en/supported-protocols
+//   USDT (Base)          the Base bridge's USDT (an L2StandardERC20: l1Token() is Ethereum's USDT 0xdAC1…1ec7, l2Bridge() is the OP
+//                        StandardBridge predeploy; read 2026-10-12). Not issued by Tether on Base: it is the bridge's token, 1:1 with L1 USDT
 //   USDC.e (Arbitrum)    Arbitrum's bridged USDC (symbol "USDC" on chain): docs.arbitrum.io/for-devs/dev-tools-and-resources/chain-info
 //   USDC.e, DAI (Polygon)  the long-published PoS-bridge tokens: polygonscan.com/token/0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174 (not
 //                        re-read from the chain 2026-10-12: no Polygon endpoint answered from the research Mac)
-//   BUSD, FDUSD, DAI, USD1 (BNB Chain)  bscscan.com token pages / each issuer's published BSC address
+//   BUSD, DAI (BNB Chain)   Binance-Peg tokens (bscscan.com token pages). BUSD is no longer issued by Paxos; the pegged token
+//                        remains on chain and is counted 1:1 here as a stablecoin like any other listed
+//   FDUSD, USD1 (BNB Chain)  issued by First Digital and World Liberty Financial respectively; their published BSC addresses
 //   USDT (Solana)        tether.to/en/supported-protocols; Token program, 6 decimals
 //   PYUSD (Solana)       developer.paypal.com/docs/pyusd; Token-2022, 6 decimals
 const stable = (symbol, address, decimals) => ({ symbol, address, decimals });

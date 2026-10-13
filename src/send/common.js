@@ -64,9 +64,11 @@ export const approvalBound = (plan) => (plan.all && plan.asset.kind === "native"
 
 /** `verify` for `consumeApproval`: this send must not move more units than the owner was shown. */
 export const verifyBound = (plan) => (bound) => {
-  if (bound.asset !== plan.asset.id || !/^\d+$/.test(String(bound.max_units))) throw new Error("this approval's limit does not fit this send; ask the owner again");
+  if (bound.asset !== plan.asset.id || !/^\d+$/.test(String(bound.max_units))) {
+    throw refuse("approval_bound_mismatch", "this approval's limit does not fit this send; nothing was sent. Ask the owner again.");
+  }
   if (plan.units > BigInt(bound.max_units)) {
-    throw new Error(`this send would move ${plan.amountText} ${plan.asset.label}, more than the ${unitsToText(BigInt(bound.max_units), plan.asset.decimals)} ${plan.asset.label} the owner approved (the gas reserve is smaller than when they were asked); ask the owner again`);
+    throw refuse("approval_bound_exceeded", `the amount is now larger than the ${unitsToText(BigInt(bound.max_units), plan.asset.decimals)} ${plan.asset.label} the owner approved; nothing was sent. Ask the owner again.`, unitsToText(BigInt(bound.max_units), plan.asset.decimals), plan.amountText);
   }
 };
 

@@ -244,8 +244,8 @@ test("a native --amount all in ask mode: the code covers 'all' and at most the u
   // the owner's yes is for 'all' at most that: cheaper gas would send MORE, so it stops (and the code is still good)
   baseFee = 1_000n;
   const more = await run(...args, "--approve", code);
-  assert.notEqual(more.status, 0);
-  assert.match(more.stderr, /more than the 0\.09\d+ ETH the owner approved/);
+  assert.equal(more.status, 3, more.stderr);
+  assert.match(more.stderr, /REFUSED approval_bound_exceeded: the amount is now larger than the 0\.09\d+ ETH the owner approved/);
   assert.equal(sent.length, 1, "only the token send from before; nothing new went out");
   // dearer gas sends fewer units: it goes through
   baseFee = 5_000_000_000n;

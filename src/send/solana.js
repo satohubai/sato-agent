@@ -224,8 +224,8 @@ export async function buildSolanaMessage({ signer, to, asset, units, blockhash, 
 export const unsignedWire = (message) => getBase64EncodedWireTransaction(compileTransaction(message));
 
 /** Build and sign the send. Only `executeSolanaSend` calls this, after the limits, the approval and the reservation. */
-export async function buildSolanaSend({ secret, ...spec }) {
-  const signer = await createKeyPairSignerFromBytes(secret);
+export async function buildSolanaSend({ secret, signer: given, ...spec }) {
+  const signer = given ?? (await createKeyPairSignerFromBytes(secret));
   const message = await buildSolanaMessage({ ...spec, signer });
   const tx = await signTransactionMessageWithSigners(message);
   return { wire: getBase64EncodedWireTransaction(tx), signature: getSignatureFromTransaction(tx), from: signer.address };
@@ -396,6 +396,7 @@ export async function planSolanaSend({ to, amount, asset: rawAsset }, deps = {})
 
   return {
     chain: "solana",
+    from: me,
     to,
     asset,
     all,
@@ -424,8 +425,13 @@ export async function executeSolanaSend(plan, deps = {}) {
   const entry = await reserve(deps.policy ?? loadPolicy(), ledgerSpend(plan));
   let built;
   try {
+    // The key must be the wallet the plan was made for: the plan checked THAT wallet's balances and simulated ITS transfer.
+    const signer = await createKeyPairSignerFromBytes(deps.secret ?? solanaSecret());
+    if (signer.address !== plan.from) {
+      throw new Error(`the signing key's address (${shortMint(signer.address)}) is not the wallet this send was planned for (${shortMint(plan.from)}); nothing was signed`);
+    }
     const { value: blockhash } = await withTimeout(r.getLatestBlockhash({ commitment: "confirmed" }).send());
-    built = await buildSolanaSend({ secret: deps.secret ?? solanaSecret(), blockhash, ...plan.spec });
+    built = await buildSolanaSend({ signer, blockhash, ...plan.spec });
   } catch (err) {
     release(entry, "failed before signing; nothing sent", { error: String(err.message) });
     throw err;

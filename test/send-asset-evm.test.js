@@ -349,13 +349,13 @@ test("a native --amount all is approved as 'all' AND bounded by the units shown:
   const cheaper = await at(1_000_000_000n);
   assert.ok(cheaper.units > shown.units);
   const b = await requestApproval(intent, { bound: ceiling });
-  await assert.rejects(consumeApproval(b.code, intent, { verify: send.verifyBound(cheaper) }), /more than the 0\.999866 ETH the owner approved/);
+  await assert.rejects(consumeApproval(b.code, intent, { verify: send.verifyBound(cheaper) }), (e) => e instanceof Refused && e.refusals[0].rule === 'approval_bound_exceeded' && /the amount is now larger than the 0\.999866 ETH the owner approved/.test(e.message));
   await consumeApproval(b.code, intent, { verify: send.verifyBound(shown) }); // still unused: the exact amount shown goes through
   // a code with a ceiling is never spent by a command that does not check it
   const c = await requestApproval(intent, { bound: ceiling });
   await assert.rejects(consumeApproval(c.code, intent), /carries a limit this command does not check/);
   // another asset's ceiling does not fit
-  await assert.rejects(Promise.resolve().then(() => send.verifyBound(shown)({ max_units: "1", asset: "BNB" })), /does not fit this send/);
+  await assert.rejects(Promise.resolve().then(() => send.verifyBound(shown)({ max_units: "1", asset: "BNB" })), (e) => e instanceof Refused && e.refusals[0].rule === 'approval_bound_mismatch');
 });
 
 // ------------------------------------------------------------------ every stablecoin counts 1:1; a wrapped BTC does not

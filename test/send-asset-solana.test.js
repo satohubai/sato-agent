@@ -4,7 +4,8 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { address, getBase64Encoder, getCompiledTransactionMessageDecoder, getTransactionDecoder } from "@solana/kit";
+import { generateKeyPairSync } from "node:crypto";
+import { address, generateKeyPairSigner, getBase64Encoder, getCompiledTransactionMessageDecoder, getTransactionDecoder } from "@solana/kit";
 import { TOKEN_PROGRAM_ADDRESS, findAssociatedTokenPda } from "@solana-program/token";
 import { freshHome } from "./helpers.js";
 
@@ -315,6 +316,57 @@ for (const entry of STABLES) {
     assert.equal(await rule(plan({ amount: "1", asset: entry.mint }, chain({ accounts: { [entry.mint]: wrong } }))), "stable_mismatch");
   });
 }
+
+// ------------------------------------------------------------------ what is signed is what was simulated
+
+/** A compiled message, read back, without its blockhash. */
+const messageWithoutBlockhash = (wire) => {
+  const msg = getCompiledTransactionMessageDecoder().decode(getTransactionDecoder().decode(getBase64Encoder().encode(wire)).messageBytes);
+  const { lifetimeToken, ...rest } = msg;
+  return { rest: JSON.parse(JSON.stringify(rest, (_k, v) => (typeof v === "bigint" ? v.toString() : v instanceof Uint8Array ? Array.from(v) : v))), lifetimeToken };
+};
+
+test("the transaction broadcast after the approval is the one that was simulated, byte for byte except the blockhash: SOL, USDC with a new token account, Token-2022 with a fee", async () => {
+  const cases = [
+    ["SOL", { amount: "0.25", asset: "SOL" }, () => chain({ lamports: 2_000_000_000n, accounts: { [TO]: { owner: SYSTEM, lamports: 1_000_000n, data: ["", "base64"] } } })],
+    ["USDC + new account", { amount: "3" }, async () => chain({ held: [await tokenAccount(USDC_MINT, 50_000_000n)] })],
+    ["Token-2022 fee", { amount: "2", asset: MINT_2022 }, async () => chain({ held: [await tokenAccount(MINT_2022, 10_000_000n, TOKEN_2022_PROGRAM)], accounts: { [MINT_2022]: mintAccount({ program: TOKEN_2022_PROGRAM, decimals: 6, ext: [feeConfig({ olderBps: 100, newerBps: 100 }), transferHook] }) } })],
+  ];
+  for (const [name, req, make] of cases) {
+    const w = await make();
+    const later = (await generateKeyPairSigner()).address; // the blockhash execute fetches is another one
+    let n = 0;
+    const bh = w.rpc.getLatestBlockhash;
+    w.rpc.getLatestBlockhash = (cfg) => (++n === 2 ? { send: async () => ({ value: { blockhash: later, lastValidBlockHeight: 2n } }) } : bh(cfg));
+    const p = await plan(req, w);
+    if (name === "USDC + new account") assert.ok(p.rent, "this case creates the recipient's token account");
+    await send.executeSend(p, { rpc: w.rpc, ...confirm });
+    const sentWire = w.calls.find(([c]) => c === "send")[1][0];
+    const a = messageWithoutBlockhash(p.unsignedWire);
+    const b = messageWithoutBlockhash(sentWire);
+    assert.deepEqual(b.rest, a.rest, `${name}: the same accounts, header, instructions and data`);
+    assert.notEqual(b.lifetimeToken, a.lifetimeToken, `${name}: only the blockhash moved`);
+    assert.equal(b.lifetimeToken, later);
+    const sigs = Object.values(getTransactionDecoder().decode(getBase64Encoder().encode(sentWire)).signatures);
+    assert.ok(sigs.length === 1 && sigs[0] && Buffer.from(sigs[0]).some((x) => x !== 0), `${name}: one real signature`);
+  }
+});
+
+test("a signing key that is not the wallet the send was planned for is refused after the reservation: the reservation is released and nothing is signed or sent", async () => {
+  const w = chain({ held: [await tokenAccount(USDC_MINT, 50_000_000n)] });
+  const p = await plan({ amount: "3" }, w);
+  assert.equal(p.from, ME);
+  // another wallet's key, in the 64-byte seed || public key form the wallet file holds
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const jwk = privateKey.export({ format: "jwk" });
+  const other = new Uint8Array(Buffer.concat([Buffer.from(jwk.d, "base64url"), Buffer.from(jwk.x, "base64url")]));
+  const before = spentLast24h().usd;
+  await assert.rejects(send.executeSend(p, { rpc: w.rpc, secret: other, ...confirm }), /is not the wallet this send was planned for/);
+  assert.equal(spentLast24h().usd, before, "the reservation was given back");
+  assert.equal(w.calls.filter(([c]) => c === "send").length, 0);
+  assert.equal(actions().filter((a) => a.kind === "send").at(-1).status, "failed");
+  await send.executeSend(p, { rpc: w.rpc, ...confirm }); // the right key still works
+});
 
 // ------------------------------------------------------------------ outcomes, and no fee
 

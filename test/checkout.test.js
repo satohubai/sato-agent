@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AccountRole, address, generateKeyPairSigner } from "@solana/kit";
+import { AccountRole, address, generateKeyPairSigner, getBase64Encoder, getTransactionDecoder } from "@solana/kit";
 import { TOKEN_PROGRAM_ADDRESS } from "@solana-program/token";
 import { freshHome } from "./helpers.js";
 import { buildTx, fakeRpc, usdcSim, usdcTransferIx, ata } from "./purchase-solana-helpers.js";
@@ -111,6 +111,30 @@ test("Solana Pay transfer request: a token account as recipient is refused; a go
   assert.equal(row.request, "transfer");
   // Over the per-transaction limit: refused before anything is built.
   await assert.rejects(prepareSolanaPayTransfer(parseSolanaPay(`solana:${merchant}?amount=60&spl-token=${USDC_MINT}`), { rpc }), refused("max_usd_per_tx"));
+});
+
+test("Solana Pay transfer request: a dry run simulates an UNSIGNED copy and never hands a signature to the RPC; only execute() signs", async () => {
+  const unsigned = (wire) => Object.values(getTransactionDecoder().decode(getBase64Encoder().encode(wire)).signatures).every((x) => x === null || Buffer.from(x).every((b) => b === 0));
+  for (const link of [`solana:${merchant}?amount=3&spl-token=${USDC_MINT}&reference=${ref1}`, `solana:${merchant}?amount=0.01`]) {
+    const rpc = fakeRpc({ sim: () => ({ err: null }) });
+    const p = await prepareSolanaPayTransfer(parseSolanaPay(link), { rpc, broadcast: { sleep: async () => {}, pollMs: 0 } });
+    const d = await p.dryRun();
+    assert.deepEqual([d.dry_run, d.simulated], [true, true]);
+    const sims = rpc.calls.filter((c) => c.m === "simulate");
+    assert.equal(sims.length, 1);
+    assert.ok(unsigned(sims[0].wire), "the wire the RPC saw carries no signature");
+    assert.deepEqual([sims[0].cfg.sigVerify, sims[0].cfg.replaceRecentBlockhash], [false, true]);
+    assert.equal(rpc.calls.filter((c) => c.m === "send").length, 0);
+    // a dry run that would fail says so, still unsigned
+    const bad = fakeRpc({ sim: () => ({ err: { InstructionError: [0, "x"] } }) });
+    const q = await prepareSolanaPayTransfer(parseSolanaPay(link), { rpc: bad });
+    await assert.rejects(q.dryRun(), /simulation failed/);
+    assert.ok(bad.calls.filter((c) => c.m === "simulate").every((c) => unsigned(c.wire)));
+    // execute() is where the key is used
+    await p.execute();
+    const sent = rpc.calls.find((c) => c.m === "send");
+    assert.ok(sent && !unsigned(sent.wire), "the broadcast transaction is signed");
+  }
 });
 
 // ---------------------------------------------------------------- transaction requests

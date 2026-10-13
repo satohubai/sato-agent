@@ -20,7 +20,9 @@ import {
   AccountRole,
   address,
   appendTransactionMessageInstructions,
+  compileTransaction,
   createKeyPairSignerFromBytes,
+  createNoopSigner,
   createTransactionMessage,
   getBase64EncodedWireTransaction,
   getSignatureFromTransaction,
@@ -210,16 +212,25 @@ export async function solanaPayInstructions(req, signer) {
   return [...memo, transfer];
 }
 
-async function buildTransfer(req, signer, blockhash) {
+/** The transfer as a message for `signer`: the real one (execute), or a noop signer with only the wallet's address (a dry run). */
+async function transferMessage(req, signer, blockhash) {
   const instructions = await solanaPayInstructions(req, signer);
-  const message = pipe(
+  return pipe(
     createTransactionMessage({ version: 0 }),
     (m) => setTransactionMessageFeePayerSigner(signer, m),
     (m) => setTransactionMessageLifetimeUsingBlockhash(blockhash, m),
     (m) => appendTransactionMessageInstructions(instructions, m),
   );
-  const tx = await signTransactionMessageWithSigners(message);
+}
+
+async function buildTransfer(req, signer, blockhash) {
+  const tx = await signTransactionMessageWithSigners(await transferMessage(req, signer, blockhash));
   return { wire: getBase64EncodedWireTransaction(tx), signature: getSignatureFromTransaction(tx) };
+}
+
+/** The same transfer with no signature at all: the only form a dry run hands to an RPC. */
+export async function unsignedTransferWire(req, owner, blockhash) {
+  return getBase64EncodedWireTransaction(compileTransaction(await transferMessage(req, createNoopSigner(address(owner)), blockhash)));
 }
 
 async function solUsd(lamports, deps) {
@@ -270,7 +281,11 @@ export async function prepareSolanaPayTransfer(req, deps = {}) {
     intent,
     checkArgs: { address: req.recipient, chain: "Solana", from: addresses().solana },
     dryRun: async () => {
-      await buildAndSimulate();
+      // Unsigned (a noop signer, `sigVerify: false`, the node's own blockhash): a dry run never lets a signed transaction leave the machine.
+      const { value: blockhash } = await withTimeout(r.getLatestBlockhash({ commitment: "confirmed" }).send());
+      const wire = await unsignedTransferWire(req, deps.signer?.address ?? addresses().solana, blockhash);
+      const sim = await withTimeout(r.simulateTransaction(wire, { encoding: "base64", sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed" }).send());
+      if (sim.value.err) throw new Error(`simulation failed: ${JSON.stringify(sim.value.err, (_k, v) => (typeof v === "bigint" ? v.toString() : v)).slice(0, 200)}`);
       return { dry_run: true, chain: "solana", usd, to: req.recipient, simulated: true };
     },
     execute: async () => {

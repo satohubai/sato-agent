@@ -48,7 +48,7 @@ Each Bot keeps its own wallet, limits and ledger, even on the same Grok Bot comp
 ## Quickstart (any machine)
 
 ```sh
-npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.0
+npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.1
 alias sato-agent=~/.sato-agent-cli/node_modules/.bin/sato-agent
 # npm may print "ERESOLVE overriding peer dependency" three times (the Solana x402
 # library's helpers ask for an older @solana/kit). That is expected; the tests run on these versions.
@@ -295,7 +295,7 @@ A purchase is a spend: it counts against the same per-transaction and 24-hour US
   - for gift cards, `https://api.bitrefill.com` (the agent's Base address, the product, value and invoice; a top-up's number);
   - for Amazon orders, Sato Hub's order endpoint on the same host as `SATO_AGENT_MCP_URL` (`https://satohub.ai/api/commerce/order` by default; it receives the product, the chain, the agent's address and the shipping address, and passes them to Crossmint);
   - for a Solana Pay transaction request, the merchant's https link (it receives the agent's Solana address).
-- Requests made by the kit itself send the user-agent `sato-agent/<version>`. The Solana x402 library's own RPC reads (the USDC mint and a recent blockhash) go out with Node's default user-agent.
+- Requests made by the kit itself send the user-agent `sato-agent/<version>`. Operators running their own fleet can set `SATO_AGENT_UA` (for example `SATO_AGENT_UA=SatoHub-grok-bot/1.0`) to send their own name instead, on every request the kit makes, so their calls are counted as the operator's. It must be one line of printable ASCII, at most 200 characters; anything else is ignored and the default is used. The Solana x402 library's own RPC reads (the USDC mint and a recent blockhash) go out with Node's default user-agent.
 
 ## What Sato Hub's checks are
 

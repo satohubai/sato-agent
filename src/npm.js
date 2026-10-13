@@ -3,7 +3,7 @@
 // tarball the npm registry serves for it.
 
 import { createHash } from "node:crypto";
-import { USER_AGENT } from "./version.js";
+import { userAgent } from "./version.js";
 
 export const REGISTRY = "https://registry.npmjs.org/";
 export const MAX_TARBALL_BYTES = 64 * 1024 * 1024;
@@ -192,7 +192,7 @@ function distIntegrity(dist) {
  */
 export async function fetchManifest(name, versionOrTag, { fetch: fetchImpl = fetch, timeoutMs = 20_000 } = {}) {
   const res = await fetchImpl(registryUrl(name, versionOrTag), {
-    headers: { "user-agent": USER_AGENT, accept: "application/json" },
+    headers: { "user-agent": userAgent(), accept: "application/json" },
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (res.status === 404) throw new Error(`the npm registry has no ${name}@${versionOrTag}`);
@@ -222,7 +222,7 @@ export function integrityMatches(integrity, bytes) {
 /** Download a tarball, never holding more than MAX_TARBALL_BYTES (the body is cut off past it). */
 export async function downloadTarball(url, { fetch: fetchImpl = fetch, timeoutMs = 60_000, maxBytes = MAX_TARBALL_BYTES } = {}) {
   if (!url.startsWith(REGISTRY)) throw new Error(`not downloading from ${new URL(url).host}; only ${REGISTRY} is accepted`);
-  const res = await fetchImpl(url, { headers: { "user-agent": USER_AGENT }, redirect: "error", signal: AbortSignal.timeout(timeoutMs) });
+  const res = await fetchImpl(url, { headers: { "user-agent": userAgent() }, redirect: "error", signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok) throw new Error(`HTTP ${res.status} from ${new URL(url).host}`);
   const tooBig = (n) => new Error(`the tarball is ${n === null ? "larger" : `${n} bytes, larger`} than the ${maxBytes} byte limit; not hashed`);
   const declared = Number(res.headers.get("content-length"));

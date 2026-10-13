@@ -41,7 +41,7 @@ import {
   getUtf8Encoder,
   transformDecoder,
 } from "@solana/kit";
-import { USER_AGENT } from "./version.js";
+import { userAgent } from "./version.js";
 
 export const SAS_PROGRAM_ID = "22zoJMtdu4tQc2PzL74ZUT7FrwgB1Udec8DdW4yw4BdG";
 const ATTESTATION_DISCRIMINATOR = 2;
@@ -90,7 +90,7 @@ export function jsonRpcOverFetch(url, fetchImpl = fetch, timeoutMs = 20_000) {
   return async (method, params) => {
     const res = await fetchImpl(url, {
       method: "POST",
-      headers: { "content-type": "application/json", "user-agent": USER_AGENT },
+      headers: { "content-type": "application/json", "user-agent": userAgent() },
       body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }),
       signal: AbortSignal.timeout(timeoutMs),
     });

@@ -15,7 +15,7 @@ import { createPrivateKey, createPublicKey, sign as edSign } from "node:crypto";
 import { getBase58Decoder } from "@solana/kit";
 import { privateKeyToAccount } from "viem/accounts";
 import { MCP_URL } from "./satohub.js";
-import { USER_AGENT } from "./version.js";
+import { userAgent } from "./version.js";
 import { clean } from "./text.js";
 import { PlainError } from "./errors.js";
 import { record } from "./ledger.js";
@@ -177,7 +177,7 @@ export function declineOffer(now = new Date()) {
 // ---------------------------------------------------------------- talking to Sato Hub
 
 const originOf = (deps) => deps.origin ?? new URL(MCP_URL).origin;
-const headers = () => ({ "content-type": "application/json", accept: "application/json", "user-agent": USER_AGENT });
+const headers = () => ({ "content-type": "application/json", accept: "application/json", "user-agent": userAgent() });
 
 /** Sato Hub's body as a plain object, or null. */
 const parse = (text) => {
@@ -210,7 +210,7 @@ export async function lookupReferralName(name, deps = {}) {
   try {
     res = await (deps.fetchImpl ?? fetch)(`${originOf(deps)}${NAME_PATH}/${encodeURIComponent(name)}`, {
       method: "GET",
-      headers: { accept: "application/json", "user-agent": USER_AGENT },
+      headers: { accept: "application/json", "user-agent": userAgent() },
       signal: AbortSignal.timeout(deps.timeoutMs ?? LOOKUP_TIMEOUT_MS),
     });
     text = await res.text();

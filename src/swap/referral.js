@@ -11,7 +11,7 @@
 // approval, the limits, the exit code, or wait on Sato Hub for more than a few seconds after the swap is already done.
 
 import { MCP_URL } from "../satohub.js";
-import { USER_AGENT } from "../version.js";
+import { userAgent } from "../version.js";
 import { clean } from "../text.js";
 import { normalizeReferrer, referrer as savedReferrer, shortReferrer } from "../settings.js";
 
@@ -87,7 +87,7 @@ export async function settleReferral({ routeId, chain, tx }, deps = {}) {
     const origin = deps.origin ?? new URL(MCP_URL).origin;
     const res = await (deps.fetchImpl ?? fetch)(`${origin}${SETTLE_PATH}`, {
       method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json", "user-agent": USER_AGENT },
+      headers: { "content-type": "application/json", accept: "application/json", "user-agent": userAgent() },
       body: JSON.stringify({ route_id: String(routeId), chain, tx: String(tx) }),
       signal: AbortSignal.timeout(deps.timeoutMs ?? SETTLE_TIMEOUT_MS),
     });

@@ -22,7 +22,7 @@
 
 import { createTransport, http } from "viem";
 import { evmChain, rpcUrls } from "./chains.js";
-import { USER_AGENT } from "./version.js";
+import { userAgent } from "./version.js";
 
 export const RPC_TIMEOUT_MS = 20_000;
 
@@ -117,7 +117,7 @@ class WrongNetwork extends Error {
  * A viem transport over several endpoints. `urls` in order of preference; the one that last worked is tried first next time.
  * Each endpoint is an ordinary viem http transport with no retries of its own (the next endpoint is the retry).
  */
-export function rotatingTransport(urls, { timeout = RPC_TIMEOUT_MS, headers = { "user-agent": USER_AGENT } } = {}) {
+export function rotatingTransport(urls, { timeout = RPC_TIMEOUT_MS, headers = { "user-agent": userAgent() } } = {}) {
   if (!Array.isArray(urls) || !urls.length) throw new Error("rotatingTransport needs at least one url");
   // Which endpoints have been asked for their chain id: url -> true (the right chain) | the wrong id it answered. Shared by every
   // client built from this transport, so the check runs once per endpoint, not once per client.

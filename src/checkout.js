@@ -39,7 +39,7 @@ import { addresses, solanaSecret } from "./wallet.js";
 import { roundUsd, usdcUnits, unitsToText, unitsToUsd } from "./amount.js";
 import { chainsWith, evmChain, isEvm, orList } from "./chains.js";
 import { clean } from "./text.js";
-import { USER_AGENT } from "./version.js";
+import { userAgent } from "./version.js";
 import { USDC_MINT, assertWalletRecipient, broadcastAndConfirm, rpc as solanaRpc } from "./solana.js";
 import { oraclePrice, PriceUnavailable } from "./price.js";
 import { looksLikeAmazon } from "./commerce.js";
@@ -293,7 +293,7 @@ export async function prepareSolanaPayTransfer(req, deps = {}) {
 async function merchantFetch(link, init, d) {
   let res;
   try {
-    res = await d.fetchImpl(link, { ...init, redirect: "error", headers: { "user-agent": USER_AGENT, accept: "application/json", ...(init.headers ?? {}) }, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
+    res = await d.fetchImpl(link, { ...init, redirect: "error", headers: { "user-agent": userAgent(), accept: "application/json", ...(init.headers ?? {}) }, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
   } catch (err) {
     throw new Error(`the merchant's link did not answer (${err.name === "TimeoutError" ? `timed out after ${HTTP_TIMEOUT_MS / 1000} s` : clean(err.message, 120)}); nothing was paid`);
   }

@@ -49,7 +49,7 @@ import { record, release, reserve } from "../ledger.js";
 import { Pending, Refused, Rejected } from "../errors.js";
 import { usdcUnits, unitsToUsd } from "../amount.js";
 import { loadWallet, solanaSecret } from "../wallet.js";
-import { USER_AGENT } from "../version.js";
+import { userAgent } from "../version.js";
 import { TOKEN_2022_PROGRAM, USDC_MINT, explorer, rpc as defaultRpc } from "../solana.js";
 import { FEE_CEILING_BPS, feeTierRefusals, pairTier } from "./fee-tier.js";
 
@@ -688,7 +688,7 @@ function withDefaults(deps = {}) {
     now: deps.now ?? Date.now,
     sleep: deps.sleep ?? ((ms) => new Promise((res) => setTimeout(res, ms))),
     fetch: deps.fetch ?? globalThis.fetch,
-    userAgent: deps.userAgent ?? USER_AGENT,
+    userAgent: deps.userAgent ?? userAgent(),
     jupiterBase: deps.jupiterBase ?? JUPITER_API,
   };
 }

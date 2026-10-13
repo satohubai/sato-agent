@@ -35,7 +35,7 @@ import { evmAccount } from "./wallet.js";
 import { USDC_DECIMALS, unitsToUsd, usdToUnits } from "./amount.js";
 import { chainsWith, evmChain, evmChainKeys, explorerAddress, explorerTx, getChain, isEvm, isKnownChain, labelList, labelOf, stableByAddress } from "./chains.js";
 import { clean, cleanOrNull } from "./text.js";
-import { USER_AGENT } from "./version.js";
+import { userAgent } from "./version.js";
 
 /** Base's x402 network name (CAIP-2), under its v0.3 name; every chain's is in src/chains.js. */
 export const BASE_NETWORK = evmChain("base").x402.caip2;
@@ -313,7 +313,7 @@ async function prepare({ chain: requestedChain, headers, account, signer, scheme
 }
 
 // The request, built the same way for the quote and for the payment.
-const requestInit = ({ method, body, headers, timeoutMs }) => ({ method, body, headers: { ...headers, "user-agent": USER_AGENT }, signal: AbortSignal.timeout(timeoutMs) });
+const requestInit = ({ method, body, headers, timeoutMs }) => ({ method, body, headers: { ...headers, "user-agent": userAgent() }, signal: AbortSignal.timeout(timeoutMs) });
 
 const MAX_OFFERS = 20; // a server's list is capped: only this many offers are read
 const MAX_REFUSALS = 10;

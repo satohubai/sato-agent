@@ -522,13 +522,13 @@ test("BOT.md, README.md and SKILL.md: the bots, each chain's gas token and stabl
   assert.match(bot, /BNB Chain's USDT and USDC have 18 decimals/);
   assert.match(bot, /After upgrading to 0\.4\.0, nothing changes for a Base or Solana bot/);
   assert.match(bot, /adding a chain lets you do more, so it is logged as a raise/);
-  assert.match(bot, /grep -q ' 0\.4\.1:' && echo "kit ready \(0\.4\.1\)"/);
-  assert.match(bot, /github:satohubai\/sato-agent#v0\.4\.1/);
+  assert.match(bot, /grep -q ' 0\.4\.2:' && echo "kit ready \(0\.4\.2\)"/);
+  assert.match(bot, /github:satohubai\/sato-agent#v0\.4\.2/);
   assert.doesNotMatch(bot, /#v0\.3\.\d/);
   assert.match(readme, /\*\*Upgrading to v0\.4\.0:\*\* nothing changes for a Base or Solana agent/);
-  assert.match(readme, /#v0\.4\.1/);
-  assert.match(readme, /\*\*Upgrading to v0\.4\.1:\*\* nothing changes for a working agent/);
-  assert.match(bot, /After upgrading to 0\.4\.1, nothing changes for a bot that was working/);
+  assert.match(readme, /#v0\.4\.2/);
+  assert.match(readme, /\*\*Upgrading to v0\.4\.2:\*\* nothing changes for a working agent/);
+  assert.match(bot, /After upgrading to 0\.4\.2, nothing changes for a bot that was working/);
   assert.match(skill, /\*\*No x402, no gift cards\*\*/);
   // the feature table in the README matches the registry's features
   for (const key of evmChainKeys()) {

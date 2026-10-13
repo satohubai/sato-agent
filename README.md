@@ -48,7 +48,7 @@ Each Bot keeps its own wallet, limits and ledger, even on the same Grok Bot comp
 ## Quickstart (any machine)
 
 ```sh
-npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.1
+npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.2
 alias sato-agent=~/.sato-agent-cli/node_modules/.bin/sato-agent
 # npm may print "ERESOLVE overriding peer dependency" three times (the Solana x402
 # library's helpers ask for an older @solana/kit). That is expected; the tests run on these versions.
@@ -97,7 +97,7 @@ sato-agent buy "solana:<recipient>?amount=5&spl-token=EPjFWdd5AufqSSqeM2qN1xzyba
 
 Add `--json` to any command for machine-readable output.
 
-**Upgrading to v0.4.1:** nothing changes for a working agent: its wallet, limits, chains, ledger and approvals stay as they were, and `send` with no `--asset` binds and prints what it did in v0.4.0. `init` on a folder that already holds a wallet now says plainly that it may be another bot's, and what to do (a new NAME); it still never replaces a wallet.
+**Upgrading to v0.4.2:** nothing changes for a working agent: its wallet, limits, chains, ledger and approvals stay as they were, and `send` with no `--asset` binds and prints what it did before. v0.4.2 adds sending the chain's coin and any token in the wallet, with no Sato Hub fee (network gas only). v0.4.1 only added `SATO_AGENT_UA`. `init` on a folder that already holds a wallet now says plainly that it may be another bot's, and what to do (a new NAME); it still never replaces a wallet.
 
 **Upgrading to v0.4.0:** nothing changes for a Base or Solana agent: its wallet, limits, chains, ledger and approvals stay as they were, and so does what its commands print. The new chains are off until the owner adds them with `policy set --chains` (adding one is logged as a raise). A v0.1 policy with no chains still means Base and Solana only.
 

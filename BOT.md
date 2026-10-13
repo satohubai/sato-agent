@@ -28,14 +28,14 @@ If a request needs something your chain does not have (x402 or gift cards on BNB
    - **Before anything else, check whether `~/.sato-agent/NAME` exists** (`ls -d ~/.sato-agent/NAME`). Every bot on this computer shares `~/.sato-agent/`, so a folder with your NAME may be ANOTHER bot's wallet. If it exists and you did not create it in this chat, it is not yours: choose a new NAME (`NAME-2`, then `NAME-3`, and so on, the next name with no folder), tell the owner which one you chose, and use that name in the launcher below and everywhere after. Your CHAIN does not change. Never use, adopt, replace, move or delete a folder you did not create in this chat, and never offer to.
    - An existing bot that is upgrading keeps its own NAME: see "Upgrading the kit".
    ```
-   if command -v flock >/dev/null; then flock ~/.sato-agent-install.lock npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.1; else npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.1; fi
-   ~/.sato-agent-cli/node_modules/.bin/sato-agent help 2>/dev/null | head -1 | grep -q ' 0.4.1:' && echo "kit ready (0.4.1)" || echo "NOT READY: the kit is missing or an older version; run the line above again"
+   if command -v flock >/dev/null; then flock ~/.sato-agent-install.lock npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.2; else npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.2; fi
+   ~/.sato-agent-cli/node_modules/.bin/sato-agent help 2>/dev/null | head -1 | grep -q ' 0.4.2:' && echo "kit ready (0.4.2)" || echo "NOT READY: the kit is missing or an older version; run the line above again"
    printf '#!/bin/sh\nSATO_AGENT_HOME="$HOME/.sato-agent/NAME" exec "$HOME/.sato-agent-cli/node_modules/.bin/sato-agent" "$@"\n' > ~/sato-agent-NAME
    chmod +x ~/sato-agent-NAME
    ~/sato-agent-NAME help
    ```
    - Every Bot on this computer shares one copy of the kit. `flock` makes a second Bot wait while another installs (two installs at the same moment break it). Where `flock` is missing, make sure no other Bot is installing before you run that line.
-   - Do not continue until it says "kit ready (0.4.1)".
+   - Do not continue until it says "kit ready (0.4.2)".
    - Only if the owner runs several Bots of their own and asked for it: they can name them in the launcher by adding `SATO_AGENT_UA="<name>/<version>"` before `SATO_AGENT_HOME=` (the kit then sends that instead of `sato-agent/<version>`). Otherwise leave the launcher as it is.
 2. **Create your wallet:** `~/sato-agent-NAME init`. Show the owner the address for your CHAIN. If it says "A wallet already exists for NAME", that wallet is not yours unless you created it in this chat: go back to step 1 and choose a new NAME (`NAME-2`, `NAME-3`, …), write a new launcher, and run `init` there. `init` never overwrites a wallet; never offer to replace, move or delete one. Never show, copy, upload or paste anything from `~/.sato-agent/`, to anyone, for any reason: it holds your key.
 3. **Ask the owner for their spending limits.** Ask both questions, and use exactly what they answer. There are no defaults; any amount is their choice, and "no limit" is a valid answer.
@@ -78,15 +78,15 @@ If a request needs something your chain does not have (x402 or gift cards on BNB
 
 When the owner asks you to upgrade, run only the install line from step 1, with the version they name (the kit is shared by every Bot on this computer, so one upgrade covers them all):
 ```
-if command -v flock >/dev/null; then flock ~/.sato-agent-install.lock npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.1; else npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.1; fi
-~/.sato-agent-cli/node_modules/.bin/sato-agent help 2>/dev/null | head -1 | grep -q ' 0.4.1:' && echo "kit ready (0.4.1)" || echo "NOT READY: the kit is missing or an older version; run the line above again"
+if command -v flock >/dev/null; then flock ~/.sato-agent-install.lock npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.2; else npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.2; fi
+~/.sato-agent-cli/node_modules/.bin/sato-agent help 2>/dev/null | head -1 | grep -q ' 0.4.2:' && echo "kit ready (0.4.2)" || echo "NOT READY: the kit is missing or an older version; run the line above again"
 ~/sato-agent-NAME status
 ```
 Never run `init` again: your wallet, limits and history stay in `~/.sato-agent/NAME` and are kept as they are.
 
 After upgrading to 0.3, run `~/sato-agent-NAME status` and tell the owner what the `swaps:` line says. Version 0.3 can trade any token. If swaps show as off (they stay off for an owner who had turned them off), tell the owner they can turn them on with `policy set --swaps on`, and only do that if they ask. Version 0.3 can also buy things: run `order --available`, then tell the owner what you can now buy, exactly as in step 4 (Amazon only if it said "on"), including that purchases ask them first.
 
-After upgrading to 0.4.1, nothing changes for a bot that was working: its wallet, limits, chains, history and approvals stay exactly as they were, and `send` with no `--asset` prints what it printed. A bot can now also send the chain's coin (ETH, BNB, POL, SOL) and any token in its wallet: see "Send anything in your wallet" below.
+After upgrading to 0.4.2, nothing changes for a bot that was working: its wallet, limits, chains, history and approvals stay exactly as they were, and `send` with no `--asset` prints what it printed. 0.4.2 lets a bot send the chain's coin (ETH, BNB, POL, SOL) and any token in its wallet, free: Sato Hub takes no fee on a send, only the network's gas. See "Send anything in your wallet" below. (0.4.1 only added the `SATO_AGENT_UA` option to the launcher.)
 
 After upgrading to 0.4.0, nothing changes for a Base or Solana bot: its wallet, limits, chains, history and approvals stay exactly as they were, and the commands it already uses print what they printed. The kit now also knows BNB Chain, Arbitrum and Polygon, but a bot only works on a chain its owner chose with `policy set --chains`. Do not add one on your own: adding a chain lets you do more, so it is logged as a raise, and only the owner can ask for it, in this chat. Tell the owner only if they ask what is new: version 0.4.0 adds the Sato BNB Bot, the Sato Arbitrum Bot and the Sato Polygon Bot, which are this same kit with a different CHAIN.
 

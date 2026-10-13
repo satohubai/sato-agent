@@ -16,11 +16,11 @@ Five Bots, one kit:
 
 | Bot | Message | Gas | Stablecoin | Today |
 |---|---|---|---|---|
-| **Sato Base Bot** | `NAME = base, CHAIN = base` | ETH | USDC | buy or sell any Base token against USDC or ETH (by address or link), gift cards / eSIMs / top-ups (Bitrefill), USDC payment links (EIP-681), x402 payments, USDC sends, ERC-8004 identity, Sato Hub checks |
-| **Sato BNB Bot** | `NAME = bnb, CHAIN = bnb` | BNB | USDT (18 decimals) | buy or sell any BNB Chain token against USDT, USDC or BNB, USDT / USDC payment links, USDT sends, ERC-8004 identity, Sato Hub checks. **No x402** (BNB Chain's USDC is Binance-Peg: it cannot sign the payment the kit uses, and no service takes it) and **no gift cards** (Bitrefill does not take BNB Chain: the bot points the owner to the Sato Base Bot) |
-| **Sato Arbitrum Bot** | `NAME = arbitrum, CHAIN = arbitrum` | ETH | USDC | buy or sell any Arbitrum token against USDC, USDT or ETH, gift cards / eSIMs / top-ups (USDC on Arbitrum), payment links, x402 payments in USDC, USDC sends, ERC-8004 identity, Sato Hub checks |
-| **Sato Polygon Bot** | `NAME = polygon, CHAIN = polygon` | POL | USDC | buy or sell any Polygon token against USDC, USDT or POL, gift cards / eSIMs / top-ups (USDC on Polygon), payment links, x402 payments in USDC, USDC sends, ERC-8004 identity, Sato Hub checks |
-| **Sato Solana Bot** | `NAME = solana, CHAIN = solana` | SOL | USDC | buy or sell any Solana token against USDC or SOL via Jupiter (by mint or link), Solana Pay requests (USDC or SOL), x402 payments in USDC on Solana (`pay --chain solana`), USDC sends (wallet recipients only), Sato Hub checks |
+| **Sato Base Bot** | `NAME = base, CHAIN = base` | ETH | USDC | buy or sell any Base token against USDC or ETH (by address or link), gift cards / eSIMs / top-ups (Bitrefill), USDC payment links (EIP-681), x402 payments, sends of the coin, USDC or any token, ERC-8004 identity, Sato Hub checks |
+| **Sato BNB Bot** | `NAME = bnb, CHAIN = bnb` | BNB | USDT (18 decimals) | buy or sell any BNB Chain token against USDT, USDC or BNB, USDT / USDC payment links, sends of the coin, USDT or any token, ERC-8004 identity, Sato Hub checks. **No x402** (BNB Chain's USDC is Binance-Peg: it cannot sign the payment the kit uses, and no service takes it) and **no gift cards** (Bitrefill does not take BNB Chain: the bot points the owner to the Sato Base Bot) |
+| **Sato Arbitrum Bot** | `NAME = arbitrum, CHAIN = arbitrum` | ETH | USDC | buy or sell any Arbitrum token against USDC, USDT or ETH, gift cards / eSIMs / top-ups (USDC on Arbitrum), payment links, x402 payments in USDC, sends of the coin, USDC or any token, ERC-8004 identity, Sato Hub checks |
+| **Sato Polygon Bot** | `NAME = polygon, CHAIN = polygon` | POL | USDC | buy or sell any Polygon token against USDC, USDT or POL, gift cards / eSIMs / top-ups (USDC on Polygon), payment links, x402 payments in USDC, sends of the coin, USDC or any token, ERC-8004 identity, Sato Hub checks |
+| **Sato Solana Bot** | `NAME = solana, CHAIN = solana` | SOL | USDC | buy or sell any Solana token against USDC or SOL via Jupiter (by mint or link), Solana Pay requests (USDC or SOL), x402 payments in USDC on Solana (`pay --chain solana`), sends of the coin, USDC or any token (wallet recipients only), Sato Hub checks |
 
 The Bots run Sato Agent, this kit. Each Bot's name is yours to choose; these are the names the setup prompt uses. Amazon orders (when Sato Hub switches them on) are Base and Solana only.
 
@@ -60,7 +60,9 @@ sato-agent policy set --approval ask --check-gate no                   # optiona
 sato-agent balance
 sato-agent pay https://some-x402-api.example/data --chain base     # x402, USDC on Base
 sato-agent pay https://some-x402-api.example/data --chain solana   # x402, USDC on Solana
-sato-agent send --chain solana --to <address> --amount 5
+sato-agent send --chain solana --to <address> --amount 5                # USDC
+sato-agent send --chain base --to <address> --amount all --asset ETH    # the coin, keeping a reserve for gas
+sato-agent send --chain base --to <address> --amount 100 --asset 0x…   # any token, by its contract address
 sato-agent register --name "My agent" --description "What it does"
 sato-agent giftcard search amazon --country US                      # gift cards on Base, Arbitrum or Polygon: search (with the values on offer)
 sato-agent giftcard detail amazon_com-usa                           # the exact values it can be bought for
@@ -87,13 +89,15 @@ sato-agent buy "solana:<recipient>?amount=5&spl-token=EPjFWdd5AufqSSqeM2qN1xzyba
 | `settings set --referrer <name\|address\|none>` | The referral name (like `sunny-otter`) or payout address (Base or Solana) of whoever shared this bot with the owner, or `none` to remove it. A name is checked with Sato Hub before it is saved. `--stdin` also accepts a `referrer` key. See "Referral share" below. `settings show`, `status` and `help` show it. |
 | `referral create --chain base\|bnb\|arbitrum\|polygon\|solana [--payout <address>]` / `referral set-payout <address>` / `referral show` / `referral share-text` / `referral offer --when setup\|swap` / `referral decline` | Share this bot: Sato Hub gives it a referral name, and bots copied from its share are referred by that name. `create` signs one message with the bot's own key on that chain (no payment, no gas); the payout defaults to that wallet's address. `share-text` prints the three texts a share carries. `offer` prints a one-time offer when the bot has no name and has not said no; `decline` records the no. Nothing here posts or sends anything. See "Referral share" below. |
 | `policy set --purchases ask\|auto` | Purchases (gift cards, Amazon orders, checkouts, links paid through `buy`) ask the owner first unless BOTH `--purchases` and `--approval` are on auto. Unset means ask; ask → auto is logged as a raise. `pay` and `send` keep following `--approval`. |
-| `send --chain base\|bnb\|arbitrum\|polygon\|solana --to <addr> --amount <amount>` | Sends the chain's stablecoin (USDC; USDT on BNB Chain), after Sato Hub checks the recipient |
+| `send --chain base\|bnb\|arbitrum\|polygon\|solana --to <addr> --amount <amount\|all> [--asset <symbol\|0xToken\|mint>] [--dry-run]` | Sends anything in the wallet, after Sato Hub checks the recipient. With no `--asset`: the chain's stablecoin (USDC; USDT on BNB Chain), as before. `--asset`: the chain's coin (`ETH`, `BNB`, `POL`, `SOL`), a stablecoin, the wrapped coin, or any ERC-20 by its contract address (any SPL or Token-2022 token by its mint on Solana). **No Sato Hub fee; network gas only.** See "Sending any token" below |
 | `register --name --description [--image] [--service name=endpoint] [--x402-support] [--chain base\|bnb\|arbitrum\|polygon]` | Registers in the ERC-8004 IdentityRegistry (`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`, the same address on every chain) on the agent's EVM chain, with the registration file stored onchain. An agent set to several EVM chains says `--chain` |
 | `check "<install command>" [--cluster mainnet-beta\|devnet] [--skip-check]` | First, Solana build receipts for the npm packages in the command (see below). Then Sato Check: does an install take a key, does the key leave, can it move funds on its own |
 | `recommend "<goal>"` | A stack for a build goal from Sato Hub's index |
 | `status` | Limits, spend in the last 24 hours, limit changes, recent spends |
 
 Add `--json` to any command for machine-readable output.
+
+**Upgrading to v0.4.1:** nothing changes for a working agent: its wallet, limits, chains, ledger and approvals stay as they were, and `send` with no `--asset` binds and prints what it did in v0.4.0. `init` on a folder that already holds a wallet now says plainly that it may be another bot's, and what to do (a new NAME); it still never replaces a wallet.
 
 **Upgrading to v0.4.0:** nothing changes for a Base or Solana agent: its wallet, limits, chains, ledger and approvals stay as they were, and so does what its commands print. The new chains are off until the owner adds them with `policy set --chains` (adding one is logged as a raise). A v0.1 policy with no chains still means Base and Solana only.
 
@@ -191,6 +195,16 @@ Every limit change is written to the ledger and shown in `status`. `pay` frames 
 - Every `send` transaction is simulated before it is sent, and its hash is recorded before it is broadcast. (An x402 payment is checked as described above and sent to the server, which settles it.) Transactions from one wallet are signed one at a time, so two commands never reuse a nonce.
 - If the outcome is unclear, the spend stays counted, and the command exits with code 4: **do not retry**.
 - Solana sends to token accounts or other non-wallet addresses are refused.
+
+## Sending any token
+
+`send` moves anything in the wallet, not only the stablecoin. **A send is a plain transfer: No Sato Hub fee; network gas only.**
+
+- **Assets.** `--asset` takes the chain's coin (`ETH` on Base and Arbitrum, `BNB`, `POL`, `SOL`), a stablecoin the chain lists, the wrapped coin (`WETH`, `WBNB`, `WPOL`, `wSOL`'s mint), or any ERC-20 by its contract address (any SPL or Token-2022 token by its mint on Solana). A token's decimals and symbol are read from the chain, never from a resolver, and a token is always shown with its short address beside the symbol (a symbol is whatever its creator wrote).
+- **`--amount all`.** A token: the whole balance. The chain's coin: the balance less a gas reserve (what the transfer costs at the fee the node quotes now, twice over, plus a fixed pad on Arbitrum, where the gas includes the cost of posting data to Ethereum; on Solana, the rent-exempt minimum and twice the network fee). The command prints what is sent and what stays; if nothing would be left it refuses. To move everything to another wallet, send each token, then the coin last with `--amount all`.
+- **USD limits.** Stablecoins count 1:1, decimals-aware. The chain's coin and its wrapped form count at the Chainlink price; with no price the kit does not send them. **Any other token has no price here: it counts $0 against the USD limits, is never refused for lacking one, and is recorded with `usd: null` and `unpriced: true`.** No venue is asked for a quote. It follows the owner's normal approval mode: `ask` stops with exit code 5, `auto` goes. The chain, the recipient allowlist and the Sato Hub recipient check apply to every asset.
+- **Checks before signing.** The transfer is simulated (`eth_simulateV1` on EVM chains, `simulateTransaction` on Solana). A transfer that would revert is refused. On EVM chains the recipient's balance is read before and after in the simulation: a token that takes a fee on transfer is shown (the recipient receives less than is sent, and by how much), and the approval binds that figure. On Solana the recipient's associated token account is created only if it is missing; its rent (about 0.002 SOL) is shown, paid by the agent, and not counted against the USD limits. A Token-2022 transfer fee is worked out for the amount (and the instruction names it, so a changed fee fails safely); a transfer hook or a permanent delegate is shown. Hooks that need more than their validation account are refused by the simulation, not sent.
+- **Ledger.** Each send records the chain, the asset (symbol and short address, with the full address or mint in `asset_address`), the amount, the USD figure (or null), the transaction and its explorer link; `status`, `history` and `proof` show it (`no price` for an unpriced token). The hash is recorded before the broadcast, with the same exit codes, and a send is never retried.
 
 **What they don't do**
 - The limits are enforced by this program, on the same computer that holds the key. **The agent itself can loosen any choice** with `policy set`: raise a limit, add a recipient or chain, loosen the check gate, or switch "ask" to "auto". In approval mode it could also type the approval code itself. Every loosening is logged and flagged in `status`, but it isn't blocked.

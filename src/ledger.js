@@ -80,7 +80,8 @@ export function actions(ledger = read()) {
     const prev = byId.get(e.id) ?? {};
     byId.set(e.id, { ...prev, ...Object.fromEntries(Object.entries(e).filter(([, v]) => v !== null && v !== undefined)), first_ts: prev.first_ts ?? e.ts });
   }
-  return [...byId.values()].map((a) => ({ ...a, explorer: explorerFor(a) }));
+  // A row for a token with no price keeps its `usd: null` (the merge above drops nulls): "unknown", not "left out".
+  return [...byId.values()].map((a) => ({ ...a, ...(a.unpriced === true ? { usd: null } : {}), explorer: explorerFor(a) }));
 }
 
 export function explorerFor(a) {

@@ -238,7 +238,10 @@ export function evmChainFor(requested, feature, policy = loadPolicy()) {
  * Check one spend against the limits. Returns the refusals (empty = allowed).
  * Each refusal names the rule, the limit and what was observed.
  */
-export function evaluate(policy, { usd, to, chain, kind, slippage_bps }, spent) {
+export function evaluate(policy, spend, spent) {
+  const { to, chain, kind, slippage_bps } = spend;
+  // A token with no price (a send of an ordinary token) counts $0: the limits cannot measure it, and it is never refused for lacking a price.
+  const usd = spend.unpriced === true ? 0 : spend.usd;
   if (!policy) {
     return [{ rule: "limits_not_set", limit: null, observed: null, message: "no spending limits are set yet: the owner runs `sato-agent policy set --chains <" + CHAINS_USAGE + "> --per-tx <usd|none> --per-day <usd|none>`" }];
   }
@@ -254,7 +257,7 @@ export function evaluate(policy, { usd, to, chain, kind, slippage_bps }, spent) 
   if (chain && !allowedChains(policy).includes(chain)) {
     out.push({ rule: "chain_not_allowed", limit: allowedChains(policy), observed: chain, message: `this agent is set to work on ${allowedChains(policy).join(" and ")} only` });
   }
-  if (!(usd > 0)) out.push({ rule: "amount", limit: ">0", observed: usd, message: "amount must be positive" });
+  if (!(usd > 0) && spend.unpriced !== true) out.push({ rule: "amount", limit: ">0", observed: usd, message: "amount must be positive" });
   if (policy.max_usd_per_tx !== null && usd > policy.max_usd_per_tx) {
     out.push({ rule: "max_usd_per_tx", limit: policy.max_usd_per_tx, observed: usd, message: `over the per-transaction limit of $${policy.max_usd_per_tx}` });
   }

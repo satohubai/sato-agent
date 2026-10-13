@@ -22,6 +22,14 @@ test("init creates a private wallet once, and never replaces it", () => {
   const again = JSON.parse(run("init", "--json").stdout);
   assert.equal(again.existing, true);
   assert.equal(again.base, first.base);
+  // On a shared computer the wallet found here may be another bot's: init says so, and what a new bot does instead.
+  assert.equal(again.name, "agent");
+  assert.equal(again.notice, `A wallet already exists for agent (address ${first.base}). If you are a new bot, do not use it: pick a new NAME (for example agent-2), write a new launcher, and run init there. Never replace, move or delete another bot's wallet.`);
+  const human = run("init");
+  assert.equal(human.status, 0);
+  assert.ok(human.stdout.startsWith(again.notice), "the notice is the first thing it prints");
+  assert.ok(human.stdout.includes(first.base) && human.stdout.includes(first.solana));
+  assert.equal(JSON.parse(readFileSync(join(home, "wallet.json"), "utf8")).evm.address, first.base, "the wallet is untouched");
   assert.equal(statSync(home).mode & 0o777, 0o700);
   assert.equal(statSync(join(home, "wallet.json")).mode & 0o777, 0o600);
 });

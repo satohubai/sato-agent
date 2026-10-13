@@ -48,7 +48,8 @@ test("help names the chains where each command works", () => {
   assert.match(h, /referral create --chain base\|bnb\|arbitrum\|polygon\|solana/);
   assert.match(h, /swap with a major on one side: USDC, ETH or WETH on Base; USDT, USDC, BNB or WBNB on BNB Chain; USDC, USDT, ETH or WETH on Arbitrum; USDC, USDT, POL or WPOL on Polygon; USDC or SOL on Solana\./);
   assert.match(h, /paid in USDC on Base, Arbitrum and Polygon \(x402; --chain/);
-  assert.match(h, /send USDC \(USDT on BNB Chain\) \(Sato Hub checks the recipient first\)/);
+  assert.match(h, /send anything in the wallet: USDC \(USDT on BNB Chain\) by default, or --asset: the chain's coin\n\s+\(ETH, BNB, POL, SOL\), a stablecoin, the wrapped coin, or ANY token by its 0x contract\n\s+address \(or Solana mint\)\. Sato Hub checks the recipient first\. No Sato Hub fee;\n\s+network gas only\./);
+  assert.match(h, /send --chain base\|bnb\|arbitrum\|polygon\|solana --to <address> --amount <n\|all> \[--asset <symbol\|0xToken\|mint>\]/);
   assert.match(h, /x402 runs on Base, Arbitrum, Polygon and Solana/);
 });
 

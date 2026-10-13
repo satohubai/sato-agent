@@ -5,6 +5,8 @@
 // 5 needs the owner's approval (nothing spent).
 
 import { parseArgs } from "node:util";
+import { basename } from "node:path";
+import { isAddress as isEvmAddress } from "viem";
 import { createHash } from "node:crypto";
 import { addressFor, addresses, initWallet, walletExists } from "../src/wallet.js";
 import { DEFAULT_EVM_CHAIN, chainKeys, chainsWith, defaultStable, evmChain, evmChainKeys, explorerAddress, getChain, isEvm, isKnownChain, labelList, labelOf, majorSymbols, orList, pipeList, stableBySymbol, stablesOf } from "../src/chains.js";
@@ -28,6 +30,7 @@ import * as solana from "../src/solana.js";
 import { RESERVED_HEADERS, pay, quoteX402, resolvePayChain } from "../src/x402.js";
 import { MCP_URL, checkInstall, customEndpoint, gateRefusals, recommend, runCheck } from "../src/satohub.js";
 import { usdcUnits, unitsToUsd } from "../src/amount.js";
+import { executeSend, isAll, planSend, sendFields, sendIntent, sendLines } from "../src/send/index.js";
 import { describeToken, renderTokenCard, runSwap, swapLines } from "../src/swap/run.js";
 import { checkBuilds, renderReceipts } from "../src/build-check.js";
 import { normalizeCluster } from "../src/receipts.js";
@@ -45,6 +48,11 @@ const CHAIN_REGISTER = pipeList(chainsWith("register"));
 const SWAP_MAJORS = chainsWith("swap").map((k) => `${orList(majorSymbols(k))} on ${labelOf(k)}`).join("; "); // "USDC, ETH or WETH on Base; …"
 // The stablecoin a send uses where it is not USDC: "USDC (USDT on BNB Chain)".
 const SEND_STABLE = `USDC${chainsWith("send").filter((k) => getChain(k).defaultStable !== "USDC").map((k) => ` (${getChain(k).defaultStable} on ${labelOf(k)})`).join("")}`;
+
+/** "ETH, BNB, POL, SOL": the coin each chain sends natively, for the help text. */
+function nativeSymbols() {
+  return [...new Set(chainsWith("send").map((k) => getChain(k).native.symbol))].join(", ");
+}
 
 /**
  * One line telling the owner the Base address is the address on every other EVM chain too, and what to fund it with there
@@ -131,8 +139,15 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
   token <address|mint|link> [--chain ${CHAIN_ALL}]
                                          what is at an address: name, decimals, program, price and liquidity (dated), a Solana token's
                                          authorities and extensions, and Sato Hub's token check. Read-only; spends nothing.
-  send --chain ${CHAIN_SEND} --to <address> --amount <usdc> [--approve <code>]
-                                         send ${SEND_STABLE} (Sato Hub checks the recipient first)
+  send --chain ${CHAIN_SEND} --to <address> --amount <n|all> [--asset <symbol|0xToken|mint>] [--approve <code>] [--dry-run]
+                                         send anything in the wallet: ${SEND_STABLE} by default, or --asset: the chain's coin
+                                         (${nativeSymbols()}), a stablecoin, the wrapped coin, or ANY token by its 0x contract
+                                         address (or Solana mint). Sato Hub checks the recipient first. No Sato Hub fee;
+                                         network gas only. --amount all sends the whole balance of a token; of the chain's
+                                         coin it keeps a reserve for gas and says how much. A token with no price counts $0
+                                         against the USD limits (the output says so); the simulation shows what the recipient
+                                         would receive, and a transfer that would revert is refused. On Solana the recipient's
+                                         token account is created only if missing (its rent is shown)
   pay <url> [--chain ${CHAIN_PAY}] [--method POST --data <body> --header 'k: v' ...] [--approve <code>]
                                          pay for an x402 resource in USDC on this agent's chain (--chain is
                                          needed when the owner chose more than one chain; x402 runs on ${labelList(chainsWith("x402"))}). It asks the server's price
@@ -171,6 +186,7 @@ try {
       cluster: { type: "string" },
       to: { type: "string" },
       amount: { type: "string" },
+      asset: { type: "string" },
       "per-tx": { type: "string" },
       "per-day": { type: "string" },
       allow: { type: "string" },
@@ -233,6 +249,11 @@ let viaBuy = false; // set by `buy` before it hands a link to `pay`
 const kindLabel = (a) => (a.kind === "checkout" && a.checkout ? `checkout:${clean(a.checkout, 20)}` : a.kind === "x402" && a.purchase ? `x402:${clean(a.purchase, 20)}` : String(a.kind));
 const json = (obj) => JSON.stringify(obj, (_k, v) => (typeof v === "bigint" ? v.toString() : v), 2);
 const out = (human, obj) => console.log(flags.json ? json(obj) : human);
+/** The USD column of a ledger row: dollars, or "no price" for a token the limits cannot measure; a send of any asset also says what moved. */
+const usdText = (a) => {
+  const base = a.unpriced === true ? "no price" : `$${roundUsd(Number(a.usd) || 0)}`;
+  return a.kind === "send" && a.amount !== undefined && a.asset ? `${base} (${clean(a.amount, 40)} ${clean(a.asset, 60)})` : base;
+};
 const limitText = (v) => (v === null ? "no limit" : `$${v}`);
 const say = (text) => {
   if (!flags.json) console.log(text);
@@ -281,7 +302,7 @@ function parseHeaders() {
  * chose, the Sato Hub check under the owner's gate, and the owner's approval
  * when they chose "ask". Throws Refused (3) or NeedsApproval (5).
  */
-async function beforeSpend({ chain, intent, checkArgs, expectKind, usd, to, precheck, purchase = false, card = [] }) {
+async function beforeSpend({ chain, intent, checkArgs, expectKind, usd, to, precheck, purchase = false, card = [], deferApproval = false }) {
   const policy = loadPolicy();
   // The limits first (when the amount is known here), so the owner is never
   // asked to approve something the limits would refuse anyway. The spend is
@@ -305,6 +326,8 @@ async function beforeSpend({ chain, intent, checkArgs, expectKind, usd, to, prec
     const r = gateRefusals(policy, check);
     if (r.length) throw new Refused(r);
   }
+  // The caller asks for the owner's approval itself, once it knows what exactly is being approved.
+  if (deferApproval) return check;
   // A purchase follows the owner's purchase setting (ask unless set to auto), with its price card.
   if (purchase) {
     await purchaseGate(intent, { approve: flags.approve, dryRun: Boolean(flags["dry-run"]), card }, policy);
@@ -332,7 +355,10 @@ async function main(command = cmd, args = positionals.slice(1)) {
     case "init": {
       if (walletExists()) {
         const a = addresses();
-        return out(`A wallet already exists (it is never replaced).\n  Base:   ${a.base}\n  Solana: ${a.solana}`, { existing: true, ...a });
+        // On a shared computer every bot keeps its own folder (~/.sato-agent/NAME). A wallet here may be ANOTHER bot's: say so, and what to do.
+        const name = basename(home());
+        const notice = `A wallet already exists for ${name} (address ${a.base}). If you are a new bot, do not use it: pick a new NAME (for example ${name}-2), write a new launcher, and run init there. Never replace, move or delete another bot's wallet.`;
+        return out(`${notice}\n  Base:   ${a.base}\n  Solana: ${a.solana}`, { existing: true, name, notice, ...a });
       }
       const a = initWallet();
       return out(
@@ -406,8 +432,46 @@ async function main(command = cmd, args = positionals.slice(1)) {
     }
     case "send": {
       const chain = (flags.chain || "").toLowerCase();
-      if (!chainsWith("send").includes(chain) || !flags.to || !flags.amount) throw new UsageError(`send --chain ${CHAIN_SEND} --to <address> --amount <usdc>`);
+      if (!chainsWith("send").includes(chain) || !flags.to || !flags.amount) throw new UsageError(`send --chain ${CHAIN_SEND} --to <address> --amount <n|all> [--asset <symbol|0xToken|mint>]`);
       const a = addresses();
+      // Any asset, or the whole balance: the plan reads the chain, and the approval binds exactly what it found. With neither,
+      // the stablecoin send below is what v0.4.0 did, unchanged.
+      if (flags.asset !== undefined || isAll(flags.amount)) {
+        if (flags.asset === "") throw new UsageError("--asset needs a symbol, a token's 0x contract address or a Solana mint");
+        const rawCheck = { address: flags.to, chain: getChain(chain).hubName, from: addressFor(chain, a) };
+        if (isEvm(chain) && !isEvmAddress(flags.to)) throw new Error(`not a ${labelOf(chain)} address: ${flags.to}`);
+        const check = await beforeSpend({
+          chain,
+          intent: { cmd: "send", chain, to: flags.to, amount: flags.amount },
+          checkArgs: rawCheck,
+          expectKind: "address",
+          to: flags.to,
+          precheck: chain === "solana" ? () => solana.assertWalletRecipient(flags.to) : undefined,
+          deferApproval: true,
+        });
+        const plan = await planSend({ chain, to: flags.to, amount: flags.amount, asset: flags.asset });
+        // The limits again, now that the figure the limits see is known (a token with no price counts $0).
+        const policy = loadPolicy();
+        const late = evaluate(policy, { usd: plan.usd, unpriced: plan.unpriced, to: flags.to, chain, kind: "send" }, spentLast24h());
+        if (late.length) throw new Refused(late);
+        const lines = sendLines(plan);
+        if (flags["dry-run"]) {
+          say(lines.join("\n"));
+          return out(`DRY RUN: the checks and the simulation passed for ${plan.amountText} ${plan.asset.label} on ${chain} to ${plan.to}. Nothing was signed or sent, and nothing counts against the limits.`, { dry_run: true, simulated: true, ...sendFields(plan), sato_hub_check: check });
+        }
+        const intent = { ...sendIntent(plan), skip_check: Boolean(flags["skip-check"]) };
+        if (policy?.approval === "ask") {
+          if (!flags.approve) {
+            const err = new NeedsApproval(intent, await requestApproval(intent));
+            err.card = lines;
+            throw err;
+          }
+          await consumeApproval(flags.approve, intent);
+        }
+        say(lines.join("\n"));
+        const r = await executeSend(plan);
+        return out(`Sent ${plan.amountText} ${plan.asset.label} on ${chain} to ${plan.to}\n  ${r.explorer}`, { ...r, ...sendFields(plan), sato_hub_check: check });
+      }
       // One Preflight call checks ONE target, and `token` outranks `address`, so
       // never pass a token here: this must be the recipient check (Sato Scan).
       const checkArgs = { address: flags.to, chain: getChain(chain).hubName, from: addressFor(chain, a) };
@@ -649,7 +713,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
       const cutoff = Date.now() - windows[since];
       const list = actions().filter((a) => Date.parse(a.first_ts) >= cutoff);
       const line = (a) =>
-        `${a.first_ts}  ${kindLabel(a).padEnd(8)} ${String(a.status).padEnd(16)} ${(a.chain ?? "").padEnd(6)} ${a.kind === "register" || a.kind === "register_uri" ? `agent ${a.agent_id}` : `$${roundUsd(Number(a.usd) || 0)}`} ${a.to ?? a.url ?? ""}${a.explorer ? `\n    ${a.explorer}` : ""}`;
+        `${a.first_ts}  ${kindLabel(a).padEnd(8)} ${String(a.status).padEnd(16)} ${(a.chain ?? "").padEnd(6)} ${a.kind === "register" || a.kind === "register_uri" ? `agent ${a.agent_id}` : usdText(a)} ${a.to ?? a.url ?? ""}${a.explorer ? `\n    ${a.explorer}` : ""}`;
       return out(list.map(line).join("\n") || "(no actions yet)", { since, actions: list });
     }
     case "proof": {
@@ -670,7 +734,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
         agentId ? `ERC-8004 agent: ${agentId} on ${registered.label} (registry ${registered.erc8004Registry})` : "ERC-8004 agent: not registered",
         `confirmed onchain actions: ${onchain.length} · value moved (sends, payments, swaps and purchases, in USD): $${roundUsd(spent)}`,
         "",
-        ...onchain.slice(-15).map((x) => `${x.first_ts.slice(0, 16).replace("T", " ")}Z  ${kindLabel(x)}  ${x.kind.startsWith("register") ? `agent ${x.agent_id}` : `$${roundUsd(Number(x.usd) || 0)}`}  ${x.explorer}`),
+        ...onchain.slice(-15).map((x) => `${x.first_ts.slice(0, 16).replace("T", " ")}Z  ${kindLabel(x)}  ${x.kind.startsWith("register") ? `agent ${x.agent_id}` : usdText(x)}  ${x.explorer}`),
         "",
         "Every line links to the chain. Check it yourself. Built with Sato Hub: https://github.com/satohubai/sato-agent",
       ].join("\n");
@@ -692,7 +756,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
       const checks = ledger.rows.filter((e) => e.kind === "check").slice(-5);
       // Ledger fields can hold server text (a payee, a receipt id, a reason): printed cleaned, one line each.
       const c = (v, max = 120) => (v === null || v === undefined ? "" : clean(v, max));
-      const fmt = (e) => `  ${c(e.ts, 40)} ${c(e.status, 40)} ${c(kindLabel(e), 30)} ${c(e.chain, 20)} $${roundUsd(Number(e.usd) || 0)} ${c(e.to)} ${c(e.tx)}`.trimEnd();
+      const fmt = (e) => `  ${c(e.ts, 40)} ${c(e.status, 40)} ${c(kindLabel(e), 30)} ${c(e.chain, 20)} ${usdText(e)} ${c(e.to)} ${c(e.tx)}`.trimEnd();
       return out(
         [
           p ? policyText(p) : "choices: NOT SET",

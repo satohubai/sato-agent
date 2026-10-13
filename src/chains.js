@@ -149,6 +149,9 @@ const REGISTRY = deepFreeze({
     // max(the simulation-based limit, eth_estimateGas for that exact transaction), and one the node will not estimate is not signed.
     // maxGas: the most any one transaction may be signed with; a node's estimate above it (a broken or hostile node) is refused, not signed.
     simulation: { blockTimeS: 1, tipFallbackWei: 0n, prevRandao: false, timedBlocks: false, zeroBaseFee: false, swapGas: 2_000_000n, maxGas: 10_000_000n, exactGasEstimate: true },
+    // `send --amount all` of the native coin keeps a gas reserve. Here the data-posting cost to Ethereum moves with Ethereum's own gas
+    // price between the estimate and the signing, so the reserve carries this fixed pad on top of the node's exact estimate: 0.00005 ETH.
+    sendReserve: { l1DataWei: 50_000_000_000_000n },
     features: { send: true, swap: true, x402: true, giftcards: true, register: true, checkout: true, amazon: false },
   },
   polygon: {
@@ -326,6 +329,9 @@ export function chainlinkFeed(key, asset) {
   return o ? { asset, ...o } : null;
 }
 
+/** The fixed pad (wei) a native `send --amount all` adds to its gas reserve on a chain whose gas includes an L1 data cost; 0n elsewhere. */
+export const sendL1ReserveWei = (key) => evmChain(key).sendReserve?.l1DataWei ?? 0n;
+
 /** An L2's sequencer uptime feed ({ address, graceS }), or null on a chain without one. */
 export const sequencerFeed = (key) => evmChain(key).chainlink?.sequencer ?? null;
 
@@ -350,5 +356,6 @@ for (const key of evmChainKeys()) {
   const d = c.stables[c.defaultStable];
   if (c.features.x402 && (d.eip3009 !== true || !c.x402.v1Name)) throw new Error(`chains.js: ${key} has x402 on, but its default stable cannot sign an EIP-3009 authorization (or it has no v1 network name)`);
   if (c.features.giftcards && (d.symbol !== "USDC" || d.eip3009 !== true || d.decimals !== 6)) throw new Error(`chains.js: ${key} has gift cards on, but Bitrefill is paid in 6-decimal Circle USDC`);
+  if (c.sendReserve && (typeof c.sendReserve.l1DataWei !== "bigint" || c.sendReserve.l1DataWei < 0n)) throw new Error(`chains.js: ${key}'s sendReserve.l1DataWei must be a bigint of wei`);
   if (!c.rpcDefaults.length) throw new Error(`chains.js: ${key} has no RPC endpoint`);
 }

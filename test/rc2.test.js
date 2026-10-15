@@ -201,7 +201,7 @@ test("5: the docs say both legs of a round trip count, describe Amazon by availa
   for (const [name, text] of [["BOT.md", bot], ["README.md", readme], ["SKILL.md", skill]]) {
     assert.doesNotMatch(text, /v0\.2\.\d|#v0\.2/, `${name} points at v0.2`);
   }
-  assert.match(bot, /#v0\.4\.2/);
+  assert.match(bot, /#v0\.4\.3/);
   assert.doesNotMatch(bot, /#v0\.3\.\d\b/, "BOT.md pins the current version only");
 });
 

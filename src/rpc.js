@@ -27,6 +27,12 @@ import { userAgent } from "./version.js";
 export const RPC_TIMEOUT_MS = 20_000;
 
 const SEND_METHODS = new Set(["eth_sendRawTransaction", "eth_sendTransaction"]);
+/** Reads that only look something up: waiting for a receipt uses these. Never eth_call, eth_estimateGas or eth_simulateV1, whose
+ *  "invalid params" can be the real answer to what was asked. */
+const LOOKUP_METHODS = new Set([
+  "eth_getTransactionReceipt", "eth_getTransactionByHash", "eth_blockNumber", "eth_getBlockByNumber", "eth_getBlockByHash",
+  "eth_chainId", "eth_getTransactionCount", "eth_getBalance", "eth_gasPrice", "eth_maxPriorityFeePerGas", "eth_feeHistory",
+]);
 
 const text = (err) => `${err?.name ?? ""} ${err?.shortMessage ?? ""} ${err?.details ?? ""} ${err?.message ?? ""} ${err?.cause?.shortMessage ?? ""} ${err?.cause?.details ?? ""}`;
 const codeOf = (err) => err?.code ?? err?.cause?.code;
@@ -62,6 +68,10 @@ export function isRetryable(err, method) {
   if (NOT_SERVED.test(text(err)) || codeOf(err) === -32601) return true;
   // A fetch that failed with no response and no HTTP status: the network, not the node's answer.
   if (err?.name === "HttpRequestError" && typeof status !== "number" && /fetch failed|network|socket|ECONNRESET|EPIPE/i.test(text(err))) return true;
+  // A lookup by hash, block or address carries no argument a node could fairly call wrong, so an endpoint that does (-32602, -32600,
+  // "invalid params") is that endpoint's quirk, not the answer: ask the next one. Seen on Polygon (2026-10-15): every write ended in
+  // "no receipt … Invalid parameters" while the transactions had landed and other endpoints served their receipts.
+  if (LOOKUP_METHODS.has(method)) return true;
   // A node's definite answer to this read ends it.
   const code = codeOf(err);
   if (code === 3 || code === -32602 || code === -32600 || code === -32015 || DEFINITE_ANSWER.test(text(err))) return false;

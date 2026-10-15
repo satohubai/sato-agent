@@ -77,6 +77,20 @@ test("a node's real answer is never retried: a revert, an invalid call", async (
   assert.deepEqual(b.calls, [], "the second endpoint was not asked");
 });
 
+test("a receipt lookup an endpoint calls 'Invalid parameters' (-32602) is asked of the next one (Polygon, 2026-10-15)", async () => {
+  const h = "0x" + "ab".repeat(32);
+  const a = await node((m) => (m === "eth_getTransactionReceipt" ? { body: { jsonrpc: "2.0", error: { code: -32602, message: "Invalid parameters were provided to the RPC method" } } } : {}));
+  const receipt = {
+    blockHash: "0x" + "cd".repeat(32), blockNumber: "0x10", contractAddress: null, cumulativeGasUsed: "0x5208", effectiveGasPrice: "0x1",
+    from: "0x000000000000000000000000000000000000dEaD", gasUsed: "0x5208", logs: [], logsBloom: "0x" + "00".repeat(256), status: "0x1",
+    to: "0x000000000000000000000000000000000000bEEF", transactionHash: h, transactionIndex: "0x0", type: "0x2",
+  };
+  const b = await node((m) => (m === "eth_getTransactionReceipt" ? { result: receipt } : {}));
+  const r = await client([a.url, b.url]).getTransactionReceipt({ hash: h });
+  assert.equal(r.status, "success");
+  assert.ok(b.calls.includes("eth_getTransactionReceipt"), "the second endpoint served it");
+});
+
 test("a node that does not serve the method (eth_simulateV1) is skipped for a read", async () => {
   const a = await node((m) => (m === "eth_simulateV1" ? { body: { jsonrpc: "2.0", error: { code: -32601, message: "the method eth_simulateV1 does not exist/is not available" } } } : {}));
   const b = await node(() => ({ result: [{ calls: [] }] }));
@@ -156,6 +170,15 @@ test("isRetryable for a READ: an error nothing recognizes (\"Temporary internal 
   assert.equal(isRetryable(rpc(3, "execution reverted: nope"), "eth_call"), false);
   assert.equal(isRetryable(rpc(-32000, "execution reverted"), "eth_estimateGas"), false);
   assert.equal(isRetryable(rpc(-32602, "invalid argument 0: hex string without 0x prefix"), "eth_call"), false);
+  // A lookup is well formed: an endpoint that calls it invalid is skipped, not believed (Polygon, 2026-10-15).
+  for (const m of ["eth_getTransactionReceipt", "eth_getTransactionByHash", "eth_blockNumber", "eth_getBlockByNumber", "eth_chainId"]) {
+    assert.equal(isRetryable(rpc(-32602, "Invalid parameters were provided to the RPC method"), m), true, m);
+    assert.equal(isRetryable(rpc(-32600, "invalid request"), m), true, m);
+  }
+  // ...but never a send, and never a call or a simulation, whose "invalid params" can be the real answer.
+  assert.equal(isRetryable(rpc(-32602, "Invalid parameters were provided to the RPC method"), "eth_sendRawTransaction"), false);
+  assert.equal(isRetryable(rpc(-32602, "Invalid parameters were provided to the RPC method"), "eth_estimateGas"), false);
+  assert.equal(isRetryable(rpc(-32602, "Invalid parameters were provided to the RPC method"), "eth_simulateV1"), false);
   assert.equal(isRetryable(rpc(-32000, "insufficient funds for gas * price + value"), "eth_estimateGas"), false);
   assert.equal(isRetryable(new TypeError("x is not a function"), "eth_call"), false, "a bug in the caller is not an endpoint's failure");
   // and over the wire, a read that one node cannot serve moves to the next
@@ -295,7 +318,7 @@ test("the transport for a chain is its owner's endpoints, else the registry's li
   assert.ok(chainTransport("bnb"));
   assert.deepEqual(rpcUrls("bnb", {}), ["https://bsc-dataseed.bnbchain.org", "https://bsc-dataseed1.defibit.io", "https://bsc-dataseed1.ninicoin.io", "https://bsc.drpc.org"]);
   assert.deepEqual(rpcUrls("arbitrum", {}).slice(0, 3), ["https://arb1.arbitrum.io/rpc", "https://arbitrum-one-rpc.publicnode.com", "https://arbitrum.drpc.org"]);
-  assert.deepEqual(rpcUrls("polygon", {}), ["https://polygon.api.onfinality.io/public", "https://api.zan.top/polygon-mainnet", "https://polygon-bor-rpc.publicnode.com", "https://polygon-rpc.com", "https://polygon.drpc.org"], "the endpoints seen to answer eth_simulateV1 come first");
+  assert.deepEqual(rpcUrls("polygon", {}), ["https://polygon.api.onfinality.io/public", "https://api.zan.top/polygon-mainnet", "https://polygon-bor-rpc.publicnode.com", "https://1rpc.io/matic", "https://polygon.drpc.org"], "the endpoints seen to answer eth_simulateV1 come first");
   assert.deepEqual(rpcUrls("bnb", { SATO_AGENT_BNB_RPC: "http://a, http://b ,," }), ["http://a", "http://b"]);
   assert.deepEqual(rpcUrls("polygon", { SATO_AGENT_POLYGON_RPC: "https://mine" }), ["https://mine"]);
   assert.deepEqual(rpcUrls("arbitrum", { SATO_AGENT_ARBITRUM_RPC: "" }).length, 3);

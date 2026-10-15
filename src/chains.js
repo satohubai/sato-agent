@@ -207,9 +207,10 @@ const REGISTRY = deepFreeze({
     // call), ZAN did (but blocks eth_call without an account, "cu limit exceeded", which moves the call on). The last three failed
     // their TLS handshake from the research Mac (a path problem there, retest from the deploy host) and have never been seen to
     // simulate, so they come after. Swaps need eth_simulateV1 and refuse without it, so a keyed provider (SATO_AGENT_POLYGON_RPC) is
-    // the dependable route.
+    // the dependable route. polygon-rpc.com was dropped 2026-10-15: it answers "API key disabled / tenant disabled". 1rpc.io/matic
+    // served receipts and logs from two hosts that day (it may not simulate; a swap then moves on to the next endpoint).
     rpcEnv: "SATO_AGENT_POLYGON_RPC",
-    rpcDefaults: ["https://polygon.api.onfinality.io/public", "https://api.zan.top/polygon-mainnet", "https://polygon-bor-rpc.publicnode.com", "https://polygon-rpc.com", "https://polygon.drpc.org"],
+    rpcDefaults: ["https://polygon.api.onfinality.io/public", "https://api.zan.top/polygon-mainnet", "https://polygon-bor-rpc.publicnode.com", "https://1rpc.io/matic", "https://polygon.drpc.org"],
     explorer: { url: "https://polygonscan.com", tx: "/tx/", address: "/address/" },
     native: { symbol: "POL", name: "Polygon Ecosystem Token", decimals: 18, oracle: "POL" },
     wrappedNative: { symbol: "WPOL", name: "Wrapped Polygon Ecosystem Token", address: "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270", decimals: 18 },

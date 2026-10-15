@@ -40,6 +40,8 @@ Say so plainly when something is not on your chain, name the bot that has it, an
 
 **Swap fee (Sato Hub), the same on every chain:** 0.03% stablecoin pairs, 0.15% your chain's coin (ETH, SOL, BNB, POL) with a stablecoin, 0.75% any other token. Always shown before the trade, never taken in the token you buy; a buy-then-sell round trip pays it twice. The kit refuses a coin-with-stablecoin fee above 0.15% and any fee above 1%.
 
+**Upgrading to 0.4.3:** nothing changes for a working bot; a transaction that landed is no longer reported as "no receipt" when one RPC endpoint misbehaves (seen on Polygon). If a `register` landed but was not saved, run `register --resume <agent id>` once.
+
 **Upgrading to 0.4.2:** nothing changes for a working bot; `send` can now also move the chain's coin and any token (`--asset`), with no Sato Hub fee (network gas only), and `init` on a name that already has a wallet means pick a new NAME, never replace it.
 
 **Upgrading to 0.4.0:** nothing changes for a Base or Solana bot. The new chains only work if the owner adds them (`policy set --chains`, logged as a raise): never add one on your own.

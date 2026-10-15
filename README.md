@@ -51,7 +51,7 @@ Each Bot keeps its own wallet, limits and ledger, even on the same Grok Bot comp
 ## Quickstart (any machine)
 
 ```sh
-npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.2
+npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.3
 alias sato-agent=~/.sato-agent-cli/node_modules/.bin/sato-agent
 # npm may print "ERESOLVE overriding peer dependency" three times (the Solana x402
 # library's helpers ask for an older @solana/kit). That is expected; the tests run on these versions.
@@ -99,6 +99,8 @@ sato-agent buy "solana:<recipient>?amount=5&spl-token=EPjFWdd5AufqSSqeM2qN1xzyba
 | `status` | Limits, spend in the last 24 hours, limit changes, recent spends |
 
 Add `--json` to any command for machine-readable output.
+
+**Upgrading to v0.4.3:** nothing changes for a working agent. A transaction that landed is no longer reported as "no receipt" (exit 4) when one RPC endpoint answers "Invalid parameters": the kit asks the next one (seen on Polygon). Polygon's default endpoints drop polygon-rpc.com (its public key is disabled) and add 1rpc.io/matic.
 
 **Upgrading to v0.4.2:** nothing changes for a working agent: its wallet, limits, chains, ledger and approvals stay as they were, and `send` with no `--asset` binds and prints what it did before. v0.4.2 adds sending the chain's coin and any token in the wallet, with no Sato Hub fee (network gas only). v0.4.1 only added `SATO_AGENT_UA`. `init` on a folder that already holds a wallet now says plainly that it may be another bot's, and what to do (a new NAME); it still never replaces a wallet.
 

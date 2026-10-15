@@ -12,7 +12,7 @@ Tell your Bot:
 
 That sets up **Sato Agent**: one Bot on every chain you choose. It asks which chains, installs the kit, creates its wallet, asks you for your limits (they cover all its chains together), and asks you to fund it on each chain. You fund it with what you are willing to let it spend. If someone shared this bot with you, tell the Bot their referral name (like `sunny-otter`) when it asks: they get 30% of Sato Hub's swap fee on your agent's swaps, at no cost to you. See "Referral share" below.
 
-Prefer one chain per Bot? Use one of the chain Bots instead (for example `NAME = base, CHAIN = base`): the simplest first run, and a separate wallet for each chain.
+Prefer one chain per Bot? Use one of the chain Bots instead (for example `NAME = base, CHAIN = base`): one chain and one wallet for each Bot.
 
 One agent or five Bots, one kit:
 
@@ -27,7 +27,7 @@ One agent or five Bots, one kit:
 
 The Bots run Sato Agent, this kit. Each Bot's name is yours to choose; these are the names the setup prompt uses. Amazon orders (when Sato Hub switches them on) are Base and Solana only.
 
-Each Bot keeps its own wallet, limits and ledger, even on the same Grok Bot computer. The Base, BNB Chain, Arbitrum and Polygon Bots all use the kit's one EVM key, so a wallet has the same address on all four: fund it on the chain the Bot works on.
+Each Bot keeps its own wallet, limits and ledger, even on the same Grok Bot computer. The Base, BNB Chain, Arbitrum and Polygon Bots all use the kit's one EVM key, so a wallet has the same address on all four: fund it on the chain the Bot works on (Sato Agent: on each chain you chose).
 
 ### Chains
 

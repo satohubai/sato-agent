@@ -13,6 +13,8 @@ test("BOT.md, README and SKILL.md describe Sato Agent on several chains: shared 
   assert.match(bot, /These limits cover all your chains together\./);
   assert.match(bot, /\$100 a day means \$100 in total, not \$100 on each chain/);
   assert.match(bot, /Pass `--chain <chain>` on every command that takes it/);
+  assert.match(bot, /A payment link \(`ethereum:…@<chain id>` or `solana:…`\) names its own chain/);
+  assert.match(bot, /Ask the owner which, then run `referral create --chain base` or `--chain solana`/);
   assert.match(bot, /Never guess between EVM chains\./);
   assert.match(bot, /You cannot bridge or move money from one chain to another\./);
   assert.match(bot, /Adding one is logged as a raise\./);

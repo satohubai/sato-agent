@@ -25,7 +25,7 @@ Say so plainly when something is not on your chain, name the bot that has it, an
 
 **Summary of what BOT.md has you do:**
 1. Install the kit into its own folder, with a launcher `~/sato-agent-NAME`.
-2. Run `init`, then show the owner the address for your CHAIN only.
+2. Run `init`, then show the owner the address for your CHAIN only (Sato Agent: each chosen chain's address, with its network).
 3. Ask the owner every choice. There are no defaults:
    - chain;
    - per-transaction and 24-hour limits;

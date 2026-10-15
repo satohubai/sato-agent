@@ -77,8 +77,8 @@ export function bitrefillWorld(opts = {}) {
     if (path === "/x402/invoice/pay" && r.method === "POST") {
       const sig = r.headers.get("payment-signature");
       const accepts = [
-        { scheme: "exact", network: "eip155:8453", amount: priceUnits, asset: USDC, payTo: opts.payTo ?? PAY_TO, maxTimeoutSeconds: 300, extra: { name: "USD Coin", version: "2" } },
-        { scheme: "exact", network: "eip155:42161", amount: priceUnits, asset: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", payTo: PAY_TO, maxTimeoutSeconds: 300, extra: { name: "USD Coin", version: "2" } },
+        { scheme: "exact", network: "eip155:8453", amount: priceUnits, asset: USDC, payTo: opts.payTo ?? PAY_TO, maxTimeoutSeconds: opts.window ?? 300, extra: { name: "USD Coin", version: "2" } },
+        { scheme: "exact", network: "eip155:42161", amount: priceUnits, asset: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", payTo: PAY_TO, maxTimeoutSeconds: opts.window ?? 300, extra: { name: "USD Coin", version: "2" } },
       ];
       if (!sig) return new Response("{}", { status: 402, headers: { "PAYMENT-REQUIRED": encodePaymentRequiredHeader({ x402Version: 2, resource: { url: `${BASE}/x402/invoice/pay` }, accepts }) } });
       const payload = decodePaymentSignatureHeader(sig);

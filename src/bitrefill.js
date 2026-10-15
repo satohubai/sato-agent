@@ -37,7 +37,7 @@ import { usdcUnits, unitsToText, unitsToUsd } from "./amount.js";
 import { chainKeys, chainsWith, evmChain, isKnownChain, labelList, labelOf, orList } from "./chains.js";
 import { clean } from "./text.js";
 import { userAgent } from "./version.js";
-import { pay } from "./x402.js";
+import { GIFTCARD_AUTH_WINDOW_S, pay } from "./x402.js";
 import { checkLimits, purchaseGate, refuse } from "./purchase.js";
 
 export const BITREFILL_API = "https://api.bitrefill.com";
@@ -600,6 +600,8 @@ export async function buyGiftcard({ product, value, refill, approve, dryRun = fa
     headers: { "content-type": "application/json", "x-access-token": inv.token },
     maxUsd: inv.usd,
     payTo: BITREFILL_PAY_TO,
+    // Bitrefill asks for a 1800 s authorization; allowed here only because the price and the payee above are both bound.
+    authWindowS: GIFTCARD_AUTH_WINDOW_S,
     tag: { purchase: "giftcard", invoice_id: inv.invoice_id, product: detail.id },
     ...(d.account ? { account: d.account } : {}),
     ...(d.fetchImpl ? { fetchImpl: d.fetchImpl } : {}),

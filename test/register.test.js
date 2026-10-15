@@ -75,3 +75,17 @@ test("a node that never catches up: stops after a few tries with the --resume hi
   assert.equal(state.sent.length, 1, "only step one was ever sent");
   assert.equal(state.calls, 6);
 });
+
+test("a --resume that finishes step two records the registration, so proof and a later register see it (Polygon, 2026-10-15)", async () => {
+  const { entries } = await import("../src/ledger.js");
+  const { registeredIds } = await import("../src/base.js");
+  const { c } = staleClient({ staleCalls: 0 });
+  const r = await registerAgent({ name: "Sato Base Agent", description: "test", resume: 4242 }, c);
+  assert.equal(r.agent_id, "4242");
+  const rows = entries().filter((e) => e.agent_id === "4242");
+  assert.ok(rows.some((e) => e.kind === "register" && e.status === "registered"), "a register row was written");
+  assert.ok(rows.some((e) => e.kind === "register_uri"), "and the registration file row");
+  assert.ok(registeredIds("base").done.includes("4242"));
+  await registerAgent({ name: "Sato Base Agent", description: "test", resume: 4242 }, c);
+  assert.equal(entries().filter((e) => e.agent_id === "4242" && e.kind === "register").length, 1, "a second resume does not record it twice");
+});

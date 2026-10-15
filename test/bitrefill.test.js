@@ -223,3 +223,29 @@ test("only the Bitrefill sign-in and the referral name request (v0.3.2) sign a m
   assert.doesNotMatch(names, /signTypedData\(/);
   assert.equal([...names.matchAll(/\.signMessage\(/g)].length, 2, "base signing in signBase and in makeSigner only");
 });
+
+test("buy: Bitrefill's 1800 s authorization window is paid (Polygon, 2026-10-15), with the price and payee still bound", async () => {
+  setPolicy({ chains: "base", perTx: "50", perDay: "500" });
+  const world = bitrefillWorld({ window: 1800 });
+  const deps = { fetchImpl: world.fetch, sleep: async () => {}, pollMs: 0 };
+  const err = await B.buyGiftcard({ product: "amazon-us", value: "25" }, deps).catch((e) => e);
+  assert.ok(err instanceof NeedsApproval);
+  const r = await B.buyGiftcard({ product: "amazon-us", value: "25", approve: err.approval.code }, deps);
+  assert.equal(r.payment.settled, true);
+  const auth = world.log.find((l) => l.path === "/x402/invoice/pay" && l.paid).payment.payload.authorization;
+  const left = Number(auth.validBefore) - Date.now() / 1000;
+  assert.ok(left > 300 && left <= 1805, `window ${left}`);
+  assert.equal(auth.to.toLowerCase(), PAY_TO.toLowerCase());
+});
+
+test("buy: a window longer than 1800 s is still refused, and nothing is paid", async () => {
+  setPolicy({ chains: "base", perTx: "50", perDay: "500" });
+  const world = bitrefillWorld({ window: 3600 });
+  const deps = { fetchImpl: world.fetch, sleep: async () => {}, pollMs: 0 };
+  const err = await B.buyGiftcard({ product: "amazon-us", value: "25" }, deps).catch((e) => e);
+  assert.ok(err instanceof NeedsApproval);
+  const e2 = await B.buyGiftcard({ product: "amazon-us", value: "25", approve: err.approval.code }, deps).catch((e) => e);
+  assert.ok(e2 instanceof Error, "refused");
+  assert.match(String(e2.message) + JSON.stringify(e2.refusals ?? []), /authorization_window|authorization/);
+  assert.equal(world.log.filter((l) => l.path === "/x402/invoice/pay" && l.paid).length, 0);
+});

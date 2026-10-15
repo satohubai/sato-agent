@@ -318,9 +318,69 @@ test("the transport for a chain is its owner's endpoints, else the registry's li
   assert.ok(chainTransport("bnb"));
   assert.deepEqual(rpcUrls("bnb", {}), ["https://bsc-dataseed.bnbchain.org", "https://bsc-dataseed1.defibit.io", "https://bsc-dataseed1.ninicoin.io", "https://bsc.drpc.org"]);
   assert.deepEqual(rpcUrls("arbitrum", {}).slice(0, 3), ["https://arb1.arbitrum.io/rpc", "https://arbitrum-one-rpc.publicnode.com", "https://arbitrum.drpc.org"]);
-  assert.deepEqual(rpcUrls("polygon", {}), ["https://polygon.api.onfinality.io/public", "https://api.zan.top/polygon-mainnet", "https://polygon-bor-rpc.publicnode.com", "https://1rpc.io/matic", "https://polygon.drpc.org"], "the endpoints seen to answer eth_simulateV1 come first");
+  assert.deepEqual(rpcUrls("polygon", {}), ["https://polygon.api.onfinality.io/public", "https://api.zan.top/polygon-mainnet", "https://polygon-bor-rpc.publicnode.com", "https://polygon.drpc.org", "https://1rpc.io/matic"], "the endpoints seen to answer eth_simulateV1 come first");
   assert.deepEqual(rpcUrls("bnb", { SATO_AGENT_BNB_RPC: "http://a, http://b ,," }), ["http://a", "http://b"]);
   assert.deepEqual(rpcUrls("polygon", { SATO_AGENT_POLYGON_RPC: "https://mine" }), ["https://mine"]);
   assert.deepEqual(rpcUrls("arbitrum", { SATO_AGENT_ARBITRUM_RPC: "" }).length, 3);
   assert.throws(() => rotatingTransport([]), /at least one url/);
+});
+
+test("waiting for a receipt: an endpoint that calls the lookups 'Invalid parameters' is skipped and the next serves them", async () => {
+  const h = "0x" + "ef".repeat(32);
+  const invalid = { body: { jsonrpc: "2.0", error: { code: -32602, message: "Invalid parameters were provided to the RPC method" } } };
+  const receipt = {
+    blockHash: "0x" + "cd".repeat(32), blockNumber: "0x10", contractAddress: null, cumulativeGasUsed: "0x5208", effectiveGasPrice: "0x1",
+    from: "0x000000000000000000000000000000000000dEaD", gasUsed: "0x5208", logs: [], logsBloom: "0x" + "00".repeat(256), status: "0x1",
+    to: "0x000000000000000000000000000000000000bEEF", transactionHash: h, transactionIndex: "0x0", type: "0x2",
+  };
+  const a = await node((m) => (m === "eth_getTransactionReceipt" || m === "eth_getTransactionByHash" ? invalid : { result: "0x10" }));
+  const b = await node((m) => (m === "eth_getTransactionReceipt" ? { result: receipt } : { result: "0x10" }));
+  const c = createPublicClient({ chain: bsc, transport: rotatingTransport([a.url, b.url], { timeout: 2000 }), pollingInterval: 50 });
+  const r = await c.waitForTransactionReceipt({ hash: h, timeout: 5000 });
+  assert.equal(r.status, "success");
+});
+
+test("signAndSend: a receipt wait that errors on every endpoint is asked again until it answers; a timeout still ends as Pending", async () => {
+  const { fakeChain } = await import("./swap-evm-helpers.js");
+  const { Pending } = await import("../src/errors.js");
+  const { signAndSend } = await import("../src/base.js");
+  const rpcErr = () => Object.assign(new Error("Invalid parameters were provided to the RPC method."), { name: "InvalidParamsRpcError", code: -32602, shortMessage: "Invalid parameters were provided to the RPC method." });
+  {
+    const { c } = fakeChain({ address: "0x20FE51A9229EEf2cF8Ad9E89d91CAb9312cF3b7A", chainKey: "bnb" });
+    let waits = 0;
+    let slept = 0;
+    c.sleep = async () => { slept++; };
+    const real = c.pub.waitForTransactionReceipt;
+    c.pub.waitForTransactionReceipt = async (a) => (++waits <= 2 ? Promise.reject(rpcErr()) : real(a));
+    const r = await signAndSend(c, { to: "0x000000000000000000000000000000000000dEaD", data: "0x" }, undefined, { chain: "bnb" });
+    assert.equal(r.status, "success");
+    assert.equal(waits, 3, "asked again after each RPC error");
+    assert.equal(slept, 2);
+  }
+  {
+    const { c } = fakeChain({ address: "0x20FE51A9229EEf2cF8Ad9E89d91CAb9312cF3b7A", chainKey: "bnb" });
+    let waits = 0;
+    c.sleep = async () => {};
+    c.pub.waitForTransactionReceipt = async () => {
+      waits++;
+      throw Object.assign(new Error("Timed out while waiting for transaction"), { name: "WaitForTransactionReceiptTimeoutError" });
+    };
+    const err = await signAndSend(c, { to: "0x000000000000000000000000000000000000dEaD", data: "0x" }, undefined, { chain: "bnb" }).then(() => null, (e) => e);
+    assert.ok(err instanceof Pending, `${err?.constructor?.name}: ${err?.message}`);
+    assert.equal(waits, 1, "a timeout is not waited out again");
+  }
+});
+
+test("publicnode's 403 'Archive requests require a personal token' (-32602) on a receipt lookup moves on (seen on Arbitrum and Polygon, 2026-10-15)", async () => {
+  const h = "0x" + "12".repeat(32);
+  const archive = { status: 403, body: { jsonrpc: "2.0", id: 1, error: { code: -32602, message: "Archive requests require a personal token. Get one at: https://www.allnodes.com/publicnode" } } };
+  const a = await node((m) => (m === "eth_getTransactionReceipt" || m === "eth_getTransactionByHash" ? archive : {}));
+  const receipt = {
+    blockHash: "0x" + "cd".repeat(32), blockNumber: "0x10", contractAddress: null, cumulativeGasUsed: "0x5208", effectiveGasPrice: "0x1",
+    from: "0x000000000000000000000000000000000000dEaD", gasUsed: "0x5208", logs: [], logsBloom: "0x" + "00".repeat(256), status: "0x1",
+    to: "0x000000000000000000000000000000000000bEEF", transactionHash: h, transactionIndex: "0x0", type: "0x2",
+  };
+  const b = await node((m) => (m === "eth_getTransactionReceipt" ? { result: receipt } : {}));
+  const r = await client([a.url, b.url]).getTransactionReceipt({ hash: h });
+  assert.equal(r.status, "success");
 });

@@ -100,7 +100,7 @@ sato-agent buy "solana:<recipient>?amount=5&spl-token=EPjFWdd5AufqSSqeM2qN1xzyba
 
 Add `--json` to any command for machine-readable output.
 
-**Upgrading to v0.4.3:** nothing changes for a working agent. A transaction that landed is no longer reported as "no receipt" (exit 4) when one RPC endpoint answers "Invalid parameters": the kit asks the next one (seen on Polygon). Polygon's default endpoints drop polygon-rpc.com (its public key is disabled) and add 1rpc.io/matic.
+**Upgrading to v0.4.3:** nothing changes for a working agent. A transaction that landed is no longer reported as "no receipt" (exit 4) when one RPC endpoint answers "Invalid parameters": the kit asks the next one and keeps waiting (seen on Polygon). Gift cards accept Bitrefill's 1800 s payment authorization (gift cards only; the price and payee stay bound; every other x402 payment keeps the 300 s limit). A seller that answers 402 after a signed payment is reported plainly. Polygon's default endpoints drop polygon-rpc.com (its public key is disabled) and add 1rpc.io/matic. With a single endpoint of your own (`SATO_AGENT_POLYGON_RPC` set to one URL) there is no next endpoint to ask, so list two, comma-separated, if you can.
 
 **Upgrading to v0.4.2:** nothing changes for a working agent: its wallet, limits, chains, ledger and approvals stay as they were, and `send` with no `--asset` binds and prints what it did before. v0.4.2 adds sending the chain's coin and any token in the wallet, with no Sato Hub fee (network gas only). v0.4.1 only added `SATO_AGENT_UA`. `init` on a folder that already holds a wallet now says plainly that it may be another bot's, and what to do (a new NAME); it still never replaces a wallet.
 
@@ -191,7 +191,7 @@ Every limit change is written to the ledger and shown in `status`. `pay` frames 
 - Every spend is checked and reserved under a lock before anything is signed, so two commands running at once can't both squeeze under the same limit.
 - Spend is read from the ledger, so a restart doesn't reset it. If the ledger is unreadable, spending stops.
 - x402 payments are checked twice: only a payment option inside the limits can be chosen, and the limits are checked again just before signing.
-- Payment authorizations must expire within 5 minutes.
+- Payment authorizations must expire within 5 minutes. The one exception is a gift-card invoice from Bitrefill, whose price and payee are bound before anything is signed: up to 30 minutes, because Bitrefill asks for that.
 - A signed payment always counts, even if the server rejects it, because the server could still settle it.
 - On Base, the agent signs EIP-3009 authorizations to valid Base addresses; a permit2 offer, or a recipient that is not a Base address, is refused before anything is reserved. After signing, the amount, recipient, payer and expiry are compared with what was reserved; anything else is not sent, stays counted, and the command exits with code 4.
 - A payment receipt counts as settled when it names a transaction id in that chain's own form. Any other id is not stored or shown, and the payment is treated as unsettled (exit 4). Text from a server (addresses, receipts, error messages) is shown and logged on one cleaned line.

@@ -14,7 +14,7 @@ freshHome();
 const { initWallet } = await import("../src/wallet.js");
 const { setPolicy } = await import("../src/policy.js");
 const { Pending, Refused } = await import("../src/errors.js");
-const { pay, MAX_AUTH_WINDOW_S } = await import("../src/x402.js");
+const { pay, MAX_AUTH_WINDOW_S, GIFTCARD_AUTH_WINDOW_S } = await import("../src/x402.js");
 const { spentLast24h, entries } = await import("../src/ledger.js");
 const { USDC_BASE } = await import("../src/base.js");
 
@@ -44,6 +44,8 @@ const offers = {
   "/eip3009": [{ ...requirement({ amount: "10000" }), extra: { name: "USD Coin", version: "2", assetTransferMethod: "eip3009" } }],
   "/bad-payto": [{ ...requirement({ amount: "10000" }), payTo: "0x1111\u001b[31m" }],
   "/zero": [requirement({ amount: "0" })],
+  "/half-hour": [requirement({ amount: "10000", maxTimeoutSeconds: 1800 })], // Bitrefill's window (2026-10-15)
+  "/half-hour-plus": [requirement({ amount: "10000", maxTimeoutSeconds: 1801 })],
   "/huge": [requirement({ amount: "99999999999999999999" })],
 };
 
@@ -381,4 +383,27 @@ test("Base: a signed authorization that is not what was reserved is NOT sent, st
   const r = await pay(`${origin}/cheap`, { scheme: fakeEvmScheme(good) });
   assert.equal(seen.length, n + 1);
   assert.equal(r.signed, true);
+});
+
+test("the gift-card window: 1800 s only with the price AND payee bound; refused without them, and nothing longer is ever signed", async () => {
+  setPolicy({ chains: "base", perTx: "1", perDay: "100" });
+  let n = seen.length;
+  // A plain pay keeps 300 s.
+  await assert.rejects(pay(`${origin}/half-hour`), (e) => e instanceof Refused && e.refusals.some((r) => r.rule === "authorization_window" && r.limit === MAX_AUTH_WINDOW_S));
+  assert.equal(seen.length, n, "nothing signed");
+  // The longer window without both terms bound, or with another value: an error before anything is fetched.
+  await assert.rejects(pay(`${origin}/half-hour`, { authWindowS: GIFTCARD_AUTH_WINDOW_S }), /only allowed/);
+  await assert.rejects(pay(`${origin}/half-hour`, { maxUsd: 0.01, authWindowS: GIFTCARD_AUTH_WINDOW_S }), /only allowed/);
+  await assert.rejects(pay(`${origin}/half-hour`, { maxUsd: 0.01, payTo: PAY_TO, authWindowS: 3600 }), /only allowed/);
+  assert.equal(seen.length, n);
+  // Bound and allowed: signed, and the authorization really expires within the window.
+  const r = await pay(`${origin}/half-hour`, { maxUsd: 0.01, payTo: PAY_TO, authWindowS: GIFTCARD_AUTH_WINDOW_S });
+  assert.equal(r.status, 200);
+  assert.equal(seen.length, n + 1);
+  const left = Number(seen.at(-1).payload.payload.authorization.validBefore) - Date.now() / 1000;
+  assert.ok(left > MAX_AUTH_WINDOW_S && left <= GIFTCARD_AUTH_WINDOW_S + 5, `window ${left}`);
+  // One second more than the gift-card window is still refused.
+  n = seen.length;
+  await assert.rejects(pay(`${origin}/half-hour-plus`, { maxUsd: 0.01, payTo: PAY_TO, authWindowS: GIFTCARD_AUTH_WINDOW_S }), (e) => e instanceof Refused && e.refusals.some((r) => r.rule === "authorization_window"));
+  assert.equal(seen.length, n);
 });

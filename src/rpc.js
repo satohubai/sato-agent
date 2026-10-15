@@ -71,7 +71,8 @@ export function isRetryable(err, method) {
   // A lookup by hash, block or address carries no argument a node could fairly call wrong, so an endpoint that does (-32602, -32600,
   // "invalid params") is that endpoint's quirk, not the answer: ask the next one. Seen on Polygon (2026-10-15): every write ended in
   // "no receipt … Invalid parameters" while the transactions had landed and other endpoints served their receipts.
-  if (LOOKUP_METHODS.has(method)) return true;
+  // (Only an error that came back from an endpoint: a bug in our own code is not an endpoint's failure and surfaces at once.)
+  if (LOOKUP_METHODS.has(method) && (typeof codeOf(err) === "number" || /Rpc|Http|Unknown|Internal/.test(err?.name ?? ""))) return true;
   // A node's definite answer to this read ends it.
   const code = codeOf(err);
   if (code === 3 || code === -32602 || code === -32600 || code === -32015 || DEFINITE_ANSWER.test(text(err))) return false;

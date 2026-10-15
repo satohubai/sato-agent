@@ -40,6 +40,12 @@ import { userAgent } from "./version.js";
 /** Base's x402 network name (CAIP-2), under its v0.3 name; every chain's is in src/chains.js. */
 export const BASE_NETWORK = evmChain("base").x402.caip2;
 export const MAX_AUTH_WINDOW_S = 300;
+/**
+ * The one exception: a gift-card invoice (src/bitrefill.js). Bitrefill asks for an 1800 s authorization (seen 2026-10-15 on
+ * Polygon), and there the price and the payee are both pinned and approved before anything is signed, so a longer window only gives
+ * Bitrefill more time to collect that same payment. `pay` accepts it only with both bound; every other payment keeps 300 s.
+ */
+export const GIFTCARD_AUTH_WINDOW_S = 1800;
 /** The chains this kit pays x402 on: every chain in the registry with the `x402` feature. */
 export const PAY_CHAINS = chainsWith("x402");
 
@@ -167,8 +173,9 @@ const evmPreSign = (key) => (v) => {
   return out;
 };
 
-const evmX402Chain = (key, account, scheme, c = evmChain(key), stable = c.stables[c.defaultStable]) => ({
+const evmX402Chain = (key, account, scheme, windowS = MAX_AUTH_WINDOW_S, c = evmChain(key), stable = c.stables[c.defaultStable]) => ({
   name: key,
+  maxWindowS: windowS,
   decimals: stable.decimals,
   assetSymbol: stable.symbol,
   scheme: scheme ?? new ExactEvmScheme(account),
@@ -190,9 +197,9 @@ const evmX402Chain = (key, account, scheme, c = evmChain(key), stable = c.stable
     const problems = [];
     const validBefore = Number(auth?.validBefore);
     const left = validBefore - Date.now() / 1000;
-    if (!Number.isFinite(validBefore) || left > MAX_AUTH_WINDOW_S + 30) {
-      seen.push({ rule: "authorization_window", limit: MAX_AUTH_WINDOW_S, observed: Number.isFinite(left) ? Math.round(left) : "unknown", message: "the signed authorization would stay valid too long (or its expiry could not be read); it was not sent" });
-      problems.push(`the signed authorization would stay valid ${Number.isFinite(left) ? `${Math.round(left)} s` : "for an unknown time"} (limit ${MAX_AUTH_WINDOW_S} s)`);
+    if (!Number.isFinite(validBefore) || left > windowS + 30) {
+      seen.push({ rule: "authorization_window", limit: windowS, observed: Number.isFinite(left) ? Math.round(left) : "unknown", message: "the signed authorization would stay valid too long (or its expiry could not be read); it was not sent" });
+      problems.push(`the signed authorization would stay valid ${Number.isFinite(left) ? `${Math.round(left)} s` : "for an unknown time"} (limit ${windowS} s)`);
     }
     if (units === null || String(auth?.value) !== units.toString()) problems.push(`the signed authorization is for ${clean(auth?.value ?? "an unknown amount", 40)} atomic units, reserved ${units}`);
     if (typeof auth?.to !== "string" || auth.to.toLowerCase() !== String(req.payTo).toLowerCase()) problems.push("the signed authorization does not pay the recipient that was reserved");
@@ -278,8 +285,9 @@ function check(policy, raw, chain, version, bound = null) {
   // Must be a real integer: the signing code computes `now + maxTimeoutSeconds`,
   // and a string "300" would concatenate into an authorization valid for millennia.
   const w = req.maxTimeoutSeconds;
-  if (!(typeof w === "number" && Number.isInteger(w) && w > 0 && w <= MAX_AUTH_WINDOW_S)) {
-    return [{ rule: "authorization_window", limit: MAX_AUTH_WINDOW_S, observed: req.maxTimeoutSeconds, message: `the server asks for a payment authorization valid for ${clean(JSON.stringify(req.maxTimeoutSeconds) ?? "an unknown time", 40)}s; the limit is ${MAX_AUTH_WINDOW_S}s` }];
+  const maxW = chain.maxWindowS ?? MAX_AUTH_WINDOW_S;
+  if (!(typeof w === "number" && Number.isInteger(w) && w > 0 && w <= maxW)) {
+    return [{ rule: "authorization_window", limit: maxW, observed: req.maxTimeoutSeconds, message: `the server asks for a payment authorization valid for ${clean(JSON.stringify(req.maxTimeoutSeconds) ?? "an unknown time", 40)}s; the limit is ${maxW}s` }];
   }
   const extra = chain.preSign?.(req) ?? [];
   if (extra.length) return extra;
@@ -301,14 +309,14 @@ function check(policy, raw, chain, version, bound = null) {
 }
 
 /** What `pay` and `quoteX402` both do first: the owner's chain, and a chain object (no network call, nothing signed). */
-async function prepare({ chain: requestedChain, headers, account, signer, scheme, rpc, rpcTimeoutMs }) {
+async function prepare({ chain: requestedChain, headers, account, signer, scheme, rpc, rpcTimeoutMs, windowS = MAX_AUTH_WINDOW_S }) {
   const policy = loadPolicy();
   const { chain: chainName, refusals } = resolvePayChain(policy, requestedChain);
   // No limits, no chains chosen, or a chain the owner did not choose: nothing reserved, nothing fetched.
   if (refusals.length) throw new Refused(refusals);
   const reserved = Object.keys(headers).filter((k) => RESERVED_HEADERS.includes(k.toLowerCase()));
   if (reserved.length) throw new Error(`header ${reserved.join(", ")} is reserved for the payment exchange`);
-  const chain = isEvm(chainName) ? evmX402Chain(chainName, account ?? evmAccount(), scheme) : await solanaChain({ signer, scheme, rpc, rpcTimeoutMs });
+  const chain = isEvm(chainName) ? evmX402Chain(chainName, account ?? evmAccount(), scheme, windowS) : await solanaChain({ signer, scheme, rpc, rpcTimeoutMs });
   return { policy, chain };
 }
 
@@ -413,11 +421,15 @@ export async function quoteX402(url, { chain: requestedChain, method = "GET", bo
  * (Base) and `signer` / `scheme` / `rpc` / `rpcTimeoutMs` (Solana) are for tests;
  * by default they come from the agent's own wallet and SATO_AGENT_SOLANA_RPC.
  */
-export async function pay(url, { chain: requestedChain, method = "GET", body, headers = {}, maxUsd, payTo, account, signer, scheme, rpc, rpcTimeoutMs, fetchImpl = fetch, timeoutMs = 60_000, tag } = {}) {
+export async function pay(url, { chain: requestedChain, method = "GET", body, headers = {}, maxUsd, payTo, account, signer, scheme, rpc, rpcTimeoutMs, fetchImpl = fetch, timeoutMs = 60_000, tag, authWindowS } = {}) {
   // `tag`: plain fields a caller adds to the ledger line (a purchase's kind and invoice id). Never a secret.
   const tagFields = tag && typeof tag === "object" ? Object.fromEntries(Object.entries(tag).map(([k, v]) => [k, clean(v, 120)])) : {};
   const bound = boundTerms({ maxUsd, payTo }); // the price (and payee) the owner approved, if one was quoted first
-  const { policy, chain } = await prepare({ chain: requestedChain, headers, account, signer, scheme, rpc, rpcTimeoutMs });
+  // The longer gift-card window only with BOTH the price and the payee bound (see GIFTCARD_AUTH_WINDOW_S); any other value is refused.
+  if (authWindowS !== undefined && !(authWindowS === GIFTCARD_AUTH_WINDOW_S && bound && bound.payTo !== undefined)) {
+    throw new Error(`authWindowS ${authWindowS} is only allowed as ${GIFTCARD_AUTH_WINDOW_S}, with the price and the payee bound`);
+  }
+  const { policy, chain } = await prepare({ chain: requestedChain, headers, account, signer, scheme, rpc, rpcTimeoutMs, windowS: authWindowS ?? MAX_AUTH_WINDOW_S });
 
   const seen = [];
   const guard = (version, reqs) =>

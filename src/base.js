@@ -130,11 +130,24 @@ export async function signAndSend(c, { to, data, value = 0n, gas, nonce }, onSig
     },
     { name: lockName(chain, "nonce"), waitMs: 60_000 },
   );
+  // Wait up to two minutes in all. viem gives up on the first receipt lookup that errors, and on public endpoints a whole round can
+  // fail at once (rate limits, an endpoint calling a lookup "Invalid parameters": Polygon, 2026-10-15), so an RPC error is waited out
+  // and asked again until the deadline. A timeout, or anything that is not an RPC error, ends the wait as Pending. Reading never signs.
   let receipt;
-  try {
-    receipt = await c.pub.waitForTransactionReceipt({ hash, timeout: 120_000 });
-  } catch (err) {
-    throw new Pending(`no receipt for ${hash} yet (${err.shortMessage || err.message}).`, { tx: hash, explorer: explorer(chain, hash), counted });
+  const deadline = Date.now() + 120_000;
+  const pause = c.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  for (;;) {
+    try {
+      receipt = await c.pub.waitForTransactionReceipt({ hash, timeout: Math.max(1_000, deadline - Date.now()) });
+      break;
+    } catch (err) {
+      const timedOut = err?.name === "WaitForTransactionReceiptTimeoutError" || /timed? ?out/i.test(`${err?.shortMessage ?? ""} ${err?.message ?? ""}`);
+      const rpcError = typeof (err?.code ?? err?.cause?.code) === "number" || /Rpc|Http|BlockNotFound|TransactionNotFound/.test(err?.name ?? "");
+      if (timedOut || !rpcError || Date.now() > deadline - 3_000) {
+        throw new Pending(`no receipt for ${hash} yet (${err.shortMessage || err.message}).`, { tx: hash, explorer: explorer(chain, hash), counted });
+      }
+      await pause(3_000);
+    }
   }
   if (receipt.transactionHash.toLowerCase() !== hash.toLowerCase()) {
     throw new Rejected(`${hash} was replaced by ${receipt.transactionHash} (its nonce was used by another transaction); ${hash} itself never landed`);
@@ -253,11 +266,11 @@ export async function registerAgent({ name, description, image, services = [], x
   if (policy && !allowedChains(policy).includes(chain)) throw new Error(`this agent is set to work on ${allowedChains(policy).join(" and ")} only; ERC-8004 registration is on ${ch.label}`);
   let agentId;
   let r1; // step one's receipt (a fresh registration only)
+  const prior = registeredIds(chain);
   if (resume !== undefined) {
     if (!/^\d+$/.test(String(resume))) throw new Error("--resume takes the agent id");
     agentId = BigInt(resume);
   } else {
-    const prior = registeredIds(chain);
     if (prior.done.length && !again) throw new Error(`this wallet already registered agent id ${prior.done.join(", ")}; add --again to register another`);
     if (prior.pending.length && !again) throw new Error(`a registration was sent but never confirmed (${prior.pending.map((h) => explorer(chain, h)).join(", ")}); check it, then use --resume <agent id> or --again`);
     const first = registrationUri({ name, description, image, services, x402Support, chain });
@@ -299,6 +312,11 @@ export async function registerAgent({ name, description, image, services = [], x
     }
     if (r2.status !== "success") throw new Error(`setAgentURI reverted: ${explorer(chain, r2.transactionHash)}`);
     record({ kind: "register_uri", status: "confirmed", chain, usd: 0, agent_id: agentId.toString(), tx: r2.transactionHash });
+    // A resume that finished step two also records the registration itself, so `proof` and a later `register` see it. Safe to record:
+    // the setAgentURI call above reverts for an id this wallet does not own. It names step one's transaction when exactly one is pending.
+    if (resume !== undefined && !prior.done.includes(agentId.toString())) {
+      record({ kind: "register", status: "registered", chain, usd: 0, agent_id: agentId.toString(), ...(prior.pending.length === 1 ? { tx: prior.pending[0] } : {}) });
+    }
     return { agent_id: agentId.toString(), registry: registryId, tx: r2.transactionHash, explorer: explorer(chain, r2.transactionHash) };
   } catch (err) {
     throw new Error(`registered as agent ${agentId}, but writing its registration file failed (${err.shortMessage || err.message}). Finish with: sato-agent register --resume ${agentId} --name ... --description ...`);

@@ -577,7 +577,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
       const head = r.settled
         ? `Paid ${r.usd} USDC on ${r.chain} to ${r.pay_to} (HTTP ${r.status})\n  ${r.explorer}`
         : r.signed
-          ? `Signed a payment of ${r.usd} USDC on ${r.chain} to ${r.pay_to}, but the server returned HTTP ${r.status} with no settlement receipt. It stays counted against the limits (the server may still settle it). Do NOT retry.${r.explorer ? `\n  Check: ${r.explorer}` : ""}`
+          ? `Signed a payment of ${r.usd} USDC on ${r.chain} to ${r.pay_to}, but the server returned HTTP ${r.status} with no settlement receipt. It stays counted against the limits (the server may still settle it). Do NOT retry.${r.status === 402 ? ` A seller that answers 402 after receiving a signed payment may have collected it without delivering: check the wallet link for the USDC leaving, and tell the owner which seller it was.` : ""}${r.explorer ? `\n  Check: ${r.explorer}` : ""}`
           : `No payment made (HTTP ${r.status}).`;
       const bodyText = untrustedBody(url, r.body);
       if (r.signed && !r.settled) process.exitCode = 4; // signed, unsettled: do NOT retry (also in --json mode)

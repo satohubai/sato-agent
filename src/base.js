@@ -35,6 +35,7 @@ export const IDENTITY_REGISTRY = evmChain("base").erc8004Registry;
 export const identityRegistryAbi = [
   { type: "function", name: "register", stateMutability: "nonpayable", inputs: [{ name: "agentURI", type: "string" }], outputs: [{ name: "agentId", type: "uint256" }] },
   { type: "function", name: "setAgentURI", stateMutability: "nonpayable", inputs: [{ name: "agentId", type: "uint256" }, { name: "newURI", type: "string" }], outputs: [] },
+  { type: "function", name: "ownerOf", stateMutability: "view", inputs: [{ name: "tokenId", type: "uint256" }], outputs: [{ name: "", type: "address" }] },
   { type: "event", name: "Registered", inputs: [{ name: "agentId", type: "uint256", indexed: true }, { name: "agentURI", type: "string", indexed: false }, { name: "owner", type: "address", indexed: true }] },
 ];
 
@@ -141,8 +142,8 @@ export async function signAndSend(c, { to, data, value = 0n, gas, nonce }, onSig
       receipt = await c.pub.waitForTransactionReceipt({ hash, timeout: Math.max(1_000, deadline - Date.now()) });
       break;
     } catch (err) {
-      const timedOut = err?.name === "WaitForTransactionReceiptTimeoutError" || /timed? ?out/i.test(`${err?.shortMessage ?? ""} ${err?.message ?? ""}`);
-      const rpcError = typeof (err?.code ?? err?.cause?.code) === "number" || /Rpc|Http|BlockNotFound|TransactionNotFound/.test(err?.name ?? "");
+      const timedOut = err?.name === "WaitForTransactionReceiptTimeoutError";
+      const rpcError = typeof (err?.code ?? err?.cause?.code) === "number" || /Rpc|Http|BlockNotFound|TransactionNotFound|^TimeoutError$/.test(err?.name ?? "");
       if (timedOut || !rpcError || Date.now() > deadline - 3_000) {
         throw new Pending(`no receipt for ${hash} yet (${err.shortMessage || err.message}).`, { tx: hash, explorer: explorer(chain, hash), counted });
       }
@@ -270,6 +271,12 @@ export async function registerAgent({ name, description, image, services = [], x
   if (resume !== undefined) {
     if (!/^\d+$/.test(String(resume))) throw new Error("--resume takes the agent id");
     agentId = BigInt(resume);
+    // Only this wallet's own agent: setAgentURI also lets an approved address through, and a resume records the id as this
+    // wallet's registration. Read before anything is signed.
+    const owner = await c.pub.readContract({ address: registry, abi: identityRegistryAbi, functionName: "ownerOf", args: [agentId] });
+    if (String(owner).toLowerCase() !== c.account.address.toLowerCase()) {
+      throw new Error(`agent ${agentId} on ${ch.label} belongs to ${owner}, not this wallet (${c.account.address}); nothing was signed`);
+    }
   } else {
     if (prior.done.length && !again) throw new Error(`this wallet already registered agent id ${prior.done.join(", ")}; add --again to register another`);
     if (prior.pending.length && !again) throw new Error(`a registration was sent but never confirmed (${prior.pending.map((h) => explorer(chain, h)).join(", ")}); check it, then use --resume <agent id> or --again`);
@@ -312,10 +319,20 @@ export async function registerAgent({ name, description, image, services = [], x
     }
     if (r2.status !== "success") throw new Error(`setAgentURI reverted: ${explorer(chain, r2.transactionHash)}`);
     record({ kind: "register_uri", status: "confirmed", chain, usd: 0, agent_id: agentId.toString(), tx: r2.transactionHash });
-    // A resume that finished step two also records the registration itself, so `proof` and a later `register` see it. Safe to record:
-    // the setAgentURI call above reverts for an id this wallet does not own. It names step one's transaction when exactly one is pending.
+    // A resume that finished step two also records the registration itself, so `proof` and a later `register` see it (the id was
+    // checked above to be this wallet's own). It names step one's transaction only when that transaction registered this very id.
     if (resume !== undefined && !prior.done.includes(agentId.toString())) {
-      record({ kind: "register", status: "registered", chain, usd: 0, agent_id: agentId.toString(), ...(prior.pending.length === 1 ? { tx: prior.pending[0] } : {}) });
+      let tx;
+      for (const h of prior.pending) {
+        try {
+          const rc = await c.pub.getTransactionReceipt({ hash: h });
+          const ev = parseEventLogs({ abi: identityRegistryAbi, logs: rc.logs ?? [], eventName: "Registered" }).find((l) => l.address.toLowerCase() === registry.toLowerCase());
+          if (ev && ev.args.agentId === agentId) tx = h;
+        } catch {
+          /* unreadable: recorded without it */
+        }
+      }
+      record({ kind: "register", status: "registered", chain, usd: 0, agent_id: agentId.toString(), ...(tx ? { tx } : {}) });
     }
     return { agent_id: agentId.toString(), registry: registryId, tx: r2.transactionHash, explorer: explorer(chain, r2.transactionHash) };
   } catch (err) {

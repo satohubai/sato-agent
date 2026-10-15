@@ -41,6 +41,13 @@ function staleClient({ staleCalls }) {
       async simulateContract() {
         return {};
       },
+      async readContract({ functionName }) {
+        if (functionName === "ownerOf") return state.owner ?? me;
+        throw new Error(`unexpected read ${functionName}`);
+      },
+      async getTransactionReceipt({ hash }) {
+        return { transactionHash: hash, status: "success", logs: state.pendingLogs?.[hash] ?? [] };
+      },
       async call() {
         state.calls++;
         if (state.calls <= staleCalls) throw Object.assign(new Error("Execution reverted for an unknown reason."), { shortMessage: "Execution reverted for an unknown reason." });
@@ -88,4 +95,23 @@ test("a --resume that finishes step two records the registration, so proof and a
   assert.ok(registeredIds("base").done.includes("4242"));
   await registerAgent({ name: "Sato Base Agent", description: "test", resume: 4242 }, c);
   assert.equal(entries().filter((e) => e.agent_id === "4242" && e.kind === "register").length, 1, "a second resume does not record it twice");
+});
+
+test("--resume refuses an agent this wallet does not own, before anything is signed", async () => {
+  const { c, state } = staleClient({ staleCalls: 0 });
+  state.owner = "0x9999999999999999999999999999999999999999";
+  await assert.rejects(registerAgent({ name: "Sato Base Agent", description: "test", resume: 5151 }, c), /belongs to 0x9999.*not this wallet.*nothing was signed/s);
+  assert.equal(state.sent.length, 0, "nothing prepared or sent");
+});
+
+test("--resume names step one's transaction only when that transaction registered this very id", async () => {
+  const { record, entries } = await import("../src/ledger.js");
+  const other = `0x${"77".repeat(32)}`;
+  record({ kind: "register_sent", status: "signed", chain: "base", usd: 0, tx: other });
+  const { c, state } = staleClient({ staleCalls: 0 });
+  state.pendingLogs = { [other]: [{ address: IDENTITY_REGISTRY, topics: encodeEventTopics({ abi: identityRegistryAbi, eventName: "Registered", args: { agentId: 1n, owner: me } }), data: encodeAbiParameters([{ type: "string" }], ["x"]) }] };
+  await registerAgent({ name: "Sato Base Agent", description: "test", resume: 6262 }, c);
+  const row = entries().find((e) => e.kind === "register" && e.agent_id === "6262");
+  assert.ok(row, "recorded");
+  assert.equal(row.tx, undefined, "the pending transaction registered another id, so it is not attached");
 });

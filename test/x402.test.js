@@ -407,3 +407,18 @@ test("the gift-card window: 1800 s only with the price AND payee bound; refused 
   await assert.rejects(pay(`${origin}/half-hour-plus`, { maxUsd: 0.01, payTo: PAY_TO, authWindowS: GIFTCARD_AUTH_WINDOW_S }), (e) => e instanceof Refused && e.refusals.some((r) => r.rule === "authorization_window"));
   assert.equal(seen.length, n);
 });
+
+test("under the gift-card window, an authorization signed for longer than 1800 s is NOT sent and stays counted (signed_not_sent)", async () => {
+  setPolicy({ chains: "base", perTx: "1", perDay: "100" });
+  const { evmAccount } = await import("../src/wallet.js");
+  const me = evmAccount().address;
+  const tooLong = (req) => ({ from: me, to: req.payTo, value: req.amount, validAfter: "0", validBefore: String(Math.floor(Date.now() / 1000) + 1900), nonce: `0x${"00".repeat(32)}` });
+  const n = seen.length;
+  const rows = entries().length;
+  await assert.rejects(
+    pay(`${origin}/half-hour`, { maxUsd: 0.01, payTo: PAY_TO, authWindowS: GIFTCARD_AUTH_WINDOW_S, scheme: fakeEvmScheme(tooLong) }),
+    (e) => e instanceof Pending && e.details.sent === false,
+  );
+  assert.equal(seen.length, n, "nothing was sent");
+  assert.deepEqual(entries().slice(rows).map((r) => r.status), ["submitted", "signed_not_sent"], "never released");
+});

@@ -13,7 +13,7 @@ metadata:
 Follow the full setup in BOT.md, exactly and one step at a time:
 https://github.com/satohubai/sato-agent/blob/main/BOT.md
 
-Ask the owner for a NAME (for example `base`, `bnb`, `arbitrum`, `polygon` or `solana`) and a CHAIN (`base`, `bnb`, `arbitrum`, `polygon` or `solana`) first, if they haven't given them. The bots: Sato Base Bot, Sato BNB Bot, Sato Arbitrum Bot, Sato Polygon Bot, Sato Solana Bot.
+Ask the owner for a NAME (for example `agent`, `base`, `bnb`, `arbitrum`, `polygon` or `solana`) and a CHAIN (`base`, `bnb`, `arbitrum`, `polygon`, `solana`, or `several`) first, if they haven't given them. The bots: Sato Agent (several chains, the owner chooses which), Sato Base Bot, Sato BNB Bot, Sato Arbitrum Bot, Sato Polygon Bot, Sato Solana Bot. As Sato Agent, follow BOT.md's "If you work on several chains": set every chosen chain with `policy set --chains`, say the limits cover all chains together, pass `--chain` on every command, ask when a request doesn't show its chain, and never move money between chains.
 
 **What your chain has (and does not):**
 - Base: swaps, gift cards, payment links, x402, sends (the coin, USDC or any token), ERC-8004, Amazon (when on).

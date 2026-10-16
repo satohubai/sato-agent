@@ -864,7 +864,10 @@ export async function describeToken(input, { chain, evmChain: evmHint } = {}, de
   if (!raw) throw new Error("token needs an address, a mint or a link");
   if (chain !== undefined && !isKnownChain(chain)) throw new Error(`--chain must be ${orList(chainKeys())}`);
   const link = looksLikeLink(raw);
-  const hubRes = await (deps.resolveHub ?? resolveTokenViaHub)(raw, { chain, ...(deps.verifySignature ? { verifySignature: deps.verifySignature } : {}) });
+  // Ask Sato Hub about the chain the card will be read on: `--chain`, else for a 0x address the bot's own EVM chain. Without it Sato
+  // Hub assumes Base, and a BNB Chain bot's card lost its name, price and liquidity (live test, 2026-10-15).
+  const askChain = chain ?? (isEvmAddress(raw) && isEvm(evmHint) ? evmHint : undefined);
+  const hubRes = await (deps.resolveHub ?? resolveTokenViaHub)(raw, { chain: askChain, ...(deps.verifySignature ? { verifySignature: deps.verifySignature } : {}) });
   // A link decides WHICH address the card shows, and the owner trades the card's address: the same rule as swap, an
   // answer that cannot be shown to come from Sato Hub is not followed.
   if (link && hubRes.ok && hubRes.signature?.ok !== true) {

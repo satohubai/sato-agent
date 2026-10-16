@@ -51,7 +51,7 @@ Each Bot keeps its own wallet, limits and ledger, even on the same Grok Bot comp
 ## Quickstart (any machine)
 
 ```sh
-npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.3
+npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.4
 alias sato-agent=~/.sato-agent-cli/node_modules/.bin/sato-agent
 # npm may print "ERESOLVE overriding peer dependency" three times (the Solana x402
 # library's helpers ask for an older @solana/kit). That is expected; the tests run on these versions.
@@ -99,6 +99,8 @@ sato-agent buy "solana:<recipient>?amount=5&spl-token=EPjFWdd5AufqSSqeM2qN1xzyba
 | `status` | Limits, spend in the last 24 hours, limit changes, recent spends |
 
 Add `--json` to any command for machine-readable output.
+
+**Upgrading to v0.4.4:** nothing changes for a working agent. `token <0x…>` with no `--chain` now asks Sato Hub about the agent's own EVM chain (it assumed Base before, so a BNB Chain, Arbitrum or Polygon card lost Sato Hub's name, price and liquidity).
 
 **Upgrading to v0.4.3:** nothing changes for a working agent. A transaction that landed is no longer reported as "no receipt" (exit 4) when one RPC endpoint answers "Invalid parameters": the kit asks the next one and keeps waiting (seen on Polygon). Gift cards accept Bitrefill's 1800 s payment authorization (gift cards only; the price and payee stay bound; every other x402 payment keeps the 300 s limit). A seller that answers 402 after a signed payment is reported plainly. Polygon's default endpoints drop polygon-rpc.com (its public key is disabled) and add 1rpc.io/matic. With a single endpoint of your own (`SATO_AGENT_POLYGON_RPC` set to one URL) there is no next endpoint to ask, so list two, comma-separated, if you can.
 

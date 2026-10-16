@@ -148,7 +148,7 @@ test("token <address>: the card has the chain's facts, Sato Hub's dated price an
   assert.match(r.stdout, /Sato Hub's token check \(dated evidence, 2026-10-09T10:00:00Z; not a verdict on anyone\):\nEvidence \(dated 2026-10-09\):\n- liquidity: \$1\.2M in the main pool/);
   // Sato Hub was asked the resolver, then the token check for the address the chain gave back
   assert.deepEqual(asked.map((a) => a.name), ["onchain_agent_resolve_token", "onchain_agent_preflight"]);
-  assert.deepEqual(asked[0].args, { input: DEGEN, response_format: "json" });
+  assert.deepEqual(asked[0].args, { input: DEGEN, chain: "base", response_format: "json" }, "the bot's own EVM chain is sent (2026-10-15)");
   assert.deepEqual(asked[1].args, { token: DEGEN, chain: "Base" });
   assert.doesNotMatch(r.stdout, /\b(safe|secure|trusted|guaranteed|verified|audited)\b/i);
 });
@@ -361,4 +361,21 @@ test("help lists the token command, the swap forms and the per-trade rules", asy
   assert.match(r.stdout, /token <address\|mint\|link> \[--chain base\|bnb\|arbitrum\|polygon\|solana\]/);
   assert.match(r.stdout, /--amount <n\|all>/);
   assert.match(r.stdout, /Slippage is picked\s+per trade/);
+});
+
+test("token <0x…> with no --chain asks Sato Hub about the bot's own EVM chain (BNB card lost its name and price, 2026-10-15)", async () => {
+  const asked = [];
+  const deps = {
+    resolveHub: async (input, { chain }) => (asked.push(chain), { ok: false, reason: "unavailable", error: "test" }),
+    resolveBaseToken: async () => ({ address: DEGEN, symbol: "CAKE", name: "PancakeSwap Token", decimals: 18, native: false, major: false }),
+    runCheck: async () => ({ unavailable: true }),
+  };
+  await describeToken(DEGEN, { evmChain: "bnb" }, deps).catch(() => null);
+  assert.deepEqual(asked, ["bnb"], "the bot's EVM chain is sent, not left for Sato Hub to assume Base");
+  asked.length = 0;
+  await describeToken(DEGEN, { chain: "arbitrum", evmChain: "bnb" }, deps).catch(() => null);
+  assert.deepEqual(asked, ["arbitrum"], "--chain wins");
+  asked.length = 0;
+  await describeToken(DEGEN, {}, deps).catch(() => null);
+  assert.deepEqual(asked, [undefined], "no hint: unchanged");
 });

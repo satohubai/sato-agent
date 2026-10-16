@@ -679,8 +679,11 @@ test("a quote that pays out more than the amount SENT needs the owner's yes (sta
   // just above the amount sent, between stablecoins, already asks
   const over = await B.runBridge(req(), { dryRun: true }, world({ take: usdcUnits(1000.5) }).deps);
   assert.deepEqual(over.prepared.confirm.map((r) => r.code), ["bridge_take_above_market"]);
-  // an honest order pays out less than it sends: no reason
-  const near = await B.runBridge(req(), { dryRun: true }, world({ take: usdcUnits(999) }).deps);
+  // exactly the amount sent arriving is unfillable too (the solver is paid from the amount sent less the fees): it asks
+  const even = await B.runBridge(req(), { dryRun: true }, world({ take: usdcUnits(1000) }).deps);
+  assert.deepEqual(even.prepared.confirm.map((r) => r.code), ["bridge_take_above_market"]);
+  // an honest order pays out less than the amount sent less Sato Hub's 0.25%: no reason
+  const near = await B.runBridge(req(), { dryRun: true }, world({ take: usdcUnits(997) }).deps);
   assert.equal(near.prepared.confirm.length, 0);
   // a priced coin out: 2% wide against the $1000 sent. $1025 of ETH is 2.5% above; $1015 is 1.5%
   const eth = (usd) => world({ tokenOut: ZERO, take: BigInt(Math.round((usd / 2500) * 1e18)) });

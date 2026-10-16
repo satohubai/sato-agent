@@ -583,8 +583,9 @@ export async function planBridge(req, deps = {}) {
   // with a coin on either side, 2% for the oracle's own drift. Never "low cost".
   if (cost.give_usd !== null && cost.give_usd !== undefined && cost.take_usd !== null) {
     const bothStable = sized.tokenIn.kind === "stable" && sized.tokenOut.kind === "stable";
-    const tolerance = bothStable ? 0 : 0.02;
-    if (cost.take_usd > cost.give_usd * (1 + tolerance)) {
+    // Stable to stable the line is the amount sent less Sato Hub's fee (the solver is paid from what is left, so even that much arriving is unfillable).
+    const line = bothStable ? cost.give_usd * (1 - facts.feeBps / 10_000) : cost.give_usd * 1.02;
+    if (cost.take_usd > line) {
       confirm.push(reason("bridge_take_above_market", `the quote pays out more than it sends ($${money(cost.take_usd)} arriving for $${money(cost.give_usd)} sent), which a fair order does not; it may never be filled`));
     }
   }

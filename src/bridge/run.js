@@ -29,7 +29,7 @@ import { actions, record, release, reserve, spentLast24h } from "../ledger.js";
 import { NeedsApproval, Pending, Refused, Rejected } from "../errors.js";
 import { consumeApproval, requestApproval } from "../approvals.js";
 import { oraclePrice, PriceUnavailable } from "../price.js";
-import { NATIVE_PLACEHOLDER, dlnSourceOf, evmChain, explorerTx, getChain, isEvm, isKnownChain, labelOf, lockName, orList, stablesOf } from "../chains.js";
+import { NATIVE_PLACEHOLDER, debridgeChainIdOf, dlnSourceOf, evmChain, explorerTx, getChain, isEvm, isKnownChain, labelOf, isKnownDlnTaker, lockName, orList, stablesOf } from "../chains.js";
 import { callTool as satoCallTool } from "../satohub.js";
 import { verifyHubSignature } from "../hub-signature.js";
 import { addresses } from "../wallet.js";
@@ -40,6 +40,7 @@ import { withLock } from "../store.js";
 import { userAgent } from "../version.js";
 import { MAX_AGE_MS, SATO_FEE_RECIPIENT, assetDeltas, decimalToUnits, defaultSimulate, exactGasLimit, simGasSwap, swapGasLimit, unitsToDecimal } from "../swap/evm.js";
 import { feePercent } from "../swap/fee-tier.js";
+import { encodeDestAddress } from "./dln.js";
 
 // ---------------------------------------------------------------- pinned values
 
@@ -70,6 +71,8 @@ export const DEBRIDGE_NATIVE_SOLANA = "11111111111111111111111111111111";
 /** deBridge's public API: the order status, and the orders a transaction created. Read only. */
 export const DLN_API = "https://dln.debridge.finance/v1.0/dln";
 const API_TIMEOUT_MS = 15_000;
+/** An order still "Created" after this long is not being filled: `bridge status` says how it can be cancelled. */
+export const STUCK_AFTER_MINUTES = 30;
 const RPC_TIMEOUT_MS = 20_000;
 const SIM_GAS_APPROVE = 100_000n;
 const RESET_GAS = 100_000n;
@@ -138,6 +141,8 @@ const withTimeout = (p, ms = RPC_TIMEOUT_MS) =>
 /** Round a percentage up to the next whole percent: the band an approval binds (a worse cost needs a new approval). */
 const band = (pct) => `upto_${Math.max(1, Math.ceil(Number(pct) - 1e-9))}pct`;
 const reason = (code, text) => ({ code, text });
+/** 0x1234…abcd for a long hex string. */
+const shortHex = (h) => (String(h).length > 14 ? `${String(h).slice(0, 8)}…${String(h).slice(-4)}` : String(h));
 /** A USD figure for a sentence: cents ("2.50"), or more places for a sum below a cent. */
 const money = (n) => (typeof n === "number" && Math.abs(n) >= 0.01 ? n.toFixed(2) : String(roundUsd(n)));
 const merge = (...lists) => {
@@ -406,6 +411,8 @@ async function simulateAndCheck({ plan, approvalNeeded, deps, getClient }) {
     if (left !== plan.giveAmount) out.push(refusal("bridge_outflow_mismatch", `the simulation takes ${unitsToDecimal(left < 0n ? 0n : left, plan.tokenIn.decimals)} ${plan.tokenIn.symbol} from the wallet, not the ${unitsToDecimal(plan.giveAmount, plan.tokenIn.decimals)} asked for`, plan.giveAmount.toString(), left.toString()));
   }
   const nativeLeft = -(deltas.get(nativeKey) ?? 0n);
+  // The coin as the amount: what leaves must be the amount and the fixed fee, not less (the order would not carry what was asked).
+  if (plan.tokenIn.native && nativeLeft < plan.tx.value) out.push(refusal("bridge_outflow_mismatch", `the simulation takes ${unitsToDecimal(nativeLeft < 0n ? 0n : nativeLeft, plan.tokenIn.decimals)} ${plan.tokenIn.symbol} from the wallet, not the ${unitsToDecimal(plan.tx.value, plan.tokenIn.decimals)} (the amount and the fixed fee) the order sends`, plan.tx.value.toString(), nativeLeft.toString()));
   if (nativeLeft > plan.tx.value) out.push(refusal("outflow_exceeds_amount", `the simulation takes more ${evmChain(plan.chain).native.symbol} from the wallet than the order sends`, plan.tx.value.toString(), nativeLeft.toString()));
   for (const [asset, delta] of deltas) {
     if (asset !== giveKey && asset !== nativeKey && delta < 0n) out.push(refusal("other_token_leaves", `the bridge would also take ${asset} from the wallet`, "0", delta.toString()));
@@ -545,7 +552,7 @@ export async function planBridge(req, deps = {}) {
   if (value !== fixFee + (sized.tokenIn.native ? sized.amountUnits : 0n)) checks.push(refusal("bridge_value_mismatch", "the order's value is not the fixed fee (plus the amount, for the chain's own coin)", (fixFee + (sized.tokenIn.native ? sized.amountUnits : 0n)).toString(), value.toString()));
   if (!(takeAmount > 0n)) checks.push(refusal("bridge_take_mismatch", "the order delivers nothing", ">0", takeAmount.toString()));
   if (!same(response.tx.to, DLN_SOURCE)) checks.push(refusal("bridge_wrong_contract", "the transaction does not go to deBridge's DlnSource", DLN_SOURCE, response.tx.to ?? null));
-  if (response.tx.chain_id !== undefined && response.tx.chain_id !== null && Number(response.tx.chain_id) !== evmChain(sized.chain).chainId) checks.push(refusal("response_mismatch", `the transaction is not for ${labelOf(sized.chain)}`, evmChain(sized.chain).chainId, response.tx.chain_id));
+  if (response.tx.chain_id === undefined || response.tx.chain_id === null || Number(response.tx.chain_id) !== evmChain(sized.chain).chainId) checks.push(refusal("response_mismatch", `the transaction is not for ${labelOf(sized.chain)}`, evmChain(sized.chain).chainId, response.tx.chain_id));
   if (!same(facts.approvalSpender, DLN_SOURCE)) checks.push(refusal("bridge_spender_mismatch", "the order check names a different contract to approve than deBridge's DlnSource", DLN_SOURCE, facts.approvalSpender ?? null));
   if (!Number.isInteger(facts.feeBps) || facts.feeBps < 0 || facts.feeBps > BRIDGE_FEE_CEILING_BPS) checks.push(refusal("fee_over_ceiling", `the order's Sato Hub fee is above the ${BRIDGE_FEE_CEILING_BPS} bps this kit accepts`, BRIDGE_FEE_CEILING_BPS, facts.feeBps ?? null));
   if (typeof response.tx.data !== "string" || !/^0x([0-9a-fA-F]{2}){4,}$/.test(response.tx.data)) checks.push(refusal("response_mismatch", "the transaction has no calldata"));
@@ -570,6 +577,18 @@ export async function planBridge(req, deps = {}) {
   const confirm = [];
   if (cost.unpriced.length) confirm.push(reason("bridge_unpriced_native", `the kit has no independent price for ${cost.unpriced.join(" and ")}, so it cannot say what this bridge costs or hold all of it to your limits`));
   else if (cost.cost_pct > COST_CONFIRM_PCT) confirm.push(reason(`bridge_cost_over_3_pct_${band(cost.cost_pct)}`, `this bridge costs ${cost.cost_pct}% of what it moves ($${money(cost.cost_usd)} of $${money(cost.spend_usd)}), above ${COST_CONFIRM_PCT}%`));
+  // An order that pays out MORE than it costs is not a fair one: no solver is paid to fill it, so it may sit open. Never "low cost".
+  if (cost.spend_usd !== null && cost.take_usd !== null) {
+    const bothStable = sized.tokenIn.kind === "stable" && sized.tokenOut.kind === "stable";
+    const tolerance = bothStable ? 0.005 : 0.02;
+    if (cost.take_usd > cost.spend_usd * (1 + tolerance)) {
+      confirm.push(reason("bridge_take_above_market", `the quote pays out more than it costs ($${money(cost.take_usd)} arriving for $${money(cost.spend_usd)} spent), which a fair order does not; it may never be filled`));
+    }
+  }
+  // The solver named to fill the order: empty (anyone) or a deBridge solver seen on live orders passes quietly; any other may never fill it.
+  const takerHex = String(facts.allowedTakerDst ?? "0x").toLowerCase();
+  const takerKnown = takerHex === "0x" || takerHex === "" || isKnownDlnTaker(takerHex);
+  if (!takerKnown) confirm.push(reason("bridge_unknown_taker", `the order names ${shortHex(takerHex)} as the only solver allowed to fill it, one the kit has not seen deBridge use; if that solver does not fill it, the order stays open`));
 
   // The kit's own simulation of the real calls.
   let allowance = null;
@@ -606,7 +625,8 @@ export async function planBridge(req, deps = {}) {
     takeAmount,
     feeBps: facts.feeBps,
     feeAmount: facts.feeAmount === undefined || facts.feeAmount === null ? null : asBig(facts.feeAmount, "Sato Hub fee"),
-    allowedTakerDst: facts.allowedTakerDst ?? null,
+    allowedTakerDst: takerHex,
+    allowedTakerKnown: takerKnown,
     orderIdHint,
     approval: { needed: approvalNeeded, token: sized.tokenIn.native ? null : sized.tokenIn.address, spender: DLN_SOURCE, amount: giveAmount, allowance_before: allowance },
     cost,
@@ -634,6 +654,7 @@ export async function planBridge(req, deps = {}) {
     approval: approvalNeeded ? { token: sized.tokenIn.symbol, address: sized.tokenIn.address, spender: DLN_SOURCE, amount: unitsToDecimal(giveAmount, sized.tokenIn.decimals), exact: true } : null,
     simulation: { source: sim.source, leaves: sim.leaves, native_leaves: sim.native_leaves },
     order_id_hint: orderIdHint,
+    filled_by: { allowed_taker_dst: takerHex, short: takerHex === "0x" ? "any solver" : shortHex(takerHex), known: takerKnown },
     prices: cost.prices,
     confirm_reasons: confirm,
     notes: [...(sized.amountIsAll ? [`--amount all is the whole ${sized.tokenIn.symbol} balance on ${labelOf(sized.chain)}.`] : []), ...notes],
@@ -664,12 +685,40 @@ export async function executeBridge(plan, deps = {}) {
   return withLock(() => executeLocked(plan, deps), { name: lockName(plan.chain, "swap"), waitMs: deps.lockWaitMs ?? 120_000 });
 }
 
-/** The CreatedOrder event DlnSource emitted for THIS order in a receipt: its id, and what it says it carries. Null when it is not exactly one. */
+/** The 32-byte amount in a CreatedOrder `affiliateFee` (recipient, 20 bytes, then the amount), 0 when there is none, null when it is neither. */
+function affiliateAmount(bytes) {
+  const h = String(bytes ?? "0x");
+  if (h === "0x") return 0n;
+  return /^0x[0-9a-fA-F]{104}$/.test(h) ? BigInt(`0x${h.slice(42)}`) : null;
+}
+
+/**
+ * The CreatedOrder event DlnSource emitted for THIS order in a receipt: its id, and what it says it carries. The event's giveAmount is
+ * what is left AFTER deBridge's percent fee and the affiliate fee come out of the amount that left the wallet (a real order: 3,315,908
+ * sent, giveAmount 3,313,256, percentFee 2,652), so the match adds both back and compares with the plan's amount. It also has to be
+ * this wallet's order (makerSrc), for the amount asked to take, on the chain and token asked for, paying the address asked for.
+ * Null when it is not exactly one event.
+ */
 export function readCreatedOrder(receipt, plan) {
   try {
+    const takeToken = lc(encodeDestAddress(plan.chainOut, plan.tokenOut.address));
+    const receiver = lc(encodeDestAddress(plan.chainOut, plan.recipient));
     const found = parseEventLogs({ abi: CREATED_ORDER_EVENT, logs: receipt.logs ?? [], eventName: "CreatedOrder" })
       .filter((l) => same(l.address, DLN_SOURCE))
-      .filter((l) => l.args.order.giveAmount === plan.giveAmount && l.args.order.takeAmount === plan.takeAmount && lc(l.args.order.makerSrc) === lc(plan.taker));
+      .filter((l) => {
+        const o = l.args.order;
+        const affiliate = affiliateAmount(l.args.affiliateFee);
+        return (
+          affiliate !== null &&
+          o.giveAmount + l.args.percentFee + affiliate === plan.giveAmount &&
+          lc(o.makerSrc) === lc(plan.taker) &&
+          lc(o.giveTokenAddress) === lc(plan.tokenIn.address) &&
+          o.takeAmount === plan.takeAmount &&
+          o.takeChainId === BigInt(debridgeChainIdOf(plan.chainOut)) &&
+          lc(o.takeTokenAddress) === takeToken &&
+          lc(o.receiverDst) === receiver
+        );
+      });
     return found.length === 1 ? { order_id: lc(found[0].args.orderId), native_fix_fee: found[0].args.nativeFixFee, order: found[0].args.order } : null;
   } catch {
     return null;
@@ -712,6 +761,7 @@ async function executeLocked(plan, deps) {
     token_in: plan.tokenIn.address,
     token_out: plan.tokenOut.address,
     recipient: plan.recipient,
+    allowed_taker_dst: plan.allowedTakerDst,
     ...(plan.orderIdHint ? { order_id_hint: plan.orderIdHint } : {}),
   });
 
@@ -832,6 +882,7 @@ async function executeLocked(plan, deps) {
   record({
     id: entry.id,
     status: "sent",
+    sent_at: new Date().toISOString(),
     tx: receipt.transactionHash,
     order_id: orderId,
     order_id_source: orderIdSource,
@@ -938,10 +989,12 @@ export function bridgeLines(d) {
   lines.push(`Bridge ${src} -> ${dst} via ${d.route}.`);
   lines.push(`Leaves the wallet on ${src}: ${d.send.amount} ${d.send.asset}${usd(d.send.usd)}, plus deBridge's fixed fee of ${d.fix_fee.amount} ${d.fix_fee.asset}${usd(d.fix_fee.usd)}.`);
   lines.push(`Arrives on ${dst}: exactly ${d.arrives.amount} ${d.arrives.asset}${usd(d.arrives.usd)}, when a solver fills the order (usually under a minute). The order is filled for exactly that amount or not at all.`);
-  if (d.cost?.usd !== null && d.cost?.usd !== undefined) lines.push(`Total cost: about $${money(Math.max(0, d.cost.usd))}, which is ${Math.max(0, d.cost.pct)}% of what leaves the wallet (the fixed fee, Sato Hub's fee and deBridge's costs on ${dst}).`);
+  if (d.cost?.usd !== null && d.cost?.usd !== undefined && d.cost.usd < 0) lines.push(`Total cost: none by the kit's prices; the order pays out more than it costs, which a fair order does not.`);
+  else if (d.cost?.usd !== null && d.cost?.usd !== undefined) lines.push(`Total cost: about $${money(d.cost.usd)}, which is ${d.cost.pct}% of what leaves the wallet (the fixed fee, Sato Hub's fee and deBridge's costs on ${dst}).`);
   else lines.push(`Total cost: not known, because ${orList(d.unpriced ?? [])} has no independent price in this kit.`);
   lines.push(`Sato Hub fee: ${d.sato_fee.percent} (${d.sato_fee.bps} bps, cross-chain), taken from the amount sent; Sato Hub receives it once the order is filled, not before.${d.sato_fee.amount !== null && d.sato_fee.amount !== undefined ? ` That is ${d.sato_fee.amount} ${d.sato_fee.asset}.` : ""}`);
   lines.push(`Recipient: this bot's own address on ${dst} (${d.recipient.address}).`);
+  if (d.filled_by) lines.push(`Filled by: ${d.filled_by.short}${d.filled_by.allowed_taker_dst === "0x" ? " may fill it" : d.filled_by.known ? " (a deBridge solver this kit has seen)" : " (a solver this kit has not seen deBridge use)"}.`);
   if (d.approval) lines.push(`Approval before the order: exactly ${d.approval.amount} ${d.approval.token} to deBridge's DlnSource ${d.approval.spender} (never unlimited), set back to 0 afterwards.`);
   if (d.usd_held_to_limits !== null && d.usd_held_to_limits !== undefined) lines.push(`Held to your limits as $${money(d.usd_held_to_limits)} (the amount and the fixed fee), shared with swaps and sends.`);
   lines.push(`The kit's own simulation passed: ${JSON.stringify(d.simulation)}`);
@@ -1058,7 +1111,11 @@ async function refreshRow(row, deps) {
   }
   // signed / pending / sent / cancelled-not-final: ask deBridge.
   let orderId = row.order_id;
-  if (!orderId && row.tx) {
+  // An id read from the transaction's own event (or already confirmed by deBridge) is used as it is. An id that is only Sato Hub's word
+  // (the event could not be read), or none, is checked against what deBridge lists for the source transaction before the order is ever
+  // marked filled: Sato Hub could name another order, one that is filled, and the ledger would say this one arrived.
+  const confirmed = row.order_id_source === "log" || row.order_id_source === "debridge_api";
+  if ((!orderId || !confirmed) && row.tx) {
     const ids = await fetchOrderIds(row.tx, deps);
     if (ids.unavailable) {
       view.state = "unavailable";
@@ -1066,14 +1123,17 @@ async function refreshRow(row, deps) {
       view.error = ids.error;
       return view;
     }
-    if (ids.ids.length === 1) {
-      orderId = ids.ids[0];
+    const mine = orderId && ids.ids.includes(lc(orderId)) ? lc(orderId) : null;
+    if (mine || ids.ids.length === 1) {
+      const given = orderId;
+      orderId = mine ?? ids.ids[0];
       view.order_id = orderId;
       view.order_id_source = "debridge_api";
-      if (row.id) record({ id: row.id, order_id: orderId, order_id_source: "debridge_api", ...(["signed", "pending"].includes(status) ? { status: "sent" } : {}) });
+      if (given && lc(given) !== orderId) view.plain_note = `deBridge lists ${orderId} for this transaction, not the ${clean(given, 80)} Sato Hub named; the one deBridge lists is used`;
+      if (row.id) record({ id: row.id, order_id: orderId, order_id_source: "debridge_api", ...(given && lc(given) !== orderId ? { order_id_hint: given, warnings: [view.plain_note] } : {}), ...(["signed", "pending"].includes(status) ? { status: "sent" } : {}) });
     } else {
       view.state = "unconfirmed";
-      view.plain = ids.ids.length ? "deBridge lists more than one order for this transaction; open the explorer link" : "deBridge does not list an order for this transaction yet; the transaction may not have landed. Do NOT retry; check the explorer link";
+      view.plain = ids.ids.length ? "deBridge lists more than one order for this transaction; open the explorer link" : "deBridge does not list an order for this transaction yet, so the order id cannot be confirmed; the transaction may not have landed. Do NOT retry; check the explorer link";
       return view;
     }
   }
@@ -1099,6 +1159,15 @@ async function refreshRow(row, deps) {
   view.debridge_status = s.status;
   view.state = known ? known.state : "unknown";
   view.plain = describeStatus(s.status, row);
+  if (s.status === "Created") {
+    const since = Date.parse(row.sent_at ?? row.first_ts ?? "");
+    const minutes = Number.isFinite(since) ? Math.floor(((deps.now ?? Date.now()) - since) / 60_000) : 0;
+    if (minutes >= STUCK_AFTER_MINUTES) {
+      const dst = labelOf(row.chain_out);
+      view.stuck = true;
+      view.plain = `not filled after ${minutes} minutes. This bot's own address on ${dst} is the order's authority, so it can cancel the order on deBridge (app.debridge.finance) and get the refund on ${labelOf(row.chain)}; that needs a little ${getChain(row.chain_out).native.symbol} for gas on ${dst}. This kit has no cancel command yet. Do NOT send the bridge again meanwhile`;
+    }
+  }
   // The ledger follows deBridge: only a change is written. A filled order is the one that stops being in flight.
   if (row.id && (s.status !== row.debridge_status || (known?.ledger && known.ledger !== status))) {
     record({ id: row.id, debridge_status: s.status, ...(known?.ledger ? { status: known.ledger } : {}), status_checked_at: new Date().toISOString() });
@@ -1146,6 +1215,7 @@ export function bridgeStatusLines({ bridges, note }) {
     const route = b.chain && b.chain_out ? `${labelOf(b.chain)} -> ${labelOf(b.chain_out)}` : "an order";
     const what = b.asset_in ? `${clean(b.amount_in, 30)} ${clean(b.asset_in, 20)} -> ${clean(b.take_amount, 30)} ${clean(b.asset_out, 20)}` : "";
     lines.push(`${b.id ? `${clean(b.id, 8)}  ` : ""}${route}${what ? `  ${what}` : ""}: ${b.plain}`);
+    if (b.plain_note) lines.push(`    note: ${clean(b.plain_note, 300)}`);
     if (b.explorer) lines.push(`    source transaction: ${clean(b.explorer, 200)}`);
     if (b.order_id) lines.push(`    order: ${clean(b.order_id, 80)}${b.order_id_source === "sato_hub" ? " (from Sato Hub; not confirmed by the chain)" : ""}`);
   }

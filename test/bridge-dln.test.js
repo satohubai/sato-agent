@@ -68,7 +68,7 @@ function build(c) {
     sato_fee_bps: 25,
     sato_fee_recipient: SATO_FEE_RECIPIENT,
     sato_fee_tier: "cross_chain",
-    tx: { to: fx.tx.to, data: fx.tx.data, value: fx.tx.value, approval_target: fx.tx.to },
+    tx: { to: fx.tx.to, data: fx.tx.data, value: fx.tx.value, approval_target: fx.tx.to, chain_id: chains.evmChain(c.chain).chainId },
     bridge: { protocol: "debridge-dln", order_id: fx.orderId, fix_fee_wei: fx.fixFee, take_amount: decoded.order.takeAmount.toString(), allowed_taker_dst: decoded.order.allowedTakerDst },
   };
   return { fx, decoded, intent, response, fixFeeWei: BigInt(fx.fixFee) };
@@ -302,6 +302,7 @@ test("response_mismatch: mode, venue, either chain, either token, the amount, th
     amount_in: (r) => (r.amount_in = "5000001"),
     recipient: (r) => (r.recipient = OTHER_EVM),
     tx_chain_id: (r) => (r.tx.chain_id = 1),
+    tx_chain_id_absent: (r) => delete r.tx.chain_id,
   };
   for (const [what, edit] of Object.entries(edits)) refuses(b, "response_mismatch", tampered(b, { edit }));
   const none = tampered(b, { edit: (r) => { delete r.tx; r.withheld = { rule: "gate", reason: "no" }; } });

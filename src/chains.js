@@ -315,6 +315,15 @@ export const dlnSourceOf = (key) => {
   return d?.sourceSupported === true ? d.source : null;
 };
 
+/**
+ * The solvers deBridge names in an order's `allowedTakerDst` (the only address allowed to fill it), as seen on live orders on
+ * 2026-10-16 (Base, Arbitrum, Polygon and Solana destinations): one EVM address (20 bytes) and one Solana key (32 bytes), lower-case 0x hex.
+ * An order that names any other taker is not refused (it does not change where the funds go), but it may never be filled, so the
+ * kit asks the owner (src/bridge/run.js). An empty field (anyone may fill) is accepted.
+ */
+export const DLN_KNOWN_TAKERS = deepFreeze(["0x555ce236c0220695b68341bc48c68d52210cc35b", "0x1bdded375f57c27748f09ce52b7a6e2dc46f6c04d61da47e55747e4fed7e7931"]);
+export const isKnownDlnTaker = (hex) => typeof hex === "string" && DLN_KNOWN_TAKERS.includes(hex.toLowerCase());
+
 /** The keys of the chains that have a feature ("swap", "x402", ...), registry order. */
 export const chainsWith = (feature) => chainKeys().filter((k) => REGISTRY[k].features?.[feature] === true);
 export const hasFeature = (key, feature) => isKnownChain(key) && REGISTRY[key].features?.[feature] === true;

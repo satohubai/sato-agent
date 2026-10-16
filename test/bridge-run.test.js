@@ -2,7 +2,7 @@
 // here), the chain, the simulation and deBridge's status API are all fakes. Nothing signs for real and no network is touched.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import test from "node:test";
 import { encodeAbiParameters, encodeEventTopics, getAddress } from "viem";
 import { freshHome } from "./helpers.js";
@@ -10,7 +10,8 @@ import { fakeChain, topicAddr, transferLog } from "./swap-evm-helpers.js";
 
 freshHome();
 const { initWallet, addresses } = await import("../src/wallet.js");
-const { setPolicy, bridgesEnabled, loadPolicy } = await import("../src/policy.js");
+const { setPolicy, bridgesEnabled, isLegacyBridgesOff, loadPolicy } = await import("../src/policy.js");
+const { paths } = await import("../src/store.js");
 const { Refused, NeedsApproval, Pending } = await import("../src/errors.js");
 const { PriceUnavailable } = await import("../src/price.js");
 const { NATIVE_PLACEHOLDER, evmChain } = await import("../src/chains.js");
@@ -26,6 +27,7 @@ const FIX_FEE = 10n ** 15n; // 0.001 ETH, as measured on Base
 const ORDER_ID = "0xbe37408a454f92f13f34219a03316bcc0fed84183c89d8507c027c716ccb1c62";
 const HINT_ID = "0x45c4d355d84d42f716d4d94af9b83b02cead4ed556330da3ec486bb3064fa981";
 const ZERO = "0x0000000000000000000000000000000000000000";
+const KNOWN_TAKER = "0x555ce236c0220695b68341bc48c68d52210cc35b"; // a deBridge solver seen on live orders (src/chains.js)
 
 const setup = (extra = {}) => setPolicy({ chains: "arbitrum,base,bnb,polygon,solana", perTx: "5000", perDay: "20000", approval: "auto", bridges: "on", ...extra });
 setup();
@@ -42,29 +44,35 @@ const rulesOf = async (p) => {
 const usdcUnits = (n) => BigInt(Math.round(n * 1e6));
 const ethPrice = (usd) => async (asset) => ({ asset, usd, updated_at: "2026-10-16T00:00:00Z", age_s: 20, source: "chainlink:test" });
 
-/** A CreatedOrder log as DlnSource emits it (the real ABI), for an order of ours. */
-function createdOrderLog({ maker = MAKER, give, take, orderId = ORDER_ID, fixFee = FIX_FEE }) {
+/**
+ * A CreatedOrder log as DlnSource emits it (the real ABI), for an order whose wallet outflow (OrderCreation.giveAmount) is `give`: the
+ * event's own giveAmount is what is left after deBridge's percent fee (4 bps) and the affiliate fee (25 bps) come out, as on a real order.
+ */
+function createdOrderLog({ maker = MAKER, give, take, orderId = ORDER_ID, fixFee = FIX_FEE, recipient = MAKER, chainOutId = 42161n, takeToken = USDC_ARB }) {
   const ev = B.CREATED_ORDER_EVENT[0];
+  const percentFee = (give * 4n) / 10_000n;
+  const affiliate = (give * 25n) / 10_000n;
   const order = {
     makerOrderNonce: 1n,
     makerSrc: maker,
     giveChainId: 8453n,
     giveTokenAddress: USDC_BASE,
-    giveAmount: give,
-    takeChainId: 42161n,
-    takeTokenAddress: USDC_ARB,
+    giveAmount: give - percentFee - affiliate,
+    takeChainId: chainOutId,
+    takeTokenAddress: takeToken,
     takeAmount: take,
-    receiverDst: maker,
+    receiverDst: recipient,
     givePatchAuthoritySrc: maker,
     orderAuthorityAddressDst: maker,
-    allowedTakerDst: "0x11339397e4aa00814799197aa28438096d34c266",
+    allowedTakerDst: KNOWN_TAKER,
     allowedCancelBeneficiarySrc: "0x",
     externalCall: "0x",
   };
+  const affiliateFee = `0x${"cEE53Eb001d4d1743EF9df333Dcf45bC38622bE9".toLowerCase()}${affiliate.toString(16).padStart(64, "0")}`;
   return {
     address: DLN_SOURCE.toLowerCase(),
     topics: encodeEventTopics({ abi: B.CREATED_ORDER_EVENT, eventName: "CreatedOrder" }),
-    data: encodeAbiParameters(ev.inputs, [order, orderId, "0x", fixFee, 0n, 0, "0x"]),
+    data: encodeAbiParameters(ev.inputs, [order, orderId, affiliateFee, fixFee, percentFee, 0, "0x"]),
   };
 }
 
@@ -96,12 +104,12 @@ function world(o = {}) {
     sato_fee_tier: "cross_chain",
     sato_fee_recipient: "0xcEE53Eb001d4d1743EF9df333Dcf45bC38622bE9",
     simulation: { ok: true },
-    bridge: { protocol: "debridge-dln", order_id: HINT_ID, fix_fee_wei: fee.toString(), take_amount: take.toString(), allowed_taker_dst: "0x555c" },
+    bridge: { protocol: "debridge-dln", order_id: HINT_ID, fix_fee_wei: fee.toString(), take_amount: take.toString(), allowed_taker_dst: KNOWN_TAKER },
     tx: { to: o.txTo ?? DLN_SOURCE, data: `0xb9303701${"00".repeat(64)}`, value: value.toString(), chain_id: evmChain(chain).chainId, approval_target: DLN_SOURCE },
     meta: { signature: { alg: "EdDSA", kid: "test", sig: "x", signed_at: new Date(o.signedAt ?? Date.now()).toISOString() } },
     ...(o.responseExtra ?? {}),
   });
-  const facts = () => ({ order: {}, orderIdHint: HINT_ID, giveAmount: give, takeAmount: take, fixFeeWei: fee, value, feeBps: 25, feeAmount: (give * 25n) / 10_000n, approvalSpender: DLN_SOURCE, allowedTakerDst: "0x555c", ...(o.factsExtra ?? {}) });
+  const facts = () => ({ order: {}, orderIdHint: HINT_ID, giveAmount: give, takeAmount: take, fixFeeWei: fee, value, feeBps: 25, feeAmount: (give * 25n) / 10_000n, approvalSpender: DLN_SOURCE, allowedTakerDst: KNOWN_TAKER, ...(o.factsExtra ?? {}) });
   const logOrder = o.logOrder ?? true;
   const orderReceipt = { status: o.orderStatus ?? "success", logs: logOrder ? [createdOrderLog({ give, take })] : [], spends: native ? undefined : give };
   const receipts = o.receipts ?? (native ? [orderReceipt] : ["success", orderReceipt]);
@@ -142,12 +150,32 @@ function world(o = {}) {
 const evmChainName = (k) => (k === "solana" ? "Solana" : evmChain(k).hubName);
 const req = (o = {}) => ({ chain: "base", toChain: "arbitrum", asset: "USDC", amount: "1000", ...o });
 
-test("the bridge is a value kind, and the policy defaults bridges on and writes the choice explicitly", () => {
+test("the bridge is a value kind; a new policy carries bridges on explicitly; a policy from before v0.5 reads as off", () => {
   assert.ok(VALUE_KINDS.includes("bridge"));
   const p = loadPolicy();
   assert.equal(p.bridges_off, false);
   assert.equal(bridgesEnabled(p), true);
-  assert.equal(bridgesEnabled({ chains: ["base"] }), true, "a policy from before v0.5 has no key and reads as on");
+  assert.equal(isLegacyBridgesOff({ chains: ["base"] }), true);
+  assert.equal(bridgesEnabled({ chains: ["base"] }), false, "a policy written before v0.5 has no key: bridging was never offered, so it is off");
+  assert.equal(bridgesEnabled({ chains: ["base"], bridges_off: false }), true);
+});
+
+test("a policy from before v0.5 keeps bridges off through other edits; turning them on is a raise and the refusal says how", async () => {
+  const keep = loadPolicy();
+  const { bridges_off: _drop, ...legacy } = keep;
+  writeFileSync(paths.policy(), JSON.stringify(legacy));
+  const other = setPolicy({ perTx: "4000" });
+  assert.equal(other.policy.bridges_off, true, "written explicitly, and off");
+  assert.equal(other.raised, false);
+  const w = world();
+  const err = await B.runBridge(req(), {}, w.deps).catch((e) => e);
+  assert.equal(err.refusals[0].rule, "bridges_not_enabled");
+  assert.match(err.refusals[0].message, /`sato-agent policy set --bridges on`/);
+  assert.equal(w.seen.hub.length, 0);
+  const on = setPolicy({ bridges: "on" });
+  assert.equal(on.raised, true);
+  assert.ok(on.raises.includes("bridges turned on"));
+  setup();
 });
 
 test("turning bridges off is plain, turning them back on is a raise", () => {
@@ -390,16 +418,34 @@ test("the coin as the amount: value is the fee plus the amount, no approval, and
   assert.ok(done.warnings.some((x) => /from Sato Hub and is not confirmed by the chain/.test(x)));
 });
 
-test("the order id is read from the real CreatedOrder event of a real transaction", () => {
+test("the order id is read from the real CreatedOrder event of a real transaction (the wallet sent MORE than the event's giveAmount)", () => {
   const fx = JSON.parse(readFileSync(new URL("./fixtures/bridge/created-order-receipt.json", import.meta.url), "utf8"));
-  const plan = { giveAmount: 3_313_256n, takeAmount: 3_000_016n, taker: MAKER };
+  const sent = fx.receipt.logs.filter((l) => l.topics[0].startsWith("0xddf252ad") && l.topics[2].endsWith(DLN_SOURCE.slice(2).toLowerCase())).map((l) => BigInt(l.data))[0];
+  assert.equal(sent, 3_315_908n, "what left the wallet: the event's giveAmount 3,313,256 plus its percentFee 2,652");
+  const plan = {
+    giveAmount: sent,
+    takeAmount: 3_000_016n,
+    taker: MAKER,
+    chain: "base",
+    chainOut: "arbitrum",
+    recipient: getAddress("0xa5a634557e1a93e9f7be26c55010f01337b08184"),
+    tokenIn: { address: USDC_BASE },
+    tokenOut: { address: USDC_ARB },
+  };
   const got = B.readCreatedOrder(fx.receipt, plan);
   assert.equal(got.order_id, ORDER_ID);
-  // another amount, another maker, or an event from another contract is not this order
-  assert.equal(B.readCreatedOrder(fx.receipt, { ...plan, giveAmount: 3_313_257n }), null);
+  // another amount (including the event's own net figure), maker, recipient, token or chain is not this order
+  assert.equal(B.readCreatedOrder(fx.receipt, { ...plan, giveAmount: 3_313_256n }), null, "the net figure is not what left the wallet");
+  assert.equal(B.readCreatedOrder(fx.receipt, { ...plan, giveAmount: sent + 1n }), null);
+  assert.equal(B.readCreatedOrder(fx.receipt, { ...plan, takeAmount: 3_000_017n }), null);
   assert.equal(B.readCreatedOrder(fx.receipt, { ...plan, taker: getAddress("0x20FE51A9229EEf2cF8Ad9E89d91CAb9312cF3b7A") }), null);
+  assert.equal(B.readCreatedOrder(fx.receipt, { ...plan, recipient: MAKER }), null, "paying another address");
+  assert.equal(B.readCreatedOrder(fx.receipt, { ...plan, chainOut: "polygon" }), null);
   const moved = { ...fx.receipt, logs: fx.receipt.logs.map((l) => ({ ...l, address: "0x4f01251b0a11ca9bcc01ac3726ee779cff9298f5" })) };
-  assert.equal(B.readCreatedOrder(moved, plan), null);
+  assert.equal(B.readCreatedOrder(moved, plan), null, "an event from another contract");
+  // two matching events are not one order
+  const twice = { ...fx.receipt, logs: [...fx.receipt.logs, ...fx.receipt.logs.filter((l) => l.address === DLN_SOURCE.toLowerCase())] };
+  assert.equal(B.readCreatedOrder(twice, plan), null);
 });
 
 test("Sato Hub's answer is held to the signature and to the order check: nothing is signed otherwise", async () => {
@@ -526,7 +572,7 @@ test("Arbitrum as the source asks the node for the gas of the approval and the o
 test("status: deBridge's words, the ledger follows, and a service that is down is said, not guessed", async () => {
   const mk = (id, extra) => {
     record({ id, kind: "bridge", status: "submitted", chain: "base", chain_out: "arbitrum", usd: 10, asset_in: "USDC", amount_in: "10", asset_out: "USDC", take_amount: "9.5", to: DLN_SOURCE });
-    record({ id, status: "sent", tx: `0x${id.replace(/-/g, "").padEnd(64, "a").slice(0, 64)}`, ...extra });
+    record({ id, status: "sent", tx: `0x${id.replace(/-/g, "").padEnd(64, "a").slice(0, 64)}`, order_id_source: "log", ...extra });
   };
   const oid = (n) => `0x${String(n).repeat(64)}`;
   mk("s-waiting", { order_id: oid(1) });
@@ -614,4 +660,129 @@ test("the lines never call a sent order bridged, and carry the sentence about Sa
   assert.match(text, /Bridge Base -> Arbitrum via deBridge/);
   assert.match(text, /fixed fee of 0\.001 ETH/);
   assert.doesNotMatch(text, /\b(bridged|safe|secure|trusted|verified|guaranteed|profit)\b/i);
+});
+
+// ---------------------------------------------------------------- the adversarial review's findings
+
+test("a quote that pays out more than it costs needs the owner's yes (0.5% between stablecoins, 2% with a priced coin); a small gap is fine", async () => {
+  // 1000 USDC + $2.50 fee; arrives 1100: 9.7% above what was spent
+  const w = world({ take: usdcUnits(1100) });
+  const err = await B.runBridge(req(), {}, w.deps).catch((e) => e);
+  assert.ok(err instanceof NeedsApproval);
+  assert.deepEqual(err.intent.confirm_reasons, ["bridge_take_above_market"]);
+  assert.match(err.reasons[0], /pays out more than it costs.*it may never be filled/);
+  const dry = await B.runBridge(req(), { dryRun: true }, world({ take: usdcUnits(1100) }).deps);
+  assert.match(B.bridgeLines(dry.prepared.display).join("\n"), /Total cost: none by the kit's prices; the order pays out more than it costs/);
+  // 0.3% above: inside the stablecoin tolerance (a peg wobble), no reason
+  const near = await B.runBridge(req(), { dryRun: true }, world({ take: usdcUnits(1005.5) }).deps);
+  assert.equal(near.prepared.confirm.length, 0);
+  // 0.7% above is over the stablecoin tolerance
+  const over = await B.runBridge(req(), { dryRun: true }, world({ take: usdcUnits(1009.5) }).deps);
+  assert.deepEqual(over.prepared.confirm.map((r) => r.code), ["bridge_take_above_market"]);
+  // a priced coin out: 2% wide. $1030 of ETH for $1002.50 is 2.7% above; $1015 is 1.2%
+  const eth = (usd) => world({ tokenOut: ZERO, take: BigInt(Math.round((usd / 2500) * 1e18)) });
+  const wide = await B.runBridge(req({ receive: "ETH" }), { dryRun: true }, eth(1030).deps);
+  assert.deepEqual(wide.prepared.confirm.map((r) => r.code), ["bridge_take_above_market"]);
+  const ok = await B.runBridge(req({ receive: "ETH" }), { dryRun: true }, eth(1015).deps);
+  assert.equal(ok.prepared.confirm.length, 0);
+});
+
+test("the solver named to fill the order: empty or a deBridge solver seen live passes; any other needs the owner's yes; the ledger and the lines say who", async () => {
+  const unknown = "0x000000000000000000000000000000000000dead";
+  const w = world({ factsExtra: { allowedTakerDst: unknown } });
+  const err = await B.runBridge(req(), {}, w.deps).catch((e) => e);
+  assert.ok(err instanceof NeedsApproval);
+  assert.deepEqual(err.intent.confirm_reasons, ["bridge_unknown_taker"]);
+  assert.match(err.reasons[0], /0x000000…dead as the only solver allowed to fill it/);
+  // approved, it runs and the ledger keeps the taker
+  const ok = await B.runBridge(req(), { approve: err.approval.code }, world({ factsExtra: { allowedTakerDst: unknown } }).deps);
+  await ok.prepared.execute();
+  assert.equal(actions().filter((a) => a.kind === "bridge").at(-1).allowed_taker_dst, unknown);
+  // a Solana solver (32 bytes) seen live, and an empty field (anyone), pass quietly
+  const sol = "0x1bdded375f57c27748f09ce52b7a6e2dc46f6c04d61da47e55747e4fed7e7931";
+  for (const taker of [sol, "0x", KNOWN_TAKER.toUpperCase().replace("0X", "0x")]) {
+    const r = await B.runBridge(req(), { dryRun: true }, world({ factsExtra: { allowedTakerDst: taker } }).deps);
+    assert.equal(r.prepared.confirm.length, 0, taker);
+  }
+  const known = await B.runBridge(req(), { dryRun: true }, world().deps);
+  assert.deepEqual(known.prepared.display.filled_by, { allowed_taker_dst: KNOWN_TAKER, short: "0x555ce2…c35b", known: true });
+  assert.match(B.bridgeLines(known.prepared.display).join("\n"), /Filled by: 0x555ce2…c35b \(a deBridge solver this kit has seen\)/);
+});
+
+test("the transaction must carry the source chain's id, as a swap's does: a missing or wrong one is refused", async () => {
+  const strip = (v) => (r) => ({ structured: { ...r, tx: { ...r.tx, chain_id: v } } });
+  for (const v of [undefined, null, 1]) {
+    const w = world({ hubReply: strip(v) });
+    assert.ok((await rulesOf(B.runBridge(req(), {}, w.deps))).includes("response_mismatch"), String(v));
+    assert.equal(w.state.sent.length, 0);
+  }
+});
+
+test("the coin as the amount: the simulation must show the amount AND the fixed fee leaving, not less", async () => {
+  const give = 5n * 10n ** 17n;
+  const short = (calls) => [{ calls: calls.map(() => ({ status: "0x1", gasUsed: "0x1", logs: [transferLog(NATIVE_PLACEHOLDER, MAKER, DLN_SOURCE, FIX_FEE)] })) }];
+  const w = world({ native: true, give, take: usdcUnits(1240), simulate: short });
+  assert.deepEqual(await rulesOf(B.runBridge(req({ asset: "ETH", amount: "0.5", receive: "USDC" }), {}, w.deps)), ["bridge_outflow_mismatch"]);
+});
+
+test("status: an id that is only Sato Hub's word is checked against deBridge's list for the transaction before the order is ever marked filled", async () => {
+  const oid = (c) => `0x${c.repeat(64)}`;
+  const seed = (id, hub, extra = {}) => {
+    record({ id, kind: "bridge", status: "submitted", chain: "base", chain_out: "arbitrum", usd: 10, asset_in: "USDC", amount_in: "10", asset_out: "USDC", take_amount: "9.5", to: DLN_SOURCE });
+    record({ id, status: "sent", tx: `0x${id.replace(/-/g, "").padEnd(64, "9").slice(0, 64)}`, order_id: hub, order_id_source: "sato_hub", ...extra });
+  };
+  const asked = [];
+  const world2 = (ids, statusOf = () => "Fulfilled") => async (url) => {
+    asked.push(url);
+    if (url.includes("/tx/")) return ids === null ? { status: 503, json: async () => ({}) } : { status: 200, json: async () => ({ orderIds: ids }) };
+    const id = url.match(/order\/(0x[0-9a-f]{64})\/status/)[1];
+    return { status: 200, json: async () => ({ status: statusOf(id), orderId: id }) };
+  };
+  // deBridge lists another id: that one is used, the difference is said, and the hub's (a filled order that is not ours) is never asked
+  seed("h-other", oid("1"));
+  const r1 = await B.bridgeStatus({ id: "h-other" }, { fetch: world2([oid("2")], (id) => (id === oid("2") ? "Created" : "Fulfilled")) });
+  assert.equal(r1.bridges[0].order_id, oid("2"));
+  assert.equal(r1.bridges[0].plain, "waiting for a solver to fill it");
+  assert.match(r1.bridges[0].plain_note, /not the 0x1+ Sato Hub named/);
+  assert.ok(!asked.some((u) => u.includes(oid("1"))), "the hub's id is never asked for its status");
+  const row1 = actions().find((a) => a.id === "h-other");
+  assert.equal(row1.order_id, oid("2"));
+  assert.equal(row1.order_id_source, "debridge_api");
+  assert.equal(row1.status, "sent");
+  // deBridge lists the hub's id: confirmed, then filled is allowed
+  seed("h-same", oid("3"));
+  const r2 = await B.bridgeStatus({ id: "h-same" }, { fetch: world2([oid("3")]) });
+  assert.equal(r2.bridges[0].plain, "arrived on Arbitrum");
+  assert.equal(actions().find((a) => a.id === "h-same").status, "filled");
+  // deBridge lists nothing yet: no status call on the hub's id, nothing marked
+  seed("h-none", oid("4"));
+  const before = asked.length;
+  const r3 = await B.bridgeStatus({ id: "h-none" }, { fetch: world2([]) });
+  assert.equal(r3.bridges[0].state, "unconfirmed");
+  assert.match(r3.bridges[0].plain, /order id cannot be confirmed/);
+  assert.equal(asked.length - before, 1, "only the list for the transaction");
+  assert.equal(actions().find((a) => a.id === "h-none").status, "sent");
+  // deBridge down: said, nothing marked
+  seed("h-down", oid("5"));
+  const r4 = await B.bridgeStatus({ id: "h-down" }, { fetch: world2(null) });
+  assert.equal(r4.bridges[0].state, "unavailable");
+  assert.equal(actions().find((a) => a.id === "h-down").status, "sent");
+});
+
+test("status: an order still Created after 30 minutes says it is not filled and how it can be cancelled (no cancel command)", async () => {
+  const id = "stuck-1";
+  record({ id, kind: "bridge", status: "submitted", chain: "base", chain_out: "arbitrum", usd: 10, asset_in: "USDC", amount_in: "10", asset_out: "USDC", take_amount: "9.5", to: DLN_SOURCE });
+  record({ id, status: "sent", sent_at: new Date(Date.now() - 45 * 60_000).toISOString(), tx: `0x${"7".repeat(64)}`, order_id: `0x${"8".repeat(64)}`, order_id_source: "log" });
+  const fetch = async () => ({ status: 200, json: async () => ({ status: "Created" }) });
+  const stuck = (await B.bridgeStatus({ id }, { fetch })).bridges[0];
+  assert.equal(stuck.stuck, true);
+  assert.match(stuck.plain, /not filled after 4\d minutes/);
+  assert.match(stuck.plain, /own address on Arbitrum is the order's authority/);
+  assert.match(stuck.plain, /app\.debridge\.finance/);
+  assert.match(stuck.plain, /refund on Base/);
+  assert.match(stuck.plain, /gas on Arbitrum/);
+  assert.match(stuck.plain, /no cancel command/);
+  // a fresh one is just waiting
+  const young = (await B.bridgeStatus({ id }, { fetch, now: Date.now() - 44 * 60_000 })).bridges[0];
+  assert.equal(young.plain, "waiting for a solver to fill it");
 });

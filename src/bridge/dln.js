@@ -227,7 +227,8 @@ export function verifyDlnTx({ response, intent, fixFeeWei }) {
     out.push(refusal("bridge_wrong_contract", `the transaction does not go to deBridge's order contract on ${ch.label}${tx.approval_target != null && same(tx.to, source) ? " (Sato Hub names another contract to approve)" : ""}; ${NOTHING}`, source, clip(same(tx.to, source) ? tx.approval_target : tx.to, 60)));
     fail();
   }
-  if (tx.chain_id != null && Number(tx.chain_id) !== ch.chainId) out.push(refusal("response_mismatch", `the transaction is not for ${ch.label} (chain id ${ch.chainId}); ${NOTHING}`, ch.chainId, clip(tx.chain_id, 20)));
+  // Sato Hub sets the chain id on every EVM transaction (as it does for a swap); a transaction without one is not accepted.
+  if (tx.chain_id == null || Number(tx.chain_id) !== ch.chainId) out.push(refusal("response_mismatch", `the transaction is not for ${ch.label} (chain id ${ch.chainId}); ${NOTHING}`, ch.chainId, clip(tx.chain_id, 20)));
   if (typeof tx.data !== "string" || lc(tx.data.slice(0, 10)) !== CREATE_SALTED_ORDER_SELECTOR) {
     out.push(refusal("bridge_wrong_function", `the transaction calls a function other than creating a deBridge order; ${NOTHING}`, CREATE_SALTED_ORDER_SELECTOR, clip(tx.data, 10)));
     fail();

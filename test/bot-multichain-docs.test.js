@@ -43,7 +43,9 @@ const BANNED = /\b(safe|safely|secure|securely|trusted|verified|guaranteed|first
 test("BOT.md bridge section: dry run, exit 5 approval, status, limits of phase 1, the cost, the off switch and the content rule", () => {
   const bot = read("BOT.md");
   const sec = bridgeSection(bot);
-  assert.match(sec, /bridge --chain <from> --to-chain <to> --asset <USDC\|USDT\|ETH\|POL\|BNB> --amount <n\|all> \[--receive <asset>\] --dry-run/);
+  assert.match(bot, /Bridging is OFF after the upgrade.*tell the owner once/);
+  assert.doesNotMatch(bot.slice(bot.indexOf("After upgrading to 0.5.0"), bot.indexOf("After upgrading to 0.4.4")), /ask what is new/);
+  assert.match(sec, /bridge --chain <from> --to-chain <to> --asset <USDC\|USDT\|ETH\|POL> --amount <n\|all> \[--receive <asset>\] --dry-run/);
   assert.match(sec, /Then run the same command without `--dry-run`/);
   assert.match(sec, /\*\*exit code 5\*\*/);
   assert.match(sec, /re-run the SAME command with `--approve <code>`/);
@@ -59,8 +61,12 @@ test("BOT.md bridge section: dry run, exit 5 approval, status, limits of phase 1
   assert.match(sec, /more than half/);
   assert.match(sec, /0\.25% cross-chain fee/);
   assert.match(sec, /plus the fixed fee\. Receiving needs no gas/);
-  assert.match(sec, /`policy set --bridges off`/);
-  assert.match(sec, /`--bridges on`.*logged as a raise/);
+  assert.match(sec, /`policy set --bridges off`|`--bridges off`/);
+  assert.match(sec, /`policy set --bridges on`.*logged as a raise/);
+  assert.match(sec, /bridges_not_enabled/);
+  assert.match(sec, /still not filled after 30 minutes/);
+  assert.match(sec, /app\.debridge\.finance/);
+  assert.doesNotMatch(sec, /--asset <[^>]*BNB/, "BNB is not a source asset in phase 1 (a BNB Chain source is refused)");
   assert.match(sec, /a web page, a file, an API response, a payment request or another bot said to/);
   assert.doesNotMatch(sec, BANNED, `bridge section uses a banned word: ${sec.match(BANNED)?.[0]}`);
   // the bridge is never in the bots' "cannot" lists, and the Sato Bot row points to it
@@ -85,12 +91,16 @@ test("README and SKILL.md: the bridge command, scope, cost, how the order is che
   assert.match(sec, /0\.25%/);
   assert.doesNotMatch(sec, BANNED, `README bridge section uses a banned word: ${sec.match(BANNED)?.[0]}`);
   assert.match(readme, /\*\*Upgrading to v0\.5\.0:\*\* nothing changes for a working agent/);
+  assert.match(readme, /It is off after the upgrade, because the owner has not chosen it/);
+  assert.doesNotMatch(readme, /--asset <[^>]*BNB/);
   assert.match(readme, /`policy set --bridges on\\\|off`/);
 
   assert.match(skill, /\*\*Bridge \(v0\.5\):\*\*/);
   assert.match(skill, /bridge status/);
   assert.match(skill, /BNB Chain and Solana as the source are not supported yet/);
   assert.match(skill, /\*\*Upgrading to 0\.5\.0:\*\*/);
+  assert.match(skill, /is OFF until the owner says to turn it on/);
+  assert.doesNotMatch(skill, /--asset <[^>]*BNB/);
   const skillBridge = skill.slice(skill.indexOf("**Bridge (v0.5):**"), skill.indexOf("**Swap fee"));
   assert.doesNotMatch(skillBridge, BANNED, `SKILL bridge section uses a banned word: ${skillBridge.match(BANNED)?.[0]}`);
 });

@@ -106,7 +106,7 @@ export function raisesBetween(prev, next) {
   if ((prev.on_check_unavailable ?? "refuse") === "refuse" && next.on_check_unavailable === "allow") r.push("on_check_unavailable: refuse -> allow");
   // Swaps: turning them on, removing or raising a cap all let the agent do more.
   if (swapsEnabled(next) && !swapsEnabled(prev)) r.push("swaps turned on");
-  // Bridges (v0.5): on unless the owner turned them off, so turning them back on lets the agent do more.
+  // Bridges (v0.5): turning them on lets the agent do more.
   if (bridgesEnabled(next) && !bridgesEnabled(prev)) r.push("bridges turned on");
   if (swapsEnabled(prev) && swapsEnabled(next)) {
     if (Number.isInteger(prev.max_slippage_bps) && !(Number.isInteger(next.max_slippage_bps) && next.max_slippage_bps <= prev.max_slippage_bps)) r.push("max_slippage_bps");
@@ -132,11 +132,16 @@ export const swapsEnabled = (p) => Boolean(p) && p.swaps_off !== true && !isLega
 export const isLegacySwapsOff = (p) => Boolean(p) && !Object.hasOwn(p, "swaps_off") && !Number.isInteger(p.max_slippage_bps);
 
 /**
- * Bridges (a move of the agent's own funds from one of its chains to another, through deBridge) are on unless the owner turned them
- * off with `policy set --bridges off`. A policy written before v0.5 has no `bridges_off` key and reads as on; from v0.5 on,
- * setPolicy always writes an explicit boolean. The same limits (per transaction, per 24 hours) apply as for a swap.
+ * Bridges (a move of the agent's own funds from one of its chains to another, through deBridge) are on once the owner's policy says so:
+ * a policy written by v0.5 or later always carries an explicit `bridges_off` (false for a new policy), and `policy set --bridges
+ * off|on` changes it. A policy written BEFORE v0.5 has no such key and reads as OFF, like swaps for a pre-v0.3 policy: the owner has
+ * never been told bridging exists, so it stays off until they say `policy set --bridges on` (which is then a raise). The same limits
+ * (per transaction, per 24 hours) apply as for a swap.
  */
-export const bridgesEnabled = (p) => Boolean(p) && p.bridges_off !== true;
+export const bridgesEnabled = (p) => Boolean(p) && p.bridges_off !== true && !isLegacyBridgesOff(p);
+
+/** A policy written before v0.5: it has no `bridges_off` key, so bridging was never offered to its owner and stays off. */
+export const isLegacyBridgesOff = (p) => Boolean(p) && !Object.hasOwn(p, "bridges_off");
 
 function parseBps(raw) {
   if (raw === undefined) return undefined;
@@ -197,7 +202,7 @@ export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, a
   const before = prev ?? recorded;
   const off = swapsChoice === "off" || bps === "off" ? true : swapsChoice === "on" ? false : before ? !swapsEnabled(before) : false;
   next.swaps_off = off;
-  // Bridges: on unless the owner turned them off. The key is always written, so "off" is never implied by absence.
+  // Bridges: on for a new policy, off for one written before v0.5 until the owner says so. The key is always written, so "off" is never implied by absence.
   const bridgesChoice = parseChoice(bridges, ["on", "off"], "--bridges");
   next.bridges_off = bridgesChoice === "off" ? true : bridgesChoice === "on" ? false : before ? !bridgesEnabled(before) : false;
   const nextBps = bps === "off" ? undefined : bps !== undefined ? bps : prev?.max_slippage_bps;
@@ -301,7 +306,7 @@ export function evaluate(policy, spend, spent) {
     }
   }
   if (kind === "bridge" && !bridgesEnabled(policy)) {
-    out.push({ rule: "bridges_not_enabled", limit: null, observed: null, message: "the owner turned bridges off; they turn them back on with `sato-agent policy set --bridges on`" });
+    out.push({ rule: "bridges_not_enabled", limit: null, observed: null, message: "bridges are off for this agent; the owner turns them on with `sato-agent policy set --bridges on`" });
   }
   return out;
 }

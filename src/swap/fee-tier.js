@@ -4,6 +4,10 @@
 //   major   ETH / WETH / SOL <-> USDC, and major <-> major       15 bps (0.15%)
 //   token   any trade with a long-tail token                      75 bps (0.75%)
 //
+// A fourth tier, cross_chain (25 bps, 0.25%), is the fee on a bridge (src/bridge/dln.js). It is display and a ceiling only: it is NOT
+// in FEE_TIERS, so a same-chain swap can never claim it (`feeTierRefusals` refuses it as a mismatch), and the swap code never classifies
+// a pair as cross_chain.
+//
 // Sato Hub sets the rate server-side and discloses it in its signed quote (`sato_fee_bps`, and `sato_fee_tier`). The kit
 // does not pin the rate; it holds it to two ceilings so a broken or hostile server cannot overcharge:
 //
@@ -25,10 +29,13 @@ export const MAJOR_FEE_CEILING_BPS = 15;
  * The most each tier may charge: a stablecoin pair 3 bps (0.03%), a major pair 15 bps, a pair with a long-tail token 1%. A tier is
  * held to ITS OWN ceiling, not the dearer tier's: a stable pair at 15 bps is an overcharge of five times its published rate.
  */
-export const TIER_CEILING_BPS = Object.freeze({ stable: 3, major: MAJOR_FEE_CEILING_BPS, token: FEE_CEILING_BPS });
+export const TIER_CEILING_BPS = Object.freeze({ stable: 3, major: MAJOR_FEE_CEILING_BPS, token: FEE_CEILING_BPS, cross_chain: 25 });
+/** The swap tiers. `cross_chain` is deliberately absent: only a bridge may use it, and a swap that claims it is refused. */
 export const FEE_TIERS = Object.freeze(["stable", "major", "token"]);
+/** The tier of a bridge, which the swap tiers above never take. */
+export const BRIDGE_FEE_TIER = "cross_chain";
 /** Sato Hub's published rate per tier, for display and docs only: the kit enforces the ceilings above, not these. */
-export const PUBLISHED_FEE_BPS = Object.freeze({ stable: 3, major: 15, token: 75 });
+export const PUBLISHED_FEE_BPS = Object.freeze({ stable: 3, major: 15, token: 75, cross_chain: 25 });
 /** Stablecoins among the kit's majors: the stables of every chain in src/chains.js (today USDC). */
 const STABLE_SYMBOLS = new Set(stableSymbols());
 
@@ -56,7 +63,7 @@ function majorTierWords(chain, joiner) {
 
 /** "0.75% (75 bps, any other token)": the percent first, then the bps and the tier in words. `chain` makes the words that chain's. */
 export function feeText(bps, tier, chain) {
-  const words = { stable: "stablecoin pair", major: majorTierWords(chain, "/") ?? "ETH/SOL with USDC", token: "a token trade" }[tier];
+  const words = { stable: "stablecoin pair", major: majorTierWords(chain, "/") ?? "ETH/SOL with USDC", token: "a token trade", cross_chain: "cross-chain" }[tier];
   return `${feePercent(bps)} (${bps} bps${words ? `, ${words}` : ""})`;
 }
 

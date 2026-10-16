@@ -64,7 +64,7 @@ test("a disclosed tier CHEAPER than the kit's reading is accepted, held to the c
 });
 
 test("each tier has its own ceiling: a stable pair is held to 3 bps, not to the major tier's 15 (4 bps refused, 3 accepted)", () => {
-  assert.deepEqual(F.TIER_CEILING_BPS, { stable: 3, major: 15, token: 100 });
+  assert.deepEqual(F.TIER_CEILING_BPS, { stable: 3, major: 15, token: 100, cross_chain: 25 });
   assert.deepEqual(F.feeTierRefusals({ bps: 3, tier: "stable" }), []);
   assert.deepEqual(F.feeTierRefusals({ bps: 3, tier: "stable", disclosedTier: "stable" }), []);
   for (const disclosedTier of [undefined, "stable"]) {

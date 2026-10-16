@@ -53,6 +53,12 @@ const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const KYBER_ROUTER = "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5";
 const KYBER_EXECUTOR = "0x8F10B468b06c6FD214B65F87778827F7D113f996";
 const ERC8004_REGISTRY = "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432";
+// deBridge DLN's source contract (a proxy; Sourcify exact match on Base for the implementation), the same address on all four EVM chains
+// (read 2026-10-16). `sourceSupported`: whether the kit builds a bridge FROM that chain. BNB Chain is not: deBridge sends every BNB-source order
+// through a forwarder (0x663D…C251, selector 0x4d8160ba) whose code is not verified, so the kit does not read it yet and refuses it.
+// deBridge numbers the EVM chains by their chain id and Solana 7565164 (a number of deBridge's own).
+const DLN_SOURCE = "0xeF4fB24aD0916217251F553c0596F8Edc630EB66";
+const DEBRIDGE_SOLANA_CHAIN_ID = 7565164;
 
 const REGISTRY = deepFreeze({
   base: {
@@ -95,6 +101,8 @@ const REGISTRY = deepFreeze({
     },
     /** ERC-8004 IdentityRegistry (github.com/erc-8004/erc-8004-contracts). */
     erc8004Registry: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+    dln: { source: DLN_SOURCE, sourceSupported: true },
+    debridgeChainId: 8453,
     x402: { v1Name: "base", caip2: "eip155:8453" },
     /** What the kit's own eth_simulateV1 needs to look like this chain: block time, and the tip used when the node cannot say. */
     simulation: { blockTimeS: 2, tipFallbackWei: 1_000_000n, prevRandao: true, timedBlocks: true, zeroBaseFee: false, swapGas: 2_000_000n, maxGas: 4_000_000n, exactGasEstimate: false },
@@ -141,6 +149,8 @@ const REGISTRY = deepFreeze({
     },
     kyber: { slug: "bsc", router: KYBER_ROUTER, executor: KYBER_EXECUTOR },
     erc8004Registry: ERC8004_REGISTRY,
+    dln: { source: DLN_SOURCE, sourceSupported: false },
+    debridgeChainId: 56,
     // No x402 here (owner ruling): no general facilitator, and Binance-Peg USDC cannot sign an EIP-3009 authorization.
     x402: { v1Name: null, caip2: "eip155:56" },
     // Blocks come every 0.45 s, so a +1 block / +2 s override is refused (-38020); the latest block's baseFeePerGas is 0 (legacy gas
@@ -183,6 +193,8 @@ const REGISTRY = deepFreeze({
     },
     kyber: { slug: "arbitrum", router: KYBER_ROUTER, executor: KYBER_EXECUTOR },
     erc8004Registry: ERC8004_REGISTRY,
+    dln: { source: DLN_SOURCE, sourceSupported: true },
+    debridgeChainId: 42161,
     x402: { v1Name: "arbitrum", caip2: "eip155:42161" },
     // Blocks of 0.25 to 0.3 s: block-number / time overrides fail here too. Base fee 0.02 gwei, tip 0.
     // exactGasEstimate: an Arbitrum transaction's gas includes the cost of posting its data to Ethereum, which eth_simulateV1's gasUsed
@@ -233,6 +245,8 @@ const REGISTRY = deepFreeze({
     },
     kyber: { slug: "polygon", router: KYBER_ROUTER, executor: KYBER_EXECUTOR },
     erc8004Registry: ERC8004_REGISTRY,
+    dln: { source: DLN_SOURCE, sourceSupported: true },
+    debridgeChainId: 137,
     x402: { v1Name: "polygon", caip2: "eip155:137" },
     // Blocks of about 1.5 s on load-balanced nodes that lag: overrides fail (-38020). Base fee about 248 gwei, tip about 30 gwei.
     // swapGas: a recorded Polygon route (selling AAVE) used 2.52M gas, past the 2M cap the other chains keep; the cap is where a
@@ -256,6 +270,7 @@ const REGISTRY = deepFreeze({
     ],
     // Chainlink publishes SOL/USD on Base, not on Solana: the independent SOL price is read through that chain's feeds.
     chainlink: { via: "base" },
+    debridgeChainId: DEBRIDGE_SOLANA_CHAIN_ID,
     x402: { v1Name: "solana", caip2: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp" },
     features: { send: true, swap: true, x402: true, giftcards: false, register: false, checkout: true, amazon: true },
   },
@@ -292,6 +307,14 @@ export const isSolana = (key) => isKnownChain(key) && REGISTRY[key].kind === "so
 export const labelOf = (key) => getChain(key).label;
 /** The EVM chain with this chain id (a number or a digit string), or null. */
 export const evmChainById = (id) => evmChainKeys().map((k) => REGISTRY[k]).find((c) => String(c.chainId) === String(id)) ?? null;
+/** deBridge's number for a chain (the EVM chain id; Solana's is deBridge's own, 7565164). Throws on a key the kit does not know. */
+export const debridgeChainIdOf = (key) => getChain(key).debridgeChainId;
+/** The DLN source contract a bridge FROM this chain goes to, or null when the kit does not bridge from it (BNB Chain, Solana, an unknown key). */
+export const dlnSourceOf = (key) => {
+  const d = isKnownChain(key) ? REGISTRY[key].dln : null;
+  return d?.sourceSupported === true ? d.source : null;
+};
+
 /** The keys of the chains that have a feature ("swap", "x402", ...), registry order. */
 export const chainsWith = (feature) => chainKeys().filter((k) => REGISTRY[k].features?.[feature] === true);
 export const hasFeature = (key, feature) => isKnownChain(key) && REGISTRY[key].features?.[feature] === true;
@@ -405,9 +428,10 @@ export const lockName = (key, what) => `${getChain(key).key}-${what}`;
 /** Checked at load: a malformed entry stops the kit rather than being used. */
 for (const key of evmChainKeys()) {
   const c = REGISTRY[key];
-  const addrs = [...(c.otherStables ?? []).map((s) => s.address), c.wrappedNative.address, c.kyber.router, c.kyber.executor, c.erc8004Registry, ...Object.values(c.stables).map((s) => s.address), ...Object.values(c.chainlink.other ?? {}).map((f) => f.address), c.chainlink.native.address, ...(c.chainlink.sequencer ? [c.chainlink.sequencer.address] : [])];
+  const addrs = [...(c.otherStables ?? []).map((s) => s.address), c.wrappedNative.address, c.kyber.router, c.kyber.executor, c.erc8004Registry, c.dln.source, ...Object.values(c.stables).map((s) => s.address), ...Object.values(c.chainlink.other ?? {}).map((f) => f.address), c.chainlink.native.address, ...(c.chainlink.sequencer ? [c.chainlink.sequencer.address] : [])];
   for (const a of addrs) if (!EVM_ADDRESS.test(a)) throw new Error(`chains.js: ${key} has a malformed address ${String(a).slice(0, 50)}`);
   if (c.caip2 !== `eip155:${c.chainId}` || c.viem.id !== c.chainId || c.x402.caip2 !== c.caip2) throw new Error(`chains.js: ${key}'s chain id disagrees with its caip2 / viem chain / x402 network`);
+  if (c.debridgeChainId !== c.chainId || typeof c.dln.sourceSupported !== "boolean") throw new Error(`chains.js: ${key}'s deBridge chain id must be its chain id, and its DLN source must say whether it is supported`);
   if (!c.stables[c.defaultStable]) throw new Error(`chains.js: ${key}'s defaultStable is not one of its stables`);
   // A feature that depends on a property of the default stable cannot be switched on where the stable lacks it.
   const d = c.stables[c.defaultStable];

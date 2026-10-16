@@ -10,7 +10,7 @@ import { isAddress as isEvmAddress } from "viem";
 import { createHash } from "node:crypto";
 import { addressFor, addresses, initWallet, walletExists } from "../src/wallet.js";
 import { DEFAULT_EVM_CHAIN, chainKeys, chainsWith, defaultStable, evmChain, evmChainKeys, explorerAddress, getChain, isEvm, isKnownChain, labelList, labelOf, majorSymbols, orList, pipeList, stableBySymbol, stablesOf } from "../src/chains.js";
-import { allowedChains, evaluate, evmChainFor, isLegacySwapsOff, loadPolicy, purchasesAsk, setPolicy, swapsEnabled } from "../src/policy.js";
+import { allowedChains, bridgesEnabled, evaluate, evmChainFor, isLegacySwapsOff, loadPolicy, purchasesAsk, setPolicy, swapsEnabled } from "../src/policy.js";
 import { NeedsApproval, Pending, PlainError, Refused } from "../src/errors.js";
 import { VALUE_KINDS, actions, read, recordCheckEvent, spentLast24h } from "../src/ledger.js";
 import { purchaseChain, purchaseGate } from "../src/purchase.js";
@@ -32,6 +32,7 @@ import { MCP_URL, checkInstall, customEndpoint, gateRefusals, recommend, runChec
 import { usdcUnits, unitsToUsd } from "../src/amount.js";
 import { approvalBound, executeSend, isAll, planSend, sendFields, sendIntent, sendLines, verifyBound } from "../src/send/index.js";
 import { describeToken, renderTokenCard, runSwap, swapLines } from "../src/swap/run.js";
+import { BRIDGE_SOURCES, BridgeUsage, bridgeLines, bridgeRowText, bridgeStatus, bridgeStatusLines, runBridge } from "../src/bridge/run.js";
 import { checkBuilds, renderReceipts } from "../src/build-check.js";
 import { normalizeCluster } from "../src/receipts.js";
 import { clean, cleanBody, cleanStrings } from "../src/text.js";
@@ -41,6 +42,7 @@ const CHAIN_ALL = pipeList(chainKeys());
 const CHAIN_SEND = pipeList(chainsWith("send"));
 const CHAIN_SWAP = pipeList(chainsWith("swap"));
 const CHAIN_PAY = pipeList(chainsWith("x402"));
+const CHAIN_BRIDGE_FROM = pipeList(BRIDGE_SOURCES);
 const CHAIN_BUY = pipeList(chainsWith("checkout"));
 const CHAIN_ORDER = pipeList(chainsWith("amazon"));
 const CHAIN_SET = `${CHAIN_ALL}|${chainKeys().join(",")}`; // policy set --chains: one chain, or a comma-separated list
@@ -75,6 +77,7 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
              [--allow <addr,addr> | --allow any] [--check-gate off|no|caution]
              [--on-check-unavailable allow|refuse] [--approval auto|ask]
              [--swaps on|off] [--swap-slippage-bps <1-500>|none] [--max-trades-per-day <n|none>]
+             [--bridges on|off]
              [--purchases ask|auto]
                                          the owner's choices; nothing is spent until chains and both limits are set.
                                          --purchases: gift cards, Amazon orders, checkouts and links paid through buy ask
@@ -136,6 +139,18 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
                                          per trade (50 bps between majors, 150 with a token; --slippage-bps overrides, at most 500).
                                          A trade with high slippage, a large price impact, a poor sell-back test or an issuer power
                                          over the token needs the owner's approval (exit 5) even when the agent acts on its own.
+  bridge --chain ${CHAIN_BRIDGE_FROM} --to-chain ${CHAIN_ALL} --asset <USDC|USDT|ETH|POL|address> --amount <n|all> [--receive <asset>] [--approve <code>] [--dry-run]
+  bridge status [--id <ledger id|order id>]
+                                         move this bot's OWN funds from one of its chains to another through deBridge (always to its
+                                         own address on the other chain). From ${labelList(BRIDGE_SOURCES)}; to any chain in the policy. The
+                                         asset is the chain's stablecoin or its coin (ETH, POL); --receive picks what arrives (default: the
+                                         destination's stablecoin; a coin only to the same coin unless --receive says). The order shows what
+                                         leaves the wallet, the fixed fee, the exact amount that arrives and the total cost; a bridge that
+                                         costs over 3% of what it moves needs the owner's approval (exit 5) even in auto mode, and one that
+                                         would deliver less than half is refused. The order is checked field by field before it is signed.
+                                         "Sent" is not "arrived": a solver fills the order (usually under a minute) and \`bridge status\`
+                                         asks deBridge. --amount all moves the whole balance of a stablecoin. Sato Hub fee: up to 0.25%,
+                                         taken from the amount sent
   token <address|mint|link> [--chain ${CHAIN_ALL}]
                                          what is at an address: name, decimals, program, price and liquidity (dated), a Solana token's
                                          authorities and extensions, and Sato Hub's token check. Read-only; spends nothing.
@@ -167,7 +182,7 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
   history [--since 24h|7d|30d|all]       every action, one row each, with its explorer link
   proof                                  a shareable card: this agent's wallet, onchain id and every action with its tx link
 
-Add --dry-run to send, pay, swap, order or checkout to run every check (and, for send, swap, order and checkout, the simulation; for pay, the quoted price) without signing a payment or spending. A dry run asks the other side for a real quote: a swap quote is recorded by Sato Hub; an order dry run sends the shipping address to Sato Hub and creates a Crossmint quote. giftcard buy --dry-run signs in to Bitrefill (a sign-in message, not a payment) and creates an unpaid invoice; it pays and signs no payment.
+Add --dry-run to send, pay, swap, bridge, order or checkout to run every check (and, for send, swap, order and checkout, the simulation; for pay, the quoted price) without signing a payment or spending. A dry run asks the other side for a real quote: a swap or bridge quote is recorded by Sato Hub; an order dry run sends the shipping address to Sato Hub and creates a Crossmint quote. giftcard buy --dry-run signs in to Bitrefill (a sign-in message, not a payment) and creates an unpaid invoice; it pays and signs no payment.
 
 Add --json for machine-readable output. Files: ${home()} (SATO_AGENT_HOME to move).
 Exit codes: 3 refused (nothing signed) · 4 signed but not confirmed (do NOT retry) · 5 needs the owner's approval (nothing spent).
@@ -207,6 +222,10 @@ try {
       "skip-check": { type: "boolean" },
       "dry-run": { type: "boolean" },
       "swap-slippage-bps": { type: "string" },
+      "to-chain": { type: "string" },
+      receive: { type: "string" },
+      id: { type: "string" },
+      bridges: { type: "string" },
       swaps: { type: "string" },
       "max-trades-per-day": { type: "string" },
       from: { type: "string" },
@@ -268,6 +287,7 @@ function policyText(p) {
     `Sato Hub checks: ${p.check_gate && p.check_gate !== "off" ? `stop a spend on "${p.check_gate === "caution" ? "caution or no" : "no"}"${p.on_check_unavailable ? ` · if a check can't run: ${p.on_check_unavailable}` : ""}` : "inform only"}`,
     `approval:        ${p.approval === "ask" ? "ask the owner before every spend" : "act within the limits"}`,
     `purchases:       ${purchasesAsk(p) ? `ask the owner first${p.purchase_approval === "auto" ? " (because approval is ask: purchases buy on their own only when both are auto)" : p.purchase_approval ? "" : " (the default)"}` : "buy within the limits"} (gift cards, checkouts, and links paid through buy)`,
+    `bridges:         ${bridgesEnabled(p) ? "on (the agent's own funds, between its own chains; shares the spending limits)" : "off (`policy set --bridges on` turns them on)"}`,
     `swaps:           ${!swapsEnabled(p) ? `off${isLegacySwapsOff(p) ? " (this policy is from before v0.3 and never had swaps on; \`policy set --swaps on\` turns them on)" : ""}` : `on · ${Number.isInteger(p.max_slippage_bps) ? `slippage up to ${p.max_slippage_bps} bps` : "slippage chosen per trade"} · ${Number.isInteger(p.max_trades_per_day) ? `${p.max_trades_per_day} per 24 hours` : "no trade cap"}`}`,
   ].join("\n");
 }
@@ -418,6 +438,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
               swapSlippageBps: flags["swap-slippage-bps"],
               maxTradesPerDay: flags["max-trades-per-day"],
               swaps: flags.swaps,
+              bridges: flags.bridges,
               purchases: flags.purchases,
             }),
           { name: "policy" },
@@ -623,6 +644,37 @@ async function main(command = cmd, args = positionals.slice(1)) {
       const offer = swapOffer();
       return out(`Swapped. ${r.explorer}${rebuilt}${r.received ? `\nReceived ${r.received.amount} ${r.received.asset}.` : r.amount_out ? `\nReceived ${r.amount_out} base units of ${d.buy.asset}.` : ""}${r.warnings?.length ? `\nNote: ${r.warnings.join("; ")}` : ""}${settleNote}${offer ? `\n\n${offer}` : ""}`, { ...r, plan: d, ...(settlement ? { referral_settlement: settlement } : {}), ...(offer ? { referral_offer: offer } : {}) });
     }
+    case "bridge": {
+      if (rest[0] === "status") {
+        if (rest.length > 1) throw new UsageError("bridge status [--id <ledger id|order id>]");
+        const res = await bridgeStatus({ id: flags.id });
+        return out(bridgeStatusLines(res).map((l) => clean(l, 600)).join("\n"), res);
+      }
+      const bridgeUsage = `bridge --chain ${CHAIN_BRIDGE_FROM} --to-chain ${CHAIN_ALL} --asset <USDC|USDT|ETH|POL|address> --amount <n|all> [--receive <asset>] [--approve <code>] [--dry-run] | bridge status [--id <id>]`;
+      if (rest.length || !flags.chain || !flags["to-chain"] || !flags.asset || !flags.amount) throw new UsageError(bridgeUsage);
+      const req = { chain: flags.chain, toChain: flags["to-chain"], asset: flags.asset, amount: flags.amount, receive: flags.receive };
+      let ran;
+      try {
+        ran = await runBridge(req, { approve: flags.approve, dryRun: Boolean(flags["dry-run"]) });
+      } catch (err) {
+        if (err instanceof BridgeUsage) throw new UsageError(err.message);
+        throw err;
+      }
+      const { prepared } = ran;
+      const d = prepared.display;
+      const shown = bridgeLines(d).map((l) => clean(l, 1000)).join("\n");
+      if (flags["dry-run"]) {
+        const would = d.confirm_reasons?.length ? "\nThis bridge would stop for the owner's approval when run for real (exit 5)." : "";
+        return out(`DRY RUN: every check passed. Nothing was signed or sent, and nothing counts against the limits.\n${shown}${would}`, { dry_run: true, would_need_approval: Boolean(d.confirm_reasons?.length), ...d });
+      }
+      say(shown);
+      const r = await prepared.execute();
+      const warn = r.warnings?.length ? `\nNote: ${r.warnings.map((w) => clean(w, 300)).join("; ")}` : "";
+      return out(
+        `Sent to deBridge. ${r.explorer}${r.order_id ? `\nOrder: ${r.order_id}${r.order_id_source === "sato_hub" ? " (from Sato Hub; not confirmed by the chain)" : ""}` : ""}\nArrives on ${labelOf(r.chain_out)} as ${r.arrives.amount} ${r.arrives.asset} when a solver fills it (usually under a minute). Check with: sato-agent bridge status${warn}`,
+        { ...r, plan: d },
+      );
+    }
     case "token": {
       const input = rest[0];
       if (!input || rest.length > 1) throw new UsageError(`token <address|mint|link> [--chain ${CHAIN_ALL}]`);
@@ -721,7 +773,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
       const cutoff = Date.now() - windows[since];
       const list = actions().filter((a) => Date.parse(a.first_ts) >= cutoff);
       const line = (a) =>
-        `${a.first_ts}  ${kindLabel(a).padEnd(8)} ${String(a.status).padEnd(16)} ${(a.chain ?? "").padEnd(6)} ${a.kind === "register" || a.kind === "register_uri" ? `agent ${a.agent_id}` : usdText(a)} ${a.to ?? a.url ?? ""}${a.explorer ? `\n    ${a.explorer}` : ""}`;
+        `${a.first_ts}  ${kindLabel(a).padEnd(8)} ${String(a.status).padEnd(16)} ${(a.chain ?? "").padEnd(6)} ${a.kind === "register" || a.kind === "register_uri" ? `agent ${a.agent_id}` : usdText(a)} ${a.kind === "bridge" ? bridgeRowText(a) : a.to ?? a.url ?? ""}${a.explorer ? `\n    ${a.explorer}` : ""}`;
       return out(list.map(line).join("\n") || "(no actions yet)", { since, actions: list });
     }
     case "proof": {
@@ -729,7 +781,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
       const a = addresses();
       const chains = allowedChains(loadPolicy());
       const list = actions();
-      const onchain = list.filter((x) => x.explorer && ["confirmed", "registered"].includes(x.status));
+      const onchain = list.filter((x) => x.explorer && ["confirmed", "registered", "filled"].includes(x.status));
       const agentRow = [...list].reverse().find((x) => x.kind === "register" && x.agent_id);
       const agentId = agentRow?.agent_id ?? null;
       const registered = evmChain(isEvm(agentRow?.chain) ? agentRow.chain : DEFAULT_EVM_CHAIN);
@@ -764,7 +816,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
       const checks = ledger.rows.filter((e) => e.kind === "check").slice(-5);
       // Ledger fields can hold server text (a payee, a receipt id, a reason): printed cleaned, one line each.
       const c = (v, max = 120) => (v === null || v === undefined ? "" : clean(v, max));
-      const fmt = (e) => `  ${c(e.ts, 40)} ${c(e.status, 40)} ${c(kindLabel(e), 30)} ${c(e.chain, 20)} ${usdText(e)} ${c(e.to)} ${c(e.tx)}`.trimEnd();
+      const fmt = (e) => `  ${c(e.ts, 40)} ${c(e.status, 40)} ${c(kindLabel(e), 30)} ${c(e.chain, 20)} ${usdText(e)} ${e.kind === "bridge" ? c(bridgeRowText(e), 300) : c(e.to)} ${c(e.tx)}`.trimEnd();
       return out(
         [
           p ? policyText(p) : "choices: NOT SET",

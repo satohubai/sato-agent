@@ -106,6 +106,8 @@ export function raisesBetween(prev, next) {
   if ((prev.on_check_unavailable ?? "refuse") === "refuse" && next.on_check_unavailable === "allow") r.push("on_check_unavailable: refuse -> allow");
   // Swaps: turning them on, removing or raising a cap all let the agent do more.
   if (swapsEnabled(next) && !swapsEnabled(prev)) r.push("swaps turned on");
+  // Bridges (v0.5): on unless the owner turned them off, so turning them back on lets the agent do more.
+  if (bridgesEnabled(next) && !bridgesEnabled(prev)) r.push("bridges turned on");
   if (swapsEnabled(prev) && swapsEnabled(next)) {
     if (Number.isInteger(prev.max_slippage_bps) && !(Number.isInteger(next.max_slippage_bps) && next.max_slippage_bps <= prev.max_slippage_bps)) r.push("max_slippage_bps");
     if (Number.isInteger(prev.max_trades_per_day) && !(Number.isInteger(next.max_trades_per_day) && next.max_trades_per_day <= prev.max_trades_per_day)) r.push("max_trades_per_day");
@@ -129,6 +131,13 @@ export const swapsEnabled = (p) => Boolean(p) && p.swaps_off !== true && !isLega
  */
 export const isLegacySwapsOff = (p) => Boolean(p) && !Object.hasOwn(p, "swaps_off") && !Number.isInteger(p.max_slippage_bps);
 
+/**
+ * Bridges (a move of the agent's own funds from one of its chains to another, through deBridge) are on unless the owner turned them
+ * off with `policy set --bridges off`. A policy written before v0.5 has no `bridges_off` key and reads as on; from v0.5 on,
+ * setPolicy always writes an explicit boolean. The same limits (per transaction, per 24 hours) apply as for a swap.
+ */
+export const bridgesEnabled = (p) => Boolean(p) && p.bridges_off !== true;
+
 function parseBps(raw) {
   if (raw === undefined) return undefined;
   if (raw === "off") return "off";
@@ -150,7 +159,7 @@ function parseTrades(raw) {
  * are required (no defaults). Later calls may change any one. Returns the new
  * policy and what (if anything) it loosened, which the CLI flags loudly.
  */
-export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, approval, onCheckUnavailable, swapSlippageBps, maxTradesPerDay, swaps, purchases }) {
+export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, approval, onCheckUnavailable, swapSlippageBps, maxTradesPerDay, swaps, purchases, bridges }) {
   const prev = loadPolicy();
   // If policy.json is gone (deleted, or never written after a crash) but the
   // ledger recorded one, compare against that: deleting the file and starting
@@ -188,6 +197,9 @@ export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, a
   const before = prev ?? recorded;
   const off = swapsChoice === "off" || bps === "off" ? true : swapsChoice === "on" ? false : before ? !swapsEnabled(before) : false;
   next.swaps_off = off;
+  // Bridges: on unless the owner turned them off. The key is always written, so "off" is never implied by absence.
+  const bridgesChoice = parseChoice(bridges, ["on", "off"], "--bridges");
+  next.bridges_off = bridgesChoice === "off" ? true : bridgesChoice === "on" ? false : before ? !bridgesEnabled(before) : false;
   const nextBps = bps === "off" ? undefined : bps !== undefined ? bps : prev?.max_slippage_bps;
   const nextTrades = trades !== undefined ? trades : prev?.max_trades_per_day;
   if (Number.isInteger(nextBps)) next.max_slippage_bps = nextBps;
@@ -271,9 +283,9 @@ export function evaluate(policy, spend, spent) {
       message: `would bring the last 24 hours to $${round(s.usd + usd)}, over the limit of $${policy.max_usd_per_day} ($${round(s.usd)} already spent)`,
     });
   }
-  // A swap pays a pinned router and the output comes back to the agent itself,
-  // so the payee allowlist does not apply; its own caps below do.
-  if (kind !== "swap" && Array.isArray(policy.allow_recipients) && to && !policy.allow_recipients.map(norm).includes(norm(to))) {
+  // A swap pays a pinned router and the output comes back to the agent itself, and a bridge pays a pinned contract and the funds go to
+  // the agent's own address on its other chain, so the payee allowlist does not apply to either; their own caps below do.
+  if (kind !== "swap" && kind !== "bridge" && Array.isArray(policy.allow_recipients) && to && !policy.allow_recipients.map(norm).includes(norm(to))) {
     out.push({ rule: "allow_recipients", limit: policy.allow_recipients, observed: to, message: "recipient is not on the allowlist" });
   }
   if (kind === "swap") {
@@ -287,6 +299,9 @@ export function evaluate(policy, spend, spent) {
         out.push({ rule: "max_trades_per_day", limit: policy.max_trades_per_day, observed: (s.swaps ?? 0) + 1, message: `would be swap number ${(s.swaps ?? 0) + 1} in the last 24 hours; the owner's cap is ${policy.max_trades_per_day}` });
       }
     }
+  }
+  if (kind === "bridge" && !bridgesEnabled(policy)) {
+    out.push({ rule: "bridges_not_enabled", limit: null, observed: null, message: "the owner turned bridges off; they turn them back on with `sato-agent policy set --bridges on`" });
   }
   return out;
 }

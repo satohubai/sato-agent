@@ -608,7 +608,7 @@ test("the lines never call a sent order bridged, and carry the sentence about Sa
   const w = world();
   const { prepared } = await B.runBridge(req(), { dryRun: true }, w.deps);
   const text = B.bridgeLines(prepared.display).join("\n");
-  assert.match(text, /Sato Hub fee: 0\.25% \(25 bps, cross-chain\), taken from the amount sent; Sato Hub receives it only after the order is filled\./);
+  assert.match(text, /Sato Hub fee: 0\.25% \(25 bps, cross-chain\), taken from the amount sent; Sato Hub receives it once the order is filled, not before\./);
   assert.match(text, /Recipient: this bot's own address on Arbitrum/);
   assert.match(text, /Arrives on Arbitrum: exactly 997\.5 USDC/);
   assert.match(text, /Bridge Base -> Arbitrum via deBridge/);

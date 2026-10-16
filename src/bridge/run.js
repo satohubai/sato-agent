@@ -29,7 +29,7 @@ import { actions, record, release, reserve, spentLast24h } from "../ledger.js";
 import { NeedsApproval, Pending, Refused, Rejected } from "../errors.js";
 import { consumeApproval, requestApproval } from "../approvals.js";
 import { oraclePrice, PriceUnavailable } from "../price.js";
-import { NATIVE_PLACEHOLDER, evmChain, explorerTx, getChain, isEvm, isKnownChain, labelOf, lockName, orList, stablesOf } from "../chains.js";
+import { NATIVE_PLACEHOLDER, dlnSourceOf, evmChain, explorerTx, getChain, isEvm, isKnownChain, labelOf, lockName, orList, stablesOf } from "../chains.js";
 import { callTool as satoCallTool } from "../satohub.js";
 import { verifyHubSignature } from "../hub-signature.js";
 import { addresses } from "../wallet.js";
@@ -43,11 +43,8 @@ import { feePercent } from "../swap/fee-tier.js";
 
 // ---------------------------------------------------------------- pinned values
 
-/**
- * deBridge's DlnSource, the same address on Base, Arbitrum and Polygon (Sourcify exact match on Base, 2026-10-16). When src/chains.js carries
- * `dln.source` (the registry pin), read it from there with dlnSourceOf("base") and drop the allowance in test/chains.test.js.
- */
-export const DLN_SOURCE = "0xeF4fB24aD0916217251F553c0596F8Edc630EB66";
+/** deBridge's DlnSource, the same address on Base, Arbitrum and Polygon (Sourcify exact match on Base, 2026-10-16): the registry's pin. */
+export const DLN_SOURCE = dlnSourceOf("base");
 /** The chains this version bridges FROM. */
 export const BRIDGE_SOURCES = Object.freeze(["base", "arbitrum", "polygon"]);
 /** Why a chain that is not a source is refused, in plain words. */
@@ -943,7 +940,7 @@ export function bridgeLines(d) {
   lines.push(`Arrives on ${dst}: exactly ${d.arrives.amount} ${d.arrives.asset}${usd(d.arrives.usd)}, when a solver fills the order (usually under a minute). The order is filled for exactly that amount or not at all.`);
   if (d.cost?.usd !== null && d.cost?.usd !== undefined) lines.push(`Total cost: about $${money(Math.max(0, d.cost.usd))}, which is ${Math.max(0, d.cost.pct)}% of what leaves the wallet (the fixed fee, Sato Hub's fee and deBridge's costs on ${dst}).`);
   else lines.push(`Total cost: not known, because ${orList(d.unpriced ?? [])} has no independent price in this kit.`);
-  lines.push(`Sato Hub fee: ${d.sato_fee.percent} (${d.sato_fee.bps} bps, cross-chain), taken from the amount sent; Sato Hub receives it only after the order is filled.${d.sato_fee.amount !== null && d.sato_fee.amount !== undefined ? ` That is ${d.sato_fee.amount} ${d.sato_fee.asset}.` : ""}`);
+  lines.push(`Sato Hub fee: ${d.sato_fee.percent} (${d.sato_fee.bps} bps, cross-chain), taken from the amount sent; Sato Hub receives it once the order is filled, not before.${d.sato_fee.amount !== null && d.sato_fee.amount !== undefined ? ` That is ${d.sato_fee.amount} ${d.sato_fee.asset}.` : ""}`);
   lines.push(`Recipient: this bot's own address on ${dst} (${d.recipient.address}).`);
   if (d.approval) lines.push(`Approval before the order: exactly ${d.approval.amount} ${d.approval.token} to deBridge's DlnSource ${d.approval.spender} (never unlimited), set back to 0 afterwards.`);
   if (d.usd_held_to_limits !== null && d.usd_held_to_limits !== undefined) lines.push(`Held to your limits as $${money(d.usd_held_to_limits)} (the amount and the fixed fee), shared with swaps and sends.`);

@@ -461,7 +461,6 @@ const PATTERNS = [
 const ALLOWED_ADDRESSES = {
   "src/purchase-evm.js": ["0x000000000022D473030F116dDEE9F6B43aC78BA3"], // Permit2 (the same on every chain), named in a comment
   "src/bitrefill.js": ["0x480CD46E6faDe651a0437DeaddA53D5c8e7D846A"], // Bitrefill's x402 payee: Bitrefill's, not a chain's
-  "src/bridge/run.js": ["0xeF4fB24aD0916217251F553c0596F8Edc630EB66"], // deBridge's DlnSource (until the registry's dln.source is merged and read instead)
   "src/swap/evm.js": ["0xcEE53Eb001d4d1743EF9df333Dcf45bC38622bE9", "0x0000000000000000000000000000000000000000"], // Sato's fee address (one key on every chain); the zero address
 };
 

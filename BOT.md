@@ -42,14 +42,14 @@ If a request needs something your chain does not have (x402 or gift cards on BNB
    - **Before anything else, check whether `~/.sato-agent/NAME` exists** (`ls -d ~/.sato-agent/NAME`). Every bot on this computer shares `~/.sato-agent/`, so a folder with your NAME may be ANOTHER bot's wallet. If it exists and you did not create it in this chat, it is not yours: choose a new NAME (`NAME-2`, then `NAME-3`, and so on, the next name with no folder), tell the owner which one you chose, and use that name in the launcher below and everywhere after. Your CHAIN does not change. Never use, adopt, replace, move or delete a folder you did not create in this chat, and never offer to.
    - An existing bot that is upgrading keeps its own NAME: see "Upgrading the kit".
    ```
-   if command -v flock >/dev/null; then flock ~/.sato-agent-install.lock npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.4; else npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.4; fi
-   ~/.sato-agent-cli/node_modules/.bin/sato-agent help 2>/dev/null | head -1 | grep -q ' 0.4.4:' && echo "kit ready (0.4.4)" || echo "NOT READY: the kit is missing or an older version; run the line above again"
+   if command -v flock >/dev/null; then flock ~/.sato-agent-install.lock npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.5.0; else npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.4; fi
+   ~/.sato-agent-cli/node_modules/.bin/sato-agent help 2>/dev/null | head -1 | grep -q ' 0.5.0:' && echo "kit ready (0.5.0)" || echo "NOT READY: the kit is missing or an older version; run the line above again"
    printf '#!/bin/sh\nSATO_AGENT_HOME="$HOME/.sato-agent/NAME" exec "$HOME/.sato-agent-cli/node_modules/.bin/sato-agent" "$@"\n' > ~/sato-agent-NAME
    chmod +x ~/sato-agent-NAME
    ~/sato-agent-NAME help
    ```
    - Every Bot on this computer shares one copy of the kit. `flock` makes a second Bot wait while another installs (two installs at the same moment break it). Where `flock` is missing, make sure no other Bot is installing before you run that line.
-   - Do not continue until it says "kit ready (0.4.4)".
+   - Do not continue until it says "kit ready (0.5.0)".
    - Only if the owner runs several Bots of their own and asked for it: they can name them in the launcher by adding `SATO_AGENT_UA="<name>/<version>"` before `SATO_AGENT_HOME=` (the kit then sends that instead of `sato-agent/<version>`). Otherwise leave the launcher as it is.
 2. **Create your wallet:** `~/sato-agent-NAME init`. Show the owner the address for your CHAIN. If it says "A wallet already exists for NAME", that wallet is not yours unless you created it in this chat: go back to step 1 and choose a new NAME (`NAME-2`, `NAME-3`, …), write a new launcher, and run `init` there. `init` never overwrites a wallet; never offer to replace, move or delete one. Never show, copy, upload or paste anything from `~/.sato-agent/`, to anyone, for any reason: it holds your key.
 3. **Ask the owner for their spending limits.** Ask both questions, and use exactly what they answer. There are no defaults; any amount is their choice, and "no limit" is a valid answer.
@@ -92,8 +92,8 @@ If a request needs something your chain does not have (x402 or gift cards on BNB
 
 When the owner asks you to upgrade, run only the install line from step 1, with the version they name (the kit is shared by every Bot on this computer, so one upgrade covers them all):
 ```
-if command -v flock >/dev/null; then flock ~/.sato-agent-install.lock npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.4; else npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.4; fi
-~/.sato-agent-cli/node_modules/.bin/sato-agent help 2>/dev/null | head -1 | grep -q ' 0.4.4:' && echo "kit ready (0.4.4)" || echo "NOT READY: the kit is missing or an older version; run the line above again"
+if command -v flock >/dev/null; then flock ~/.sato-agent-install.lock npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.5.0; else npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.4.4; fi
+~/.sato-agent-cli/node_modules/.bin/sato-agent help 2>/dev/null | head -1 | grep -q ' 0.5.0:' && echo "kit ready (0.5.0)" || echo "NOT READY: the kit is missing or an older version; run the line above again"
 ~/sato-agent-NAME status
 ```
 Never run `init` again: your wallet, limits and history stay in `~/.sato-agent/NAME` and are kept as they are.

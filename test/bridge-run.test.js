@@ -664,24 +664,27 @@ test("the lines never call a sent order bridged, and carry the sentence about Sa
 
 // ---------------------------------------------------------------- the adversarial review's findings
 
-test("a quote that pays out more than it costs needs the owner's yes (0.5% between stablecoins, 2% with a priced coin); a small gap is fine", async () => {
-  // 1000 USDC + $2.50 fee; arrives 1100: 9.7% above what was spent
+test("a quote that pays out more than the amount SENT needs the owner's yes (stablecoins: any amount above; 2% with a priced coin); the fixed fee is never counted as paying the solver", async () => {
+  // 1000 USDC sent (+ $2.50 fixed fee to deBridge); arrives 1100: above what was sent
   const w = world({ take: usdcUnits(1100) });
   const err = await B.runBridge(req(), {}, w.deps).catch((e) => e);
   assert.ok(err instanceof NeedsApproval);
   assert.deepEqual(err.intent.confirm_reasons, ["bridge_take_above_market"]);
-  assert.match(err.reasons[0], /pays out more than it costs.*it may never be filled/);
+  assert.match(err.reasons[0], /pays out more than it sends.*it may never be filled/);
   const dry = await B.runBridge(req(), { dryRun: true }, world({ take: usdcUnits(1100) }).deps);
   assert.match(B.bridgeLines(dry.prepared.display).join("\n"), /Total cost: none by the kit's prices; the order pays out more than it costs/);
-  // 0.3% above: inside the stablecoin tolerance (a peg wobble), no reason
-  const near = await B.runBridge(req(), { dryRun: true }, world({ take: usdcUnits(1005.5) }).deps);
-  assert.equal(near.prepared.confirm.length, 0);
-  // 0.7% above is over the stablecoin tolerance
-  const over = await B.runBridge(req(), { dryRun: true }, world({ take: usdcUnits(1009.5) }).deps);
+  // the review's case: 1002 arriving for 1000 sent is under the spend (1002.50) but above the amount sent: no solver is paid to fill it
+  const review = await B.runBridge(req(), { dryRun: true }, world({ take: usdcUnits(1002) }).deps);
+  assert.deepEqual(review.prepared.confirm.map((r) => r.code), ["bridge_take_above_market"]);
+  // just above the amount sent, between stablecoins, already asks
+  const over = await B.runBridge(req(), { dryRun: true }, world({ take: usdcUnits(1000.5) }).deps);
   assert.deepEqual(over.prepared.confirm.map((r) => r.code), ["bridge_take_above_market"]);
-  // a priced coin out: 2% wide. $1030 of ETH for $1002.50 is 2.7% above; $1015 is 1.2%
+  // an honest order pays out less than it sends: no reason
+  const near = await B.runBridge(req(), { dryRun: true }, world({ take: usdcUnits(999) }).deps);
+  assert.equal(near.prepared.confirm.length, 0);
+  // a priced coin out: 2% wide against the $1000 sent. $1025 of ETH is 2.5% above; $1015 is 1.5%
   const eth = (usd) => world({ tokenOut: ZERO, take: BigInt(Math.round((usd / 2500) * 1e18)) });
-  const wide = await B.runBridge(req({ receive: "ETH" }), { dryRun: true }, eth(1030).deps);
+  const wide = await B.runBridge(req({ receive: "ETH" }), { dryRun: true }, eth(1025).deps);
   assert.deepEqual(wide.prepared.confirm.map((r) => r.code), ["bridge_take_above_market"]);
   const ok = await B.runBridge(req({ receive: "ETH" }), { dryRun: true }, eth(1015).deps);
   assert.equal(ok.prepared.confirm.length, 0);

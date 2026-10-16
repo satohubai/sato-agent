@@ -577,12 +577,15 @@ export async function planBridge(req, deps = {}) {
   const confirm = [];
   if (cost.unpriced.length) confirm.push(reason("bridge_unpriced_native", `the kit has no independent price for ${cost.unpriced.join(" and ")}, so it cannot say what this bridge costs or hold all of it to your limits`));
   else if (cost.cost_pct > COST_CONFIRM_PCT) confirm.push(reason(`bridge_cost_over_3_pct_${band(cost.cost_pct)}`, `this bridge costs ${cost.cost_pct}% of what it moves ($${money(cost.cost_usd)} of $${money(cost.spend_usd)}), above ${COST_CONFIRM_PCT}%`));
-  // An order that pays out MORE than it costs is not a fair one: no solver is paid to fill it, so it may sit open. Never "low cost".
-  if (cost.spend_usd !== null && cost.take_usd !== null) {
+  // An order that pays out MORE than the amount sent is not a fair one: the solver is paid only from the amount sent (less the fees; the
+  // fixed fee goes to deBridge, not to the solver), so no solver is paid to fill it and it may sit open. Compared with the amount SENT, never
+  // with the spend (which includes the fixed fee). Stable to stable: an honest order always pays out less than it gives, so no tolerance;
+  // with a coin on either side, 2% for the oracle's own drift. Never "low cost".
+  if (cost.give_usd !== null && cost.give_usd !== undefined && cost.take_usd !== null) {
     const bothStable = sized.tokenIn.kind === "stable" && sized.tokenOut.kind === "stable";
-    const tolerance = bothStable ? 0.005 : 0.02;
-    if (cost.take_usd > cost.spend_usd * (1 + tolerance)) {
-      confirm.push(reason("bridge_take_above_market", `the quote pays out more than it costs ($${money(cost.take_usd)} arriving for $${money(cost.spend_usd)} spent), which a fair order does not; it may never be filled`));
+    const tolerance = bothStable ? 0 : 0.02;
+    if (cost.take_usd > cost.give_usd * (1 + tolerance)) {
+      confirm.push(reason("bridge_take_above_market", `the quote pays out more than it sends ($${money(cost.take_usd)} arriving for $${money(cost.give_usd)} sent), which a fair order does not; it may never be filled`));
     }
   }
   // The solver named to fill the order: empty (anyone) or a deBridge solver seen on live orders passes quietly; any other may never fill it.

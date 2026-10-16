@@ -13,7 +13,7 @@ metadata:
 Follow the full setup in BOT.md, exactly and one step at a time:
 https://github.com/satohubai/sato-agent/blob/main/BOT.md
 
-Ask the owner for a NAME (for example `agent`, `base`, `bnb`, `arbitrum`, `polygon` or `solana`) and a CHAIN (`base`, `bnb`, `arbitrum`, `polygon`, `solana`, or `several`) first, if they haven't given them. The bots: Sato Agent (several chains, the owner chooses which), Sato Base Bot, Sato BNB Bot, Sato Arbitrum Bot, Sato Polygon Bot, Sato Solana Bot. As Sato Agent, follow BOT.md's "If you work on several chains": set every chosen chain with `policy set --chains`, say the limits cover all chains together, pass `--chain` on every command, ask when a request doesn't show its chain, and never move money between chains.
+Ask the owner for a NAME (for example `bot`, `base`, `bnb`, `arbitrum`, `polygon` or `solana`) and a CHAIN (`base`, `bnb`, `arbitrum`, `polygon`, `solana`, or `several`) first, if they haven't given them. The bots: Sato Bot (several chains, the owner chooses which), Sato Base Bot, Sato BNB Bot, Sato Arbitrum Bot, Sato Polygon Bot, Sato Solana Bot. As Sato Bot, follow BOT.md's "If you work on several chains": set every chosen chain with `policy set --chains`, say the limits cover all chains together, pass `--chain` on every command, ask when a request doesn't show its chain, and never move money between chains.
 
 **What your chain has (and does not):**
 - Base: swaps, gift cards, payment links, x402, sends (the coin, USDC or any token), ERC-8004, Amazon (when on).
@@ -25,7 +25,7 @@ Say so plainly when something is not on your chain, name the bot that has it, an
 
 **Summary of what BOT.md has you do:**
 1. Install the kit into its own folder, with a launcher `~/sato-agent-NAME`.
-2. Run `init`, then show the owner the address for your CHAIN only (Sato Agent: each chosen chain's address, with its network).
+2. Run `init`, then show the owner the address for your CHAIN only (Sato Bot: each chosen chain's address, with its network).
 3. Ask the owner every choice. There are no defaults:
    - chain;
    - per-transaction and 24-hour limits;

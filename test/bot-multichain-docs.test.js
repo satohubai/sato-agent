@@ -4,10 +4,10 @@ import { readFileSync } from "node:fs";
 
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
 
-test("BOT.md, README and SKILL.md describe Sato Agent on several chains: shared limits, --chain always, nothing moves between chains", () => {
+test("BOT.md, README and SKILL.md describe Sato Bot (the Sato Agent kit on several chains): shared limits, --chain always, nothing moves between chains", () => {
   const bot = read("BOT.md");
-  assert.match(bot, /\*\*CHAIN = several \(Sato Agent\)\.\*\*/);
-  assert.match(bot, /\| Sato Agent \| several: the chains the owner chooses \|/);
+  assert.match(bot, /\*\*CHAIN = several \(Sato Bot\)\.\*\*/);
+  assert.match(bot, /\| Sato Bot \| several: the chains the owner chooses \|/);
   assert.match(bot, /### If you work on several chains/);
   assert.match(bot, /policy set --chains base,solana/);
   assert.match(bot, /These limits cover all your chains together\./);
@@ -21,11 +21,11 @@ test("BOT.md, README and SKILL.md describe Sato Agent on several chains: shared 
   assert.match(bot, /Adding one is logged as a raise\./);
 
   const readme = read("README.md");
-  assert.match(readme, /NAME = agent, CHAIN = several/);
-  assert.match(readme, /\| \*\*Sato Agent\*\* \| `NAME = agent, CHAIN = several` \|/);
+  assert.match(readme, /NAME = bot, CHAIN = several/);
+  assert.match(readme, /\| \*\*Sato Bot\*\* \| `NAME = bot, CHAIN = several` \|/);
   assert.match(readme, /Prefer one chain per Bot\?/);
 
   const skill = read("skills/sato-agent/SKILL.md");
-  assert.match(skill, /Sato Agent \(several chains, the owner chooses which\)/);
+  assert.match(skill, /Sato Bot \(several chains, the owner chooses which\)/);
   assert.match(skill, /never move money between chains/);
 });

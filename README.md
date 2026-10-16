@@ -8,9 +8,9 @@ It works on any always-on machine with Node 20.18+, not only Grok Bot.
 
 Tell your Bot:
 
-> Read https://github.com/satohubai/sato-agent/blob/main/BOT.md and follow the setup. NAME = agent, CHAIN = several.
+> Read https://github.com/satohubai/sato-agent/blob/main/BOT.md and follow the setup. NAME = bot, CHAIN = several.
 
-That sets up **Sato Agent**: one Bot on every chain you choose. It asks which chains, installs the kit, creates its wallet, asks you for your limits (they cover all its chains together), and asks you to fund it on each chain. You fund it with what you are willing to let it spend. If someone shared this bot with you, tell the Bot their referral name (like `sunny-otter`) when it asks: they get 30% of Sato Hub's swap fee on your agent's swaps, at no cost to you. See "Referral share" below.
+That sets up **Sato Bot**: one Bot on every chain you choose. It asks which chains, installs the kit, creates its wallet, asks you for your limits (they cover all its chains together), and asks you to fund it on each chain. You fund it with what you are willing to let it spend. If someone shared this bot with you, tell the Bot their referral name (like `sunny-otter`) when it asks: they get 30% of Sato Hub's swap fee on your agent's swaps, at no cost to you. See "Referral share" below.
 
 Prefer one chain per Bot? Use one of the chain Bots instead (for example `NAME = base, CHAIN = base`): one chain and one wallet for each Bot.
 
@@ -18,7 +18,7 @@ One agent or five Bots, one kit:
 
 | Bot | Message | Gas | Stablecoin | Today |
 |---|---|---|---|---|
-| **Sato Agent** | `NAME = agent, CHAIN = several` | each chosen chain's gas coin | each chosen chain's stablecoin | on each chain you choose, what that chain's row says; your limits cover all of them together; nothing moves between chains |
+| **Sato Bot** | `NAME = bot, CHAIN = several` | each chosen chain's gas coin | each chosen chain's stablecoin | on each chain you choose, what that chain's row says; your limits cover all of them together; nothing moves between chains |
 | **Sato Base Bot** | `NAME = base, CHAIN = base` | ETH | USDC | buy or sell any Base token against USDC or ETH (by address or link), gift cards / eSIMs / top-ups (Bitrefill), USDC payment links (EIP-681), x402 payments, sends of the coin, USDC or any token, ERC-8004 identity, Sato Hub checks |
 | **Sato BNB Bot** | `NAME = bnb, CHAIN = bnb` | BNB | USDT (18 decimals) | buy or sell any BNB Chain token against USDT, USDC or BNB, USDT / USDC payment links, sends of the coin, USDT or any token, ERC-8004 identity, Sato Hub checks. **No x402** (BNB Chain's USDC is Binance-Peg: it cannot sign the payment the kit uses, and no service takes it) and **no gift cards** (Bitrefill does not take BNB Chain: the bot points the owner to the Sato Base Bot) |
 | **Sato Arbitrum Bot** | `NAME = arbitrum, CHAIN = arbitrum` | ETH | USDC | buy or sell any Arbitrum token against USDC, USDT or ETH, gift cards / eSIMs / top-ups (USDC on Arbitrum), payment links, x402 payments in USDC, sends of the coin, USDC or any token, ERC-8004 identity, Sato Hub checks |
@@ -27,7 +27,7 @@ One agent or five Bots, one kit:
 
 The Bots run Sato Agent, this kit. Each Bot's name is yours to choose; these are the names the setup prompt uses. Amazon orders (when Sato Hub switches them on) are Base and Solana only.
 
-Each Bot keeps its own wallet, limits and ledger, even on the same Grok Bot computer. The Base, BNB Chain, Arbitrum and Polygon Bots all use the kit's one EVM key, so a wallet has the same address on all four: fund it on the chain the Bot works on (Sato Agent: on each chain you chose).
+Each Bot keeps its own wallet, limits and ledger, even on the same Grok Bot computer. The Base, BNB Chain, Arbitrum and Polygon Bots all use the kit's one EVM key, so a wallet has the same address on all four: fund it on the chain the Bot works on (Sato Bot: on each chain you chose).
 
 ### Chains
 

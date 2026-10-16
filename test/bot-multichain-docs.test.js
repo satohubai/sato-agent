@@ -16,6 +16,7 @@ test("BOT.md, README and SKILL.md describe Sato Agent on several chains: shared 
   assert.match(bot, /A payment link \(`ethereum:…@<chain id>` or `solana:…`\) names its own chain/);
   assert.match(bot, /Ask the owner which, then run `referral create --chain base` or `--chain solana`/);
   assert.match(bot, /Never guess between EVM chains\./);
+  assert.match(bot, /SOL, a Solana mint or a `solana:` link means `--chain solana`/);
   assert.match(bot, /You cannot bridge or move money from one chain to another\./);
   assert.match(bot, /Adding one is logged as a raise\./);
 

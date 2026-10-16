@@ -303,3 +303,25 @@ test("the v0.4.0 Solana USDC dry run (no --asset) sends the node an unsigned tra
   assert.ok(Object.values(getTransactionDecoder().decode(getBase64Encoder().encode(wire)).signatures).every((x) => x === null || Buffer.from(x).every((b) => b === 0)));
   assert.equal(cfg.sigVerify, false);
 });
+
+test("auto mode: a token with NO price still stops for the owner's yes (exit 5); a priced stablecoin does not (owner ruling 2026-10-15)", async () => {
+  assert.equal((await run("policy", "set", "--approval", "auto")).status, 0);
+  const before = sent.length;
+  const asked = await run("send", "--chain", "base", "--to", TO, "--amount", "10", "--asset", PEPE, "--skip-check");
+  assert.equal(asked.status, 5, asked.stderr);
+  assert.match(asked.stdout, /Not counted against your USD limits \(no price\)\./);
+  assert.equal(sent.length, before, "nothing was sent");
+  const code = /--approve ([0-9a-f]{8})/.exec(asked.stderr)[1];
+  const dry = JSON.parse((await run("send", "--chain", "base", "--to", TO, "--amount", "10", "--asset", PEPE, "--skip-check", "--dry-run", "--json")).stdout);
+  assert.equal(dry.would_need_approval, true);
+  const human = await run("send", "--chain", "base", "--to", TO, "--amount", "10", "--asset", PEPE, "--skip-check", "--dry-run");
+  assert.match(human.stdout, /it will stop for the owner's yes \(exit 5\): a token with no price always does/);
+  const done = await run("send", "--chain", "base", "--to", TO, "--amount", "10", "--asset", PEPE, "--skip-check", "--approve", code);
+  assert.equal(done.status, 0, done.stderr);
+  assert.equal(sent.length, before + 1, "sent once, after the yes");
+  // A priced stablecoin in auto mode acts within the limits, as before.
+  const usdc = await run("send", "--chain", "base", "--to", TO, "--amount", "1", "--asset", USDC, "--skip-check");
+  assert.equal(usdc.status, 0, usdc.stderr);
+  assert.equal(sent.length, before + 2);
+  assert.equal((await run("policy", "set", "--approval", "ask")).status, 0);
+});

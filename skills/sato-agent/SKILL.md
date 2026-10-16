@@ -40,7 +40,7 @@ Say so plainly when something is not on your chain, name the bot that has it, an
 
 **Swap fee (Sato Hub), the same on every chain:** 0.03% stablecoin pairs, 0.15% your chain's coin (ETH, SOL, BNB, POL) with a stablecoin, 0.75% any other token. Always shown before the trade, never taken in the token you buy; a buy-then-sell round trip pays it twice. The kit refuses a coin-with-stablecoin fee above 0.15% and any fee above 1%.
 
-**Upgrading to 0.4.4:** nothing changes for a working bot; token cards on BNB Chain, Arbitrum and Polygon show Sato Hub's name, price and liquidity again.
+**Upgrading to 0.4.4:** a send of a token with no price always asks the owner first (exit 5), even in auto mode; token cards on BNB Chain, Arbitrum and Polygon show Sato Hub's name, price and liquidity again.
 
 **Upgrading to 0.4.3:** nothing changes for a working bot; a transaction that landed is no longer reported as "no receipt" when one RPC endpoint misbehaves (seen on Polygon). If a `register` landed but was not saved, run `register --resume <agent id> --name "<same name>" --description "<same description>" --chain <chain>` once.
 

@@ -458,12 +458,16 @@ async function main(command = cmd, args = positionals.slice(1)) {
         const late = evaluate(policy, { usd: plan.usd, unpriced: plan.unpriced, to: flags.to, chain, kind: "send" }, spentLast24h());
         if (late.length) throw new Refused(late);
         const lines = sendLines(plan);
+        // A token with no price is not measured by the USD limits, so its send always waits for the owner's yes, in "auto" mode too
+        // (owner ruling 2026-10-15: an auto-mode bot could otherwise send any amount of it without asking).
+        const needsYes = policy?.approval === "ask" || plan.unpriced;
         if (flags["dry-run"]) {
           say(lines.join("\n"));
-          return out(`DRY RUN: the checks and the simulation passed for ${plan.amountText} ${plan.asset.label} on ${chain} to ${plan.to}. Nothing was signed or sent, and nothing counts against the limits.`, { dry_run: true, simulated: true, ...sendFields(plan), sato_hub_check: check });
+          const would = needsYes && plan.unpriced && policy?.approval !== "ask" ? " Run for real, it will stop for the owner's yes (exit 5): a token with no price always does." : "";
+          return out(`DRY RUN: the checks and the simulation passed for ${plan.amountText} ${plan.asset.label} on ${chain} to ${plan.to}. Nothing was signed or sent, and nothing counts against the limits.${would}`, { dry_run: true, simulated: true, would_need_approval: needsYes, ...sendFields(plan), sato_hub_check: check });
         }
         const intent = { ...sendIntent(plan), skip_check: Boolean(flags["skip-check"]) };
-        if (policy?.approval === "ask") {
+        if (needsYes) {
           if (!flags.approve) {
             const bound = approvalBound(plan);
             const err = new NeedsApproval(intent, await requestApproval(intent, bound ? { bound, ledgerIntent: { ...intent, max_units: bound.max_units } } : {}));

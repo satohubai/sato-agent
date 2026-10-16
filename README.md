@@ -100,7 +100,7 @@ sato-agent buy "solana:<recipient>?amount=5&spl-token=EPjFWdd5AufqSSqeM2qN1xzyba
 
 Add `--json` to any command for machine-readable output.
 
-**Upgrading to v0.4.4:** nothing changes for a working agent. `token <0x…>` with no `--chain` now asks Sato Hub about the agent's own EVM chain (it assumed Base before, so a BNB Chain, Arbitrum or Polygon card lost Sato Hub's name, price and liquidity).
+**Upgrading to v0.4.4:** a send of a token with no price now always stops for the owner's approval (exit 5), even with `--approval auto`, because the USD limits cannot measure it. `token <0x…>` with no `--chain` now asks Sato Hub about the agent's own EVM chain (it assumed Base before, so a BNB Chain, Arbitrum or Polygon card lost Sato Hub's name, price and liquidity).
 
 **Upgrading to v0.4.3:** nothing changes for a working agent. A transaction that landed is no longer reported as "no receipt" (exit 4) when one RPC endpoint answers "Invalid parameters": the kit asks the next one and keeps waiting (seen on Polygon). Gift cards accept Bitrefill's 1800 s payment authorization (gift cards only; the price and payee stay bound; every other x402 payment keeps the 300 s limit). A seller that answers 402 after a signed payment is reported plainly. Polygon's default endpoints drop polygon-rpc.com (its public key is disabled) and add 1rpc.io/matic. With a single endpoint of your own (`SATO_AGENT_POLYGON_RPC` set to one URL) there is no next endpoint to ask, so list two, comma-separated, if you can.
 

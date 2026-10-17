@@ -139,7 +139,7 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
                                          per trade (50 bps between majors, 150 with a token; --slippage-bps overrides, at most 500).
                                          A trade with high slippage, a large price impact, a poor sell-back test or an issuer power
                                          over the token needs the owner's approval (exit 5) even when the agent acts on its own.
-  bridge --chain ${CHAIN_BRIDGE_FROM} --to-chain ${CHAIN_ALL} --asset <USDC|USDT|ETH|POL|address> --amount <n|all> [--receive <asset>] [--approve <code>] [--dry-run]
+  bridge --chain ${CHAIN_BRIDGE_FROM} --to-chain ${CHAIN_ALL} --asset <USDC|USDT|ETH|address> --amount <n|all> [--receive <asset>] [--approve <code>] [--dry-run]
   bridge status [--id <ledger id|order id>]
                                          move this bot's OWN funds from one of its chains to another through deBridge (always to its
                                          own address on the other chain). From ${labelList(BRIDGE_SOURCES)}; to any chain in the policy. The
@@ -650,7 +650,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
         const res = await bridgeStatus({ id: flags.id });
         return out(bridgeStatusLines(res).map((l) => clean(l, 600)).join("\n"), res);
       }
-      const bridgeUsage = `bridge --chain ${CHAIN_BRIDGE_FROM} --to-chain ${CHAIN_ALL} --asset <USDC|USDT|ETH|POL|address> --amount <n|all> [--receive <asset>] [--approve <code>] [--dry-run] | bridge status [--id <id>]`;
+      const bridgeUsage = `bridge --chain ${CHAIN_BRIDGE_FROM} --to-chain ${CHAIN_ALL} --asset <USDC|USDT|ETH|address> --amount <n|all> [--receive <asset>] [--approve <code>] [--dry-run] | bridge status [--id <id>]`;
       if (rest.length || !flags.chain || !flags["to-chain"] || !flags.asset || !flags.amount) throw new UsageError(bridgeUsage);
       const req = { chain: flags.chain, toChain: flags["to-chain"], asset: flags.asset, amount: flags.amount, receive: flags.receive };
       let ran;
@@ -1180,7 +1180,7 @@ main().catch((err) => {
   }
   if (err instanceof NeedsApproval) {
     // A purchase's price card goes to stdout (it can name the order's recipient, which never goes in an error message).
-    if (flags.json) console.log(json({ needs_approval: { code: err.approval.code, expires_at: err.approval.expires_at, intent: err.intent, ...(err.reasons ? { reasons: err.reasons } : {}), ...(err.fee_line ? { fee: err.fee_line } : {}), ...(err.card?.length ? { card: err.card } : {}) } }));
+    if (flags.json) console.log(json({ needs_approval: { code: err.approval.code, expires_at: err.approval.expires_at, intent: err.intent, ...(err.reasons ? { reasons: err.reasons } : {}), ...(err.cost_ceiling_pct ? { cost_ceiling_pct: err.cost_ceiling_pct } : {}), ...(err.fee_line ? { fee: err.fee_line } : {}), ...(err.card?.length ? { card: err.card } : {}) } }));
     else {
       if (err.card?.length) console.log(err.card.join("\n"));
       errLine(err.message);

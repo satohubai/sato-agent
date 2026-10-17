@@ -228,7 +228,7 @@ export async function sizeBridge({ chain, toChain, asset, amount, receive }, dep
   if (tokenIn.native && !NATIVE_SOURCE_CHAINS.includes(src)) {
     throw refuse(
       "bridge_source_asset_unsupported",
-      `cannot bridge ${tokenIn.symbol} from ${labelOf(src)}: deBridge sends ${tokenIn.symbol} orders through a contract this kit does not read yet, so it cannot check them; swap the ${tokenIn.symbol} to ${stablesOf(src)[0][0]} (swap --chain ${src} --from ${tokenIn.symbol} --to ${stablesOf(src)[0][0]}), then bridge the ${stablesOf(src)[0][0]}`,
+      `cannot bridge ${tokenIn.symbol} from ${labelOf(src)}: deBridge sends ${tokenIn.symbol} orders through a contract this kit does not read yet, so it cannot check them; swap the ${tokenIn.symbol} to ${stablesOf(src)[0][0]} (swap --chain ${src} --from ${tokenIn.symbol} --to ${stablesOf(src)[0][0]} --amount <n>), then bridge the ${stablesOf(src)[0][0]}`,
       `${stablesOf(src).map(([s]) => s).join(",")}`,
       tokenIn.symbol,
     );

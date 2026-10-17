@@ -345,7 +345,7 @@ test("a native-coin bridge from Polygon is refused before anyone is asked, with 
   const err = await B.runBridge(req({ chain: "polygon", asset: "POL", amount: "10", receive: "ETH" }), {}, w.deps).catch((e) => e);
   assert.ok(err instanceof Refused, String(err));
   assert.equal(err.refusals[0].rule, "bridge_source_asset_unsupported");
-  assert.match(err.refusals[0].message, /swap the POL to USDC \(swap --chain polygon --from POL --to USDC\), then bridge the USDC/);
+  assert.match(err.refusals[0].message, /swap the POL to USDC \(swap --chain polygon --from POL --to USDC --amount <n>\), then bridge the USDC/);
   assert.equal(w.seen.hub.length, 0, "Sato Hub is not asked");
   assert.deepEqual(B.NATIVE_SOURCE_CHAINS, ["base", "arbitrum"]);
 });

@@ -310,28 +310,44 @@ test("the request to Sato Hub: build-tx, debridge, no slippage, the bot's own ad
   assert.ok(sol.prepared || sol instanceof Error);
 });
 
-test("a bridge costing more than 3% needs the owner's yes even in auto mode; the code runs it, a worse band asks again", async () => {
+test("a bridge costing more than 3% needs the owner's yes even in auto mode; the code covers a quote that moves a point or two, and a cost past its ceiling asks again", async () => {
   // 1000 USDC, 0.001 ETH ($2.50), arrives 960: cost $42.5 = 4.24% of $1002.50
   const mk = (take) => world({ take: usdcUnits(take) });
   const w = mk(960);
   const err = await B.runBridge(req(), {}, w.deps).catch((e) => e);
   assert.ok(err instanceof NeedsApproval);
-  assert.deepEqual(err.intent.confirm_reasons, ["bridge_cost_over_3_pct_upto_5pct"]);
+  assert.deepEqual(err.intent.confirm_reasons, ["bridge_cost_over_3_pct"]);
+  assert.equal(err.cost_ceiling_pct, 7, "4.24% rounds up to 5, plus 2 points of slack");
+  assert.match(err.message, /covers the bridge at a cost of up to 7%/);
   assert.match(err.reasons[0], /costs 4\.24% of what it moves/);
   assert.equal(w.seen.hub.length, 1, "the cost is only known from the order");
   // dry run: no approval asked, reported
   const dry = await B.runBridge(req(), { dryRun: true }, mk(960).deps);
   assert.equal(dry.prepared.display.confirm_reasons.length, 1);
   assert.match(B.bridgeLines(dry.prepared.display).join("\n"), /Needs the owner's approval before it is signed, because: this bridge costs 4\.24%/);
-  // the same bridge with the code goes through
-  const ok = await B.runBridge(req(), { approve: err.approval.code }, mk(960).deps);
-  assert.equal((await ok.prepared.execute()).state, "sent");
-  // a worse cost (another band) is not approved by that code
-  const e2 = await B.runBridge(req(), {}, mk(940).deps).catch((e) => e);
+  // the quote moved from 4.24% to 5.24% between the yes and the run (the field report's 48% -> 49%): the same code still covers it
+  const moved = await B.runBridge(req(), { approve: err.approval.code }, mk(950).deps);
+  assert.equal((await moved.prepared.execute()).state, "sent");
+  // a cost past the ceiling is not covered: the owner is asked again, with the new figure and a new ceiling, and the old code stays unused
+  const e2 = await B.runBridge(req(), {}, mk(960).deps).catch((e) => e);
   assert.ok(e2 instanceof NeedsApproval);
-  assert.deepEqual(e2.intent.confirm_reasons, ["bridge_cost_over_3_pct_upto_7pct"]);
   const stale = await B.runBridge(req(), { approve: e2.approval.code }, mk(900).deps).catch((e) => e);
-  assert.ok(stale instanceof NeedsApproval, "a code for a 7% band does not cover 11%");
+  assert.ok(stale instanceof NeedsApproval, "a yes at 4.24% (ceiling 7%) does not cover 10.2%");
+  assert.equal(stale.cost_ceiling_pct, 13);
+  assert.match(stale.reasons[0], /costs 10\.2\d*% of what it moves/);
+  // the old code was not spent by the refused run: it still covers the original quote
+  const still = await B.runBridge(req(), { approve: e2.approval.code }, mk(960).deps);
+  assert.equal((await still.prepared.execute()).state, "sent");
+});
+
+test("a native-coin bridge from Polygon is refused before anyone is asked, with the way round it (deBridge sends POL through a contract the kit does not read)", async () => {
+  const w = world({ native: true, chain: "polygon", deps: {} });
+  const err = await B.runBridge(req({ chain: "polygon", asset: "POL", amount: "10", receive: "ETH" }), {}, w.deps).catch((e) => e);
+  assert.ok(err instanceof Refused, String(err));
+  assert.equal(err.refusals[0].rule, "bridge_source_asset_unsupported");
+  assert.match(err.refusals[0].message, /swap the POL to USDC \(swap --chain polygon --from POL --to USDC\), then bridge the USDC/);
+  assert.equal(w.seen.hub.length, 0, "Sato Hub is not asked");
+  assert.deepEqual(B.NATIVE_SOURCE_CHAINS, ["base", "arbitrum"]);
 });
 
 test("a bridge that would deliver less than half of what it spends is refused, saying what the fixed fee is", async () => {

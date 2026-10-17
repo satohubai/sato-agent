@@ -45,7 +45,7 @@ test("BOT.md bridge section: dry run, exit 5 approval, status, limits of phase 1
   const sec = bridgeSection(bot);
   assert.match(bot, /Bridging is OFF after the upgrade.*tell the owner once/);
   assert.doesNotMatch(bot.slice(bot.indexOf("After upgrading to 0.5.0"), bot.indexOf("After upgrading to 0.4.4")), /ask what is new/);
-  assert.match(sec, /bridge --chain <from> --to-chain <to> --asset <USDC\|USDT\|ETH\|POL> --amount <n\|all> \[--receive <asset>\] --dry-run/);
+  assert.match(sec, /bridge --chain <from> --to-chain <to> --asset <USDC\|USDT\|ETH> --amount <n\|all> \[--receive <asset>\] --dry-run/);
   assert.match(sec, /Then run the same command without `--dry-run`/);
   assert.match(sec, /\*\*exit code 5\*\*/);
   assert.match(sec, /re-run the SAME command with `--approve <code>`/);

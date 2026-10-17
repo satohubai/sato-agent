@@ -48,6 +48,8 @@ import { encodeDestAddress } from "./dln.js";
 export const DLN_SOURCE = dlnSourceOf("base");
 /** The chains this version bridges FROM. */
 export const BRIDGE_SOURCES = Object.freeze(["base", "arbitrum", "polygon"]);
+/** The source chains whose own coin deBridge takes through DlnSource itself (ETH). Polygon's POL goes through an unread contract. */
+export const NATIVE_SOURCE_CHAINS = Object.freeze(["base", "arbitrum"]);
 /** Why a chain that is not a source is refused, in plain words. */
 const SOURCE_REFUSALS = Object.freeze({
   bnb: "deBridge sends BNB Chain orders through a contract this kit does not read yet, so it cannot check them; bridge from Base, Arbitrum or Polygon",
@@ -139,7 +141,10 @@ const withTimeout = (p, ms = RPC_TIMEOUT_MS) =>
   });
 
 /** Round a percentage up to the next whole percent: the band an approval binds (a worse cost needs a new approval). */
-const band = (pct) => `upto_${Math.max(1, Math.ceil(Number(pct) - 1e-9))}pct`;
+/** Points of cost a quote may move up after the owner's yes before the yes no longer covers it (fees and prices move between the two). */
+export const COST_APPROVAL_SLACK_PCT = 2;
+/** The cost ceiling an approval covers: the whole percent at or above what the owner saw, plus the slack. */
+export const costCeilingPct = (pct) => Math.max(1, Math.ceil(Number(pct) - 1e-9)) + COST_APPROVAL_SLACK_PCT;
 const reason = (code, text) => ({ code, text });
 /** 0x1234…abcd for a long hex string. */
 const shortHex = (h) => (String(h).length > 14 ? `${String(h).slice(0, 8)}…${String(h).slice(-4)}` : String(h));
@@ -218,6 +223,16 @@ export async function sizeBridge({ chain, toChain, asset, amount, receive }, dep
   }
 
   const tokenIn = resolveAsset(src, asset, "--asset");
+  // deBridge sends a POL order (the chain's own coin on Polygon) through the same unread contract as BNB Chain's orders (measured
+  // 2026-10-17: Base/Arbitrum ETH go to DlnSource; Polygon POL goes to 0x663D…c251). Say so before asking anyone, with the way round it.
+  if (tokenIn.native && !NATIVE_SOURCE_CHAINS.includes(src)) {
+    throw refuse(
+      "bridge_source_asset_unsupported",
+      `cannot bridge ${tokenIn.symbol} from ${labelOf(src)}: deBridge sends ${tokenIn.symbol} orders through a contract this kit does not read yet, so it cannot check them; swap the ${tokenIn.symbol} to ${stablesOf(src)[0][0]} (swap --chain ${src} --from ${tokenIn.symbol} --to ${stablesOf(src)[0][0]}), then bridge the ${stablesOf(src)[0][0]}`,
+      `${stablesOf(src).map(([s]) => s).join(",")}`,
+      tokenIn.symbol,
+    );
+  }
   let tokenOut;
   if (receive !== undefined && receive !== null && String(receive).trim() !== "") tokenOut = resolveAsset(dst, receive, "--receive");
   else if (tokenIn.kind === "stable") {
@@ -576,7 +591,9 @@ export async function planBridge(req, deps = {}) {
   }
   const confirm = [];
   if (cost.unpriced.length) confirm.push(reason("bridge_unpriced_native", `the kit has no independent price for ${cost.unpriced.join(" and ")}, so it cannot say what this bridge costs or hold all of it to your limits`));
-  else if (cost.cost_pct > COST_CONFIRM_PCT) confirm.push(reason(`bridge_cost_over_3_pct_${band(cost.cost_pct)}`, `this bridge costs ${cost.cost_pct}% of what it moves ($${money(cost.cost_usd)} of $${money(cost.spend_usd)}), above ${COST_CONFIRM_PCT}%`));
+  // The code names no band: the owner's yes is bound to a cost CEILING instead (costCeilingPct), so a quote that moves by a point between
+  // the yes and the run does not ask again, and one that moves past the ceiling does.
+  else if (cost.cost_pct > COST_CONFIRM_PCT) confirm.push(reason("bridge_cost_over_3_pct", `this bridge costs ${cost.cost_pct}% of what it moves ($${money(cost.cost_usd)} of $${money(cost.spend_usd)}), above ${COST_CONFIRM_PCT}%`));
   // An order that pays out MORE than the amount sent is not a fair one: the solver is paid only from the amount sent (less the fees; the
   // fixed fee goes to deBridge, not to the solver), so no solver is paid to fill it and it may sit open. Compared with the amount SENT, never
   // with the spend (which includes the fixed fee). Stable to stable: an honest order always pays out less than it gives, so no tolerance;
@@ -922,14 +939,18 @@ async function executeLocked(plan, deps) {
 // ---------------------------------------------------------------- the approval gate
 
 /** A NeedsApproval that also says, in plain words, why a bridge within the limits still needs the owner. */
-async function needsApproval(intent, reasons) {
-  const err = new NeedsApproval(intent, await requestApproval(intent));
+async function needsApproval(intent, reasons, bound = null) {
+  const err = new NeedsApproval(intent, await requestApproval(intent, bound ? { bound } : {}));
   if (reasons.length) {
     err.reasons = reasons.map((r) => r.text);
     err.message = `This bridge needs the owner's approval even though the agent acts within its limits, because:\n${reasons.map((r) => `  - ${r.text}`).join("\n")}\n${err.message}`;
   }
   err.fee_line = `Sato Hub fee: up to ${feePercent(BRIDGE_FEE_CEILING_BPS)} (${BRIDGE_FEE_CEILING_BPS} bps, cross-chain), taken from the amount sent, plus deBridge's fixed fee in ${getChain(intent.chain).native.symbol}.`;
   err.message = `${err.message}\n${err.fee_line}`;
+  if (bound?.max_cost_pct) {
+    err.cost_ceiling_pct = bound.max_cost_pct;
+    err.message = `${err.message}\nThis approval covers the bridge at a cost of up to ${bound.max_cost_pct}% of what it moves; if the quote costs more by then, the owner is asked again.`;
+  }
   return err;
 }
 
@@ -967,13 +988,22 @@ export async function runBridge(req, { approve, dryRun = false } = {}, deps = {}
   const added = prepared.confirm;
   if (!dryRun && added.length) {
     const intent = bridgeIntent(sized, added.map((r) => r.code));
-    if (!codeFree) throw await needsApproval(intent, added);
+    // A cost reason binds the yes to a ceiling (what the owner saw, rounded up, plus COST_APPROVAL_SLACK_PCT points), held with the code.
+    const pct = prepared.display?.cost?.pct;
+    const bound = added.some((r) => r.code === "bridge_cost_over_3_pct") && Number.isFinite(pct) ? { max_cost_pct: costCeilingPct(pct) } : null;
+    if (!codeFree) throw await needsApproval(intent, added, bound);
     try {
-      await consumeApproval(approve, intent);
+      await consumeApproval(approve, intent, {
+        verify: (b) => {
+          if (Number.isFinite(b?.max_cost_pct) && !(Number.isFinite(pct) && pct <= b.max_cost_pct)) {
+            throw new Error(`different intent: this bridge now costs ${pct}% of what it moves, above the ${b.max_cost_pct}% the owner's yes covers`);
+          }
+        },
+      });
     } catch (err) {
-      // The code was for what the owner saw before (another cost band): nothing is signed; the owner is asked again with these figures.
+      // The code was for other reasons, or the cost rose past the ceiling the owner said yes to: nothing is signed; ask again with these figures.
       if (!/different intent/.test(err.message)) throw err;
-      throw await needsApproval(intent, added);
+      throw await needsApproval(intent, added, bound);
     }
   } else if (deferred) {
     // The code was given for reasons this order no longer shows, and the owner's approval is still due in ask mode: ask again, cleanly.

@@ -7,8 +7,9 @@ export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import
 export const USER_AGENT = `sato-agent/${VERSION}`;
 
 // SATO_AGENT_UA: an operator running their own fleet can name their agents
-// instead (for example SatoHub-grok-bot/1.0), so their calls are counted as
-// theirs. Used for every request the kit makes. Anything that is not a plain
+// instead (for example acme-fleet/1.0), so their calls are counted as theirs.
+// The `SatoHub-` prefix is reserved for Sato Hub's own bots (Sato Hub counts it
+// as its own traffic), so the public example never uses it. Used for every request the kit makes. Anything that is not a plain
 // header value (empty, over 200 characters, control or non-ASCII characters,
 // CR/LF) is ignored and the default above is used.
 export const MAX_USER_AGENT_LENGTH = 200;

@@ -31,7 +31,7 @@ test("default: sato-agent/<version> when SATO_AGENT_UA is unset", () => {
 });
 
 test("a valid override replaces it, trimmed", () => {
-  assert.equal(userAgent({ SATO_AGENT_UA: "SatoHub-grok-bot/1.0 (sato-agent/9.9.9)" }), "SatoHub-grok-bot/1.0 (sato-agent/9.9.9)");
+  assert.equal(userAgent({ SATO_AGENT_UA: "acme-fleet/1.0 (sato-agent/9.9.9)" }), "acme-fleet/1.0 (sato-agent/9.9.9)");
   assert.equal(userAgent({ SATO_AGENT_UA: "  my-fleet/2  " }), "my-fleet/2");
   assert.equal(userAgent({ SATO_AGENT_UA: "x".repeat(MAX_USER_AGENT_LENGTH) }), "x".repeat(MAX_USER_AGENT_LENGTH));
 });
@@ -47,11 +47,11 @@ test("an unusable value falls back to the default", () => {
 test("the Sato Hub MCP call sends the default, then the override once it is set (read per call)", async () => {
   seen.length = 0;
   await callTool("onchain_agent_list_chains", {});
-  process.env.SATO_AGENT_UA = "SatoHub-grok-bot/1.0 (sato-agent/test)";
+  process.env.SATO_AGENT_UA = "acme-fleet/1.0 (sato-agent/test)";
   await callTool("onchain_agent_list_chains", {});
   process.env.SATO_AGENT_UA = "bad\r\nvalue";
   await callTool("onchain_agent_list_chains", {});
-  assert.deepEqual(seen, [`sato-agent/${VERSION}`, "SatoHub-grok-bot/1.0 (sato-agent/test)", `sato-agent/${VERSION}`]);
+  assert.deepEqual(seen, [`sato-agent/${VERSION}`, "acme-fleet/1.0 (sato-agent/test)", `sato-agent/${VERSION}`]);
 });
 
 test("every outbound user-agent in src/ comes from userAgent(), so the override reaches all of them", async () => {

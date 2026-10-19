@@ -435,15 +435,39 @@ test("the fee in the transaction is exactly the disclosed one: one receiver, the
   assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: tamper((d) => { d.feeReceivers = []; d.feeAmounts = []; }) })), ["fee_not_as_disclosed"]);
 });
 
-test("a build with no fee passes the fee check only when the response discloses 0 bps", () => {
+test("never without the fee: a no-fee build is refused (fee_missing); only the kit's own sell-back leg may carry none", async () => {
   const { tx } = satoResponse("usdc-to-eth");
   const intent = { ...parseIntent({ ...CASES["usdc-to-eth"], slippageBps: 50 }), taker: SENDER };
   const minOut = (BigInt(satoResponse("usdc-to-eth").amount_out) * 9950n) / 10_000n;
   const noFee = encodeBuild((() => { const ex = decodeBuild(tx.data); ex.desc.feeReceivers = []; ex.desc.feeAmounts = []; return ex; })());
-  assert.deepEqual(evm.checkRouterCalldata(noFee, { intent, minOut, feeBps: 0 }).refusals, []);
+  // a swap's calldata is never accepted without the fee, disclosed 0 or not
+  assert.deepEqual(evm.checkRouterCalldata(noFee, { intent, minOut, feeBps: 0 }).refusals.map((r) => r.rule), ["fee_missing"]);
   assert.deepEqual(evm.checkRouterCalldata(noFee, { intent, minOut, feeBps: 15 }).refusals.map((r) => r.rule), ["fee_not_as_disclosed"]);
-  // 0 disclosed but the transaction pays a receiver
-  assert.deepEqual(evm.checkRouterCalldata(tx.data, { intent, minOut, feeBps: 0 }).refusals.map((r) => r.rule), ["fee_not_as_disclosed"]);
+  assert.deepEqual(evm.checkRouterCalldata(tx.data, { intent, minOut, feeBps: 0 }).refusals.map((r) => r.rule), ["fee_missing"]);
+  // the sell-back leg (simulated, never signed) is the one place a no-fee build is read, and still must pay no receivers
+  assert.deepEqual(evm.checkRouterCalldata(noFee, { intent, minOut, feeBps: 0, sellBack: true }).refusals, []);
+  assert.deepEqual(evm.checkRouterCalldata(tx.data, { intent, minOut, feeBps: 0, sellBack: true }).refusals.map((r) => r.rule), ["fee_not_as_disclosed"]);
+  // and the whole verification: a response that discloses 0 bps (with a matching no-fee build, in any tier) is refused whole, before anything is signed
+  const zero = (r) => { r.sato_fee_bps = 0; tamper((d) => { d.feeReceivers = []; d.feeAmounts = []; })(r); };
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: zero })), ["fee_missing"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (zero(r), (r.sato_fee_tier = "stable")) })), ["fee_missing"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (zero(r), delete r.sato_fee_tier) })), ["fee_missing"]);
+  // 0 disclosed while the transaction still pays the receiver is refused too (fee_missing for the disclosure)
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: (r) => (r.sato_fee_bps = 0) })), ["fee_missing"]);
+});
+
+test("a fee below the disclosed tier's published rate is refused on Base (fee_below_tier), a missing tier too; every published tier at its rate passes on its recorded pair", async () => {
+  const at = (bps, tier) => (r) => {
+    tamper((d) => (d.feeAmounts = d.feeAmounts.map(() => BigInt(bps))))(r);
+    r.sato_fee_bps = bps;
+    if (tier === null) delete r.sato_fee_tier;
+    else if (tier !== undefined) r.sato_fee_tier = tier;
+  };
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: at(5, "major") })), ["fee_below_tier"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: at(14, "major") })), ["fee_below_tier"]);
+  assert.deepEqual(await rules(verifyCase("usdc-to-eth", { edit: at(15, null) })), ["fee_tier_missing"]);
+  assert.deepEqual((await verifyCase("usdc-to-eth", { edit: at(15, "major") })).plan.fee.bps, 15);
+  assert.deepEqual((await verifyCase("eth-to-usdc", { edit: at(15, "major") })).plan.fee.bps, 15);
 });
 
 test("router options that weaken the minimum, or that the kit does not know, are refused", async () => {

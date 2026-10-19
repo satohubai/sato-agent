@@ -86,13 +86,14 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
   settings show | settings set --stdin  (a JSON object of name, line1, line2, city, state, postalCode, country, email)
                | settings set --ship-name <n> --ship-line1 <l> [--ship-line2 <l>] --ship-city <c> --ship-state <XX>
                               --ship-zip <z> --ship-country US --ship-email <e> | settings set --ship-clear
-               | settings set --referrer <name|address|none>     (or a "referrer" key with --stdin)
+               | settings set --referrer <name|address|none> [--approve <code>]    (or a "referrer" key with --stdin)
                                          the shipping address for Amazon orders. It stays on this computer (mode 600) and
                                          is sent only inside an order request to Sato Hub; never logged. --stdin keeps it
                                          out of the command line.
                                          --referrer: the referral name (like sunny-otter) or the payout address (a Base or
                                          Solana address) of whoever shared this kit with the owner. A name is checked with
-                                         Sato Hub before it is saved. Sato Hub pays it ${REFERRAL_SHARE_PERCENT}% of its swap fee on this agent's swaps,
+                                         Sato Hub before it is saved. Setting or changing it needs the owner's approval (exit 5 and a one-time code;
+                                         the same command with --approve <code> saves it); "none" is free. Sato Hub pays it ${REFERRAL_SHARE_PERCENT}% of its swap fee on this agent's swaps,
                                          weekly in USDC. It does not change what the owner pays. With one set, each swap request
                                          carries it, and after a confirmed swap the kit reports the transaction to Sato Hub
                                          (once, never retried; Sato Hub keeps it private). "none" clears it
@@ -864,10 +865,18 @@ async function main(command = cmd, args = positionals.slice(1)) {
             if (parsedRef.referrer === ownReferral().name) throw new PlainError("That is this bot's own referral name; a bot can't be referred by itself.");
             await lookupReferralName(parsedRef.referrer);
           }
+          // Where 30% of Sato Hub's fee goes is the owner's decision, in every approval mode (v0.5.3): setting or changing the
+          // referrer stops with exit 5 and a one-time code for this exact referrer; the same command with --approve <code> saves it.
+          // Removing it (`none`) and re-saving the one already saved change nothing and stay free. Nothing at all is written before this.
+          if (parsedRef?.referrer && parsedRef.referrer !== savedReferrer()) {
+            const intent = { cmd: "settings set --referrer", referrer: parsedRef.referrer };
+            if (!flags.approve) throw new NeedsApproval(intent, await requestApproval(intent, { ledgerIntent: { cmd: intent.cmd, referrer: shortReferrer(parsedRef.referrer), from: savedReferrer() ? shortReferrer(savedReferrer()) : null } }));
+            await consumeApproval(flags.approve, intent).catch((e) => { throw new PlainError(e.message); });
+          }
           if (Object.keys(ship).length) s = setShipTo(ship);
           if (refRaw !== undefined) ref = setReferrer(refRaw);
         } catch (err) {
-          if (err instanceof PlainError) throw err;
+          if (err instanceof PlainError || err instanceof NeedsApproval) throw err;
           throw new UsageError(err.message); // names the flag, never echoes a value
         }
         const shipText = s ? `Shipping address saved on this computer only (mode 600). It is sent only inside an Amazon order request to Sato Hub, and never written to the spend log.\n${shipToLines(s).map((l) => `  ${l}`).join("\n")}\nRead it back to the owner to confirm it.` : null;

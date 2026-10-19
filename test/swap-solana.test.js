@@ -172,11 +172,11 @@ const indexOf = (c, addr) => c.staticAccounts.indexOf(addr);
 /** The fixture plan, rebuilt through planSolanaSwap against the recorded Jupiter replies. */
 async function planFrom(fx, extra = {}) {
   const { fetch } = fakeFetch(fx);
-  return S.planSolanaSwap(fx.request, { agent: fx.wallet, satoFeeBps: fx.request.satoFeeBps, fetch, rpc: fakeRpc(fx).rpc, minGapMs: 0, now: () => fx.built_at, ...extra });
+  return S.planSolanaSwap(fx.request, { agent: fx.wallet, satoFeeBps: fx.request.satoFeeBps, satoFeeTier: "major", fetch, rpc: fakeRpc(fx).rpc, minGapMs: 0, now: () => fx.built_at, ...extra });
 }
 const verifyDeps = (fx, o) => ({ rpc: fakeRpc(fx, o).rpc, minGapMs: 0 });
 // fee_bps is what Sato Hub's quote disclosed: verify refuses an intent without it.
-const intentOf = (fx) => ({ agent: fx.wallet, from: fx.request.from, to: fx.request.to, amount: fx.request.amount, fee_bps: fx.request.satoFeeBps });
+const intentOf = (fx) => ({ agent: fx.wallet, from: fx.request.from, to: fx.request.to, amount: fx.request.amount, fee_bps: fx.request.satoFeeBps, fee_tier: "major" });
 const withTx = (plan, tx) => ({ ...plan, swap_transaction: tx });
 
 async function refusedBy(plan, fx, o, intentEdit = {}) {
@@ -270,7 +270,7 @@ test("pins: the fee accounts re-derive from Sato's referral account, and the pro
 
 test("plan: USDC -> SOL asks Jupiter for the quote, then the build, with the pinned fee account and a capped priority fee", async () => {
   const { fetch, calls } = fakeFetch(USDC_SOL);
-  const plan = await S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, feeAccount: S.SATO_FEE_ACCOUNTS[USDC_MINT], fetch, minGapMs: 0, now: () => USDC_SOL.built_at, userAgent: "SatoHub-swap-dev/1.0" });
+  const plan = await S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, satoFeeTier: "major", feeAccount: S.SATO_FEE_ACCOUNTS[USDC_MINT], fetch, minGapMs: 0, now: () => USDC_SOL.built_at, userAgent: "SatoHub-swap-dev/1.0" });
   assert.equal(calls.length, 2);
   const quote = new URL(calls[0].url);
   assert.equal(quote.origin + quote.pathname, "https://api.jup.ag/swap/v1/quote");
@@ -312,7 +312,7 @@ test("plan: USDC -> SOL asks Jupiter for the quote, then the build, with the pin
 
 test("plan: SOL -> USDC takes the fee in wrapped SOL, to the pinned wSOL referral account", async () => {
   const { fetch, calls } = fakeFetch(SOL_USDC);
-  const plan = await S.planSolanaSwap(SOL_USDC.request, { agent: WALLET, satoFeeBps: 15, fetch, minGapMs: 0 });
+  const plan = await S.planSolanaSwap(SOL_USDC.request, { agent: WALLET, satoFeeBps: 15, satoFeeTier: "major", fetch, minGapMs: 0 });
   assert.equal(JSON.parse(calls[1].init.body).feeAccount, "HnyyFHhp3LQ6VfRn1AhPHSwboYYQa1HT7REaMfzsA8gx");
   assert.equal(plan.amount_in, "500000000");
   assert.equal(plan.fee.mint, WSOL);
@@ -322,7 +322,7 @@ test("plan: SOL -> USDC takes the fee in wrapped SOL, to the pinned wSOL referra
 });
 
 test("plan: amounts are strict (no rounding), an asset is USDC, SOL or a mint address, slippage is bounded", async () => {
-  const base = { agent: WALLET, satoFeeBps: 15, fetch: fakeFetch(USDC_SOL).fetch, minGapMs: 0 };
+  const base = { agent: WALLET, satoFeeBps: 15, satoFeeTier: "major", fetch: fakeFetch(USDC_SOL).fetch, minGapMs: 0 };
   const bad = (p, re) => assert.rejects(S.planSolanaSwap(p, base), re);
   await bad({ from: "USDC", to: "SOL", amount: "1.0000001" }, /not a USDC amount/);
   await bad({ from: "SOL", to: "USDC", amount: "0.0000000001" }, /not a SOL amount/);
@@ -342,7 +342,7 @@ test("plan: the Sato fee rate is required; a fee account other than the pinned o
   const mk = (extra) => ({ agent: WALLET, fetch: fakeFetch(USDC_SOL).fetch, minGapMs: 0, ...extra });
   await assert.rejects(S.planSolanaSwap(USDC_SOL.request, mk({})), /satoFeeBps is required/);
   await assert.rejects(S.planSolanaSwap(USDC_SOL.request, mk({ satoFeeBps: 101 })), /satoFeeBps/);
-  await assert.rejects(S.planSolanaSwap(USDC_SOL.request, mk({ satoFeeBps: 15, feeAccount: "11111111111111111111111111111111" })), (e) => e instanceof Refused && rules(e)[0] === "solana_swap.fee_account_unpinned");
+  await assert.rejects(S.planSolanaSwap(USDC_SOL.request, mk({ satoFeeBps: 15, satoFeeTier: "major", feeAccount: "11111111111111111111111111111111" })), (e) => e instanceof Refused && rules(e)[0] === "solana_swap.fee_account_unpinned");
 
   // No fee: refused before Jupiter is asked for anything (2026-10-19: a bot that went around the
   // kit signed Jupiter swaps with no fee; the kit's own modules must never build one).
@@ -470,7 +470,7 @@ test("a swap with no Sato Hub fee is never verified, dry-run or signed: fee_bps 
 
 test("plan: a quote that does not match the request, or a failed build, is an error before anything is signed", async () => {
   const mutateQuote = (fn) => fakeFetch(USDC_SOL, { edit: (path, text) => (path.startsWith("/quote") ? JSON.stringify(fn(JSON.parse(text))) : text) });
-  const run = (f) => S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, fetch: f.fetch, minGapMs: 0 });
+  const run = (f) => S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, satoFeeTier: "major", fetch: f.fetch, minGapMs: 0 });
   await assert.rejects(run(mutateQuote((q) => ({ ...q, outputMint: USDC_MINT }))), /does not match the request/);
   await assert.rejects(run(mutateQuote((q) => ({ ...q, inAmount: "24999999" }))), /different input amount/);
   await assert.rejects(run(mutateQuote((q) => ({ ...q, otherAmountThreshold: "1" }))), /looser than the slippage/);
@@ -490,20 +490,20 @@ test("plan: HTTP errors, a 429 (retried once, after a pause), a timeout and non-
     if (n === 1) return new Response("slow down", { status: 429 });
     return fakeFetch(USDC_SOL).fetch(url, init);
   };
-  const plan = await S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, fetch: flaky, minGapMs: 0, sleep: async (ms) => sleeps.push(ms) });
+  const plan = await S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, satoFeeTier: "major", fetch: flaky, minGapMs: 0, sleep: async (ms) => sleeps.push(ms) });
   assert.ok(plan.swap_transaction);
   assert.ok(sleeps.some((ms) => ms >= 3000), "paused before the retry");
 
   const always429 = async () => new Response("slow down", { status: 429 });
-  await assert.rejects(S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, fetch: always429, minGapMs: 0, sleep: async () => {} }), /HTTP 429.*one request every 2 s/);
+  await assert.rejects(S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, satoFeeTier: "major", fetch: always429, minGapMs: 0, sleep: async () => {} }), /HTTP 429.*one request every 2 s/);
   const timeout = async () => {
     throw Object.assign(new Error("aborted"), { name: "TimeoutError" });
   };
-  await assert.rejects(S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, fetch: timeout, minGapMs: 0 }), /timed out after 20 s\); nothing was signed/);
+  await assert.rejects(S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, satoFeeTier: "major", fetch: timeout, minGapMs: 0 }), /timed out after 20 s\); nothing was signed/);
   const html = async () => new Response("<html>", { status: 200 });
-  await assert.rejects(S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, fetch: html, minGapMs: 0 }), /not JSON/);
+  await assert.rejects(S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, satoFeeTier: "major", fetch: html, minGapMs: 0 }), /not JSON/);
   const five = async () => new Response("bad gateway", { status: 502 });
-  await assert.rejects(S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, fetch: five, minGapMs: 0 }), /HTTP 502/);
+  await assert.rejects(S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, satoFeeTier: "major", fetch: five, minGapMs: 0 }), /HTTP 502/);
 });
 
 test("plan: the keyless rate limit is respected between the quote and the build", async () => {
@@ -511,7 +511,7 @@ test("plan: the keyless rate limit is respected between the quote and the build"
   const waits = [];
   const f = fakeFetch(USDC_SOL);
   // Reset the module's clock by making the first call look old.
-  await S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, fetch: f.fetch, now: () => (t += 100), sleep: async (ms) => { waits.push(ms); t += ms; } });
+  await S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, satoFeeTier: "major", fetch: f.fetch, now: () => (t += 100), sleep: async (ms) => { waits.push(ms); t += ms; } });
   assert.ok(waits.length >= 1 && waits.every((ms) => ms <= 2100), `waited ${waits}`);
 });
 
@@ -1317,7 +1317,7 @@ async function setup(fxName = USDC_SOL, o = {}) {
   const rig = fakeRpc(fx, { accountKeys: compiledOf(plan.swap_transaction).staticAccounts, ...o });
   // usdNotional is what the orchestrator measures independently; the plan's own estimate is never used.
   // intent.fee_bps: the fee Sato Hub disclosed, as the orchestrator passes it (run.js intentFor).
-  const deps = { rpc: rig.rpc, signer, now: () => plan.built_at + 2_000, sleep: async () => {}, minGapMs: 0, pollMs: 0, usdNotional: 25, intent: { fee_bps: fx.request.satoFeeBps }, ...(o.deps ?? {}) };
+  const deps = { rpc: rig.rpc, signer, now: () => plan.built_at + 2_000, sleep: async () => {}, minGapMs: 0, pollMs: 0, usdNotional: 25, intent: { fee_bps: fx.request.satoFeeBps, fee_tier: "major" }, ...(o.deps ?? {}) };
   return { signer, fx, plan, rig, deps };
 }
 const policyAllow = (perTx = "50", perDay = "100") => setPolicy({ perTx, perDay, chains: "solana", swapSlippageBps: "500", maxTradesPerDay: "none" });
@@ -1503,7 +1503,7 @@ test("dry run: plans and verifies, reserves nothing, signs nothing, and leaves o
   const before = entries().length;
   const { fetch } = fakeFetch(USDC_SOL);
   const rig = fakeRpc(USDC_SOL);
-  const out = await S.dryRunSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, fetch, rpc: rig.rpc, minGapMs: 0 });
+  const out = await S.dryRunSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, satoFeeTier: "major", fetch, rpc: rig.rpc, minGapMs: 0 });
   assert.equal(out.dry_run, true);
   assert.equal(out.verification.ok, true);
   assert.equal("swap_transaction" in out.plan, false);
@@ -1725,7 +1725,7 @@ test("tokens: a swap with a refused mint, with two tokens, or with the same asse
   const mint = await randomAddress();
   const calls = [];
   const fetch = async (u) => (calls.push(String(u)), new Response("{}"));
-  const base = (entry) => ({ agent: WALLET, satoFeeBps: 15, fetch, minGapMs: 0, rpc: rpcFor(mint, entry) });
+  const base = (entry) => ({ agent: WALLET, satoFeeBps: 15, satoFeeTier: "major", fetch, minGapMs: 0, rpc: rpcFor(mint, entry) });
   const frozen = mintEntry({ program: TOKEN_2022_PROGRAM, extensions: [ext("NonTransferable")] });
   await assert.rejects(S.planSolanaSwap({ from: "USDC", to: mint, amount: "5" }, base(frozen)), (e) => e instanceof Refused && rules(e)[0] === "solana_swap.token_extension_refused" && /NonTransferable/.test(e.message));
   await assert.rejects(S.planSolanaSwap({ from: mint, to: "SOL", amount: "5" }, base(frozen)), (e) => e instanceof Refused && rules(e)[0] === "solana_swap.token_extension_refused");
@@ -1760,7 +1760,7 @@ test("plan: a long-tail token asks for shared accounts and multi-hop routes, and
   ];
   for (const [fx, feeMint, leg] of cases) {
     const { fetch, calls } = fakeFetch(fx);
-    const plan = await S.planSolanaSwap(fx.request, { agent: fx.wallet, satoFeeBps: 15, fetch, rpc: fakeRpc(fx).rpc, minGapMs: 0, now: () => fx.built_at });
+    const plan = await S.planSolanaSwap(fx.request, { agent: fx.wallet, satoFeeBps: 15, satoFeeTier: "major", fetch, rpc: fakeRpc(fx).rpc, minGapMs: 0, now: () => fx.built_at });
     const q = new URL(calls[0].url).searchParams;
     assert.equal(q.get("onlyDirectRoutes"), null, "a long-tail token may be routed through other tokens");
     assert.equal(q.get("restrictIntermediateTokens"), "true");
@@ -1785,7 +1785,7 @@ test("plan: a long-tail token asks for shared accounts and multi-hop routes, and
   }
   // USDC <-> SOL is unchanged: direct routes, no shared accounts.
   const { fetch, calls } = fakeFetch(USDC_SOL);
-  await S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, fetch, minGapMs: 0 });
+  await S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 15, satoFeeTier: "major", fetch, minGapMs: 0 });
   assert.equal(new URL(calls[0].url).searchParams.get("onlyDirectRoutes"), "true");
   assert.equal(JSON.parse(calls[1].init.body).useSharedAccounts, false);
 });
@@ -1806,7 +1806,7 @@ test("plan: the fee text says which leg it comes from; an output fee is a share 
 });
 
 test("plan: amounts of a token follow the mint's decimals, strictly; SOL <-> token has no USD estimate, USDC <-> token has", async () => {
-  const bad = (p, re) => assert.rejects(S.planSolanaSwap(p, { agent: WALLET, satoFeeBps: 15, fetch: fakeFetch(BONK_SELL).fetch, rpc: fakeRpc(BONK_SELL).rpc, minGapMs: 0 }), re);
+  const bad = (p, re) => assert.rejects(S.planSolanaSwap(p, { agent: WALLET, satoFeeBps: 15, satoFeeTier: "major", fetch: fakeFetch(BONK_SELL).fetch, rpc: fakeRpc(BONK_SELL).rpc, minGapMs: 0 }), re);
   await bad({ from: BONK, to: "USDC", amount: "1.000001" }, /not a .* amount: "1\.000001" \(a plain number with at most 5 decimals\)/); // BONK has 5
   await bad({ from: BONK, to: "USDC", amount: "0" }, /not a positive/);
   await bad({ from: BONK, to: "USDC", amount: "-1" }, /not a .* amount/);
@@ -1826,7 +1826,7 @@ test("plan: amounts of a token follow the mint's decimals, strictly; SOL <-> tok
 
 test("plan: Jupiter's price impact is passed through (as sent, and in basis points), never enforced; a missing one is null", async () => {
   const edit = (impact) => fakeFetch(BONK_SELL, { edit: (path, text) => (path.startsWith("/quote") ? JSON.stringify({ ...JSON.parse(text), priceImpactPct: impact }) : text) });
-  const run = (impact) => S.planSolanaSwap(BONK_SELL.request, { agent: BONK_SELL.wallet, satoFeeBps: 15, fetch: edit(impact).fetch, rpc: fakeRpc(BONK_SELL).rpc, minGapMs: 0, now: () => BONK_SELL.built_at });
+  const run = (impact) => S.planSolanaSwap(BONK_SELL.request, { agent: BONK_SELL.wallet, satoFeeBps: 15, satoFeeTier: "major", fetch: edit(impact).fetch, rpc: fakeRpc(BONK_SELL).rpc, minGapMs: 0, now: () => BONK_SELL.built_at });
   // Jupiter's priceImpactPct is a fraction: 0.0344 is 3.44% (measured on 2026-10-09).
   const big = await run("0.0344");
   assert.equal(big.quote.price_impact_pct, "0.0344");
@@ -1845,7 +1845,7 @@ test("plan: Jupiter's price impact is passed through (as sent, and in basis poin
 });
 
 test("plan: a fee account other than the pinned one for the USDC or SOL side is refused, with a token on either side", async () => {
-  const mk = (extra) => ({ agent: BONK_SELL.wallet, fetch: fakeFetch(BONK_SELL).fetch, rpc: fakeRpc(BONK_SELL).rpc, minGapMs: 0, satoFeeBps: 15, ...extra });
+  const mk = (extra) => ({ agent: BONK_SELL.wallet, fetch: fakeFetch(BONK_SELL).fetch, rpc: fakeRpc(BONK_SELL).rpc, minGapMs: 0, satoFeeBps: 15, satoFeeTier: "major", ...extra });
   // Selling BONK for USDC: the USDC account is the pinned one; the wrapped-SOL account is not.
   await assert.rejects(S.planSolanaSwap(BONK_SELL.request, mk({ feeAccount: S.SATO_FEE_ACCOUNTS[WSOL] })), (e) => e instanceof Refused && rules(e)[0] === "solana_swap.fee_account_unpinned");
   const ok = await S.planSolanaSwap(BONK_SELL.request, mk({ feeAccount: S.SATO_FEE_ACCOUNTS[USDC_MINT] }));
@@ -2439,7 +2439,7 @@ test("dry run: a token swap plans and verifies, reserves nothing, and carries th
   const before = entries().length;
   const { fetch } = fakeFetch(SI_BUY);
   const rig = fakeRpc(SI_BUY);
-  const out = await S.dryRunSolanaSwap(SI_BUY.request, { agent: SI_BUY.wallet, satoFeeBps: 15, fetch, rpc: rig.rpc, minGapMs: 0 });
+  const out = await S.dryRunSolanaSwap(SI_BUY.request, { agent: SI_BUY.wallet, satoFeeBps: 15, satoFeeTier: "major", fetch, rpc: rig.rpc, minGapMs: 0 });
   assert.equal(out.verification.ok, true);
   assert.equal(out.plan.token.mint, SI);
   assert.equal(out.plan.token.transfer_fee.bps, 100);
@@ -2468,7 +2468,7 @@ test("every long-tail refusal message is plain words for the owner (no safe / se
 // ----------------------------------------------------------------- live, read-only (opt-in)
 
 const live = process.env.SATO_AGENT_LIVE_READ === "1";
-const liveDeps = () => ({ agent: WALLET, satoFeeBps: 15, userAgent: "SatoHub-swap-dev/1.0", rpc: createSolanaRpc(process.env.SATO_AGENT_SOLANA_RPC || "https://api.mainnet-beta.solana.com", { headers: { "user-agent": "SatoHub-swap-dev/1.0" } }) });
+const liveDeps = () => ({ agent: WALLET, satoFeeBps: 15, satoFeeTier: "major", userAgent: "SatoHub-swap-dev/1.0", rpc: createSolanaRpc(process.env.SATO_AGENT_SOLANA_RPC || "https://api.mainnet-beta.solana.com", { headers: { "user-agent": "SatoHub-swap-dev/1.0" } }) });
 
 test("LIVE read: the recorded transactions still simulate on mainnet and the delta logic reads the same", { skip: !live }, async () => {
   const rpc = liveDeps().rpc;
@@ -2559,7 +2559,7 @@ test("LIVE read: builds at several sizes both ways, fee on and off, are all the 
     [{ from: "SOL", to: "USDC", amount: "0.01" }, 15],
     [{ from: "SOL", to: "USDC", amount: "3" }, 15],
   ]) {
-    const out = await S.dryRunSolanaSwap({ ...params, slippageBps: 50 }, { ...deps, satoFeeBps: fee });
+    const out = await S.dryRunSolanaSwap({ ...params, slippageBps: 50 }, { ...deps, satoFeeBps: fee, satoFeeTier: "major" });
     assert.equal(out.verification.jupiter.instruction, "route", JSON.stringify(params));
     assert.equal(out.verification.jupiter.platform_fee_bps, fee);
     seen.add(out.verification.jupiter.instruction);

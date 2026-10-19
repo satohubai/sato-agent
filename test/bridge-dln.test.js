@@ -219,9 +219,9 @@ for (const c of CASES) {
   });
 }
 
-test("the signed answer may omit the optional parts: no bridge block, no tier, no approval target, tx.value as a number", () => {
+test("the signed answer may omit the optional parts: no bridge block, no approval target, tx.value as a number (the fee tier is NOT optional since v0.5.3)", () => {
   const b = base();
-  const r = tampered(b, { edit: (x) => { delete x.bridge; delete x.sato_fee_tier; delete x.tx.approval_target; x.tx.value = Number(x.tx.value); } });
+  const r = tampered(b, { edit: (x) => { delete x.bridge; delete x.tx.approval_target; x.tx.value = Number(x.tx.value); } });
   assert.equal(verify(b, r).orderIdHint, null);
 });
 
@@ -453,18 +453,43 @@ test("fee_amount_mismatch: the fee in the order is not the fee Sato Hub disclose
   refuses(b, "fee_amount_mismatch", tampered(b, { data: retx(b, (o, a) => (a[2] = "0x")) }));
   // no stated rate is not guessed at
   for (const bad of [undefined, null, "25", 25.5, -1]) refuses(b, "fee_amount_mismatch", tampered(b, { edit: (r) => (r.sato_fee_bps = bad) }));
-  // an order with no fee, disclosed as no fee, is allowed
+  // v0.5.3: an order with no fee, disclosed as no fee, is NOT allowed any more: never without the fee
   const free = tampered(b, { data: retx(b, (o, a) => (a[2] = "0x")), edit: (r) => (r.sato_fee_bps = 0) });
-  const facts = verify(b, free);
-  assert.equal(facts.feeAmount, 0n);
-  assert.equal(facts.feeBps, 0);
+  const got = refuses(b, "fee_missing", free);
+  assert.ok(!got.includes("fee_amount_mismatch"), "a consistent no-fee order is missing the fee, not a mismatch");
 });
 
-test("fee_tier_mismatch: a tier other than cross_chain is refused; no tier is read as cross_chain", () => {
+test("never without the fee: 0 bps, no fee in the order, a missing fee address, and a rate below the published 25 are all refused", () => {
+  const b = base();
+  const noFeeInOrder = (r) => ({ data: retx(b, (o, a) => (a[2] = "0x")), ...r });
+  // disclosed 0 with no fee in the order, with or without the tier
+  refuses(b, "fee_missing", tampered(b, noFeeInOrder({ edit: (r) => (r.sato_fee_bps = 0) })));
+  refuses(b, "fee_missing", tampered(b, noFeeInOrder({ edit: (r) => { r.sato_fee_bps = 0; delete r.sato_fee_tier; } })));
+  // disclosed 25 but the order itself carries no fee
+  refuses(b, "fee_missing", tampered(b, noFeeInOrder({})));
+  // disclosed 0 while the order still pays 25
+  refuses(b, "fee_missing", tampered(b, { edit: (r) => (r.sato_fee_bps = 0) }));
+  // a null / absent fee address is refused, not skipped
+  refuses(b, "fee_recipient_mismatch", tampered(b, { edit: (r) => (r.sato_fee_recipient = null) }));
+  refuses(b, "fee_recipient_mismatch", tampered(b, { edit: (r) => delete r.sato_fee_recipient }));
+  // a rate below the published rate, even when the order carries exactly that rate
+  for (const bps of [1, 10, 24]) {
+    const units = (BigInt(b.intent.amountIn) * BigInt(bps)) / 10_000n;
+    const lower = tampered(b, { data: retx(b, (o, a) => (a[2] = `${SATO_FEE_RECIPIENT.toLowerCase()}${units.toString(16).padStart(64, "0")}`)), edit: (r) => (r.sato_fee_bps = bps) });
+    const got = refuses(b, "fee_below_tier", lower);
+    assert.ok(!got.includes("fee_amount_mismatch"), `${bps} bps in the order and in the answer agree`);
+  }
+  // the published rate itself passes, and so does every recorded case
+  assert.equal(verify(b, tampered(b)).feeBps, 25);
+  assert.equal(F.PUBLISHED_FEE_BPS.cross_chain, 25);
+  for (const c of CASES) assert.equal(verify(build(c)).feeBps, 25, c.file);
+});
+
+test("fee_tier_mismatch: a tier other than cross_chain is refused; no tier is refused too (fee_tier_missing)", () => {
   const b = base();
   for (const tier of ["major", "stable", "token", "x"]) refuses(b, "fee_tier_mismatch", tampered(b, { edit: (r) => (r.sato_fee_tier = tier) }));
-  assert.ok(verify(b, tampered(b, { edit: (r) => delete r.sato_fee_tier })));
-  assert.ok(verify(b, tampered(b, { edit: (r) => (r.sato_fee_tier = null) })));
+  refuses(b, "fee_tier_missing", tampered(b, { edit: (r) => delete r.sato_fee_tier }));
+  refuses(b, "fee_tier_missing", tampered(b, { edit: (r) => (r.sato_fee_tier = null) }));
 });
 
 // ---------------------------------------------------------------- messages
@@ -487,7 +512,7 @@ test("every refusal says what happened in plain words, ends with 'nothing was si
       assert.ok(e instanceof Refused);
       for (const x of e.refusals) {
         seen.add(x.rule);
-        assert.match(x.message, /; nothing was signed$/, x.rule);
+        assert.match(x.message, /; nothing was signed(\. Tell the owner; do not bridge another way\.)?$/, x.rule);
         assert.doesNotMatch(x.message, /\b(safe|secure|trusted|verified|guaranteed|only|first)\b/i, x.message);
         assert.ok(x.message.length < 260, x.rule);
       }

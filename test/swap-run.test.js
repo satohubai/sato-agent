@@ -93,7 +93,22 @@ test("Base: a quote near the oracle passes; a quote far from it is refused befor
 });
 
 // Sato's signed answer for "sell 11 USDC for SOL" (the fields the kit binds).
-const satoSol = (extra = {}) => ({ mode: "recommend", chain: "Solana", token_in: USDC_MINT, token_out: WSOL_MINT, amount_in: "11000000", venue: "jupiter-aggregator", sato_fee_bps: 15, disclosure: "fee", route_id: "rt_s", ...extra });
+const satoSol = (extra = {}) => ({ mode: "recommend", chain: "Solana", token_in: USDC_MINT, token_out: WSOL_MINT, amount_in: "11000000", venue: "jupiter-aggregator", sato_fee_bps: 15, sato_fee_tier: "major", disclosure: "fee", route_id: "rt_s", ...extra });
+
+test("Sato Hub's launch pause (P0) is shown as sato_paused with the server's reason, not as 'chose none' (Solana)", async () => {
+  const paused = { mode: "recommend", chain: "Solana", venue: "none", tx: null, sato_fee_bps: null, withheld: { rule: "P0", reason: "Sato Hub has paused swaps for the launch.\u001b[31m Back soon" } };
+  const deps = { oraclePrice: solPrice(110), callTool: async () => ({ structured: paused, isError: false }), verifySignature: async () => { throw new Error("must not be reached"); } };
+  const err = await prepareSwap({ chain: "solana", from: "USDC", to: "SOL", amount: "11" }, deps).then(() => null, (e) => e);
+  assert.deepEqual(err.refusals.map((r) => r.rule), ["sato_paused"]);
+  assert.match(err.refusals[0].message, /^Sato Hub has paused swaps for the launch\. \[31m Back soon\. Nothing was built or signed\. Try again later; do not swap another way\.$/);
+  assert.doesNotMatch(err.refusals[0].message, /\u001b|chose none|jupiter only/i);
+  // a long reason is cut; a withheld block that is not the pause is not mistaken for it
+  const long = { ...paused, withheld: { rule: "P0", reason: "x".repeat(500) } };
+  const cut = await prepareSwap({ chain: "solana", from: "USDC", to: "SOL", amount: "11" }, { ...deps, callTool: async () => ({ structured: long }) }).then(() => null, (e) => e);
+  assert.ok(cut.refusals[0].message.length < 330, String(cut.refusals[0].message.length));
+  const other = { ...paused, withheld: { rule: "G1", reason: "nope" } };
+  assert.notDeepEqual(await rules(prepareSwap({ chain: "solana", from: "USDC", to: "SOL", amount: "11" }, { ...deps, callTool: async () => ({ structured: other }) })), ["sato_paused"]);
+});
 
 test("Solana: Sato's signed fee disclosure is required; an unverifiable one stops the swap", async () => {
   const satoBody = satoSol({ meta: { signature: { kid: "x" } } });
@@ -329,7 +344,7 @@ const EXT = {
   },
 };
 const rpcFor = (map) => ({ getAccountInfo: (addr) => ({ send: async () => ({ value: map[String(addr)] ?? null }) }) });
-const satoFor = (tin, tout, amountIn, extra = {}) => ({ mode: "recommend", chain: "Solana", token_in: tin, token_out: tout, amount_in: String(amountIn), venue: "jupiter-aggregator", sato_fee_bps: 15, disclosure: "fee", route_id: "rt_s", ...extra });
+const satoFor = (tin, tout, amountIn, extra = {}) => ({ mode: "recommend", chain: "Solana", token_in: tin, token_out: tout, amount_in: String(amountIn), venue: "jupiter-aggregator", sato_fee_bps: 15, sato_fee_tier: "major", disclosure: "fee", route_id: "rt_s", ...extra });
 function solTokenPlan({ from, to, amountIn, out, impactBps = null, feeLeg = "input", feeMax = 0, inDec, outDec, minOut }) {
   return {
     agent: "A", chain: "solana", venue: "jupiter", from, to, amount_in: String(amountIn),

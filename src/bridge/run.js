@@ -34,12 +34,12 @@ import { callTool as satoCallTool } from "../satohub.js";
 import { verifyHubSignature } from "../hub-signature.js";
 import { addresses } from "../wallet.js";
 import { roundUsd, unitsToUsd } from "../amount.js";
-import { clean } from "../text.js";
+import { clean, satoPausedMessage } from "../text.js";
 import { assertClientChain, clients, signAndSend } from "../base.js";
 import { withLock } from "../store.js";
 import { userAgent } from "../version.js";
 import { MAX_AGE_MS, SATO_FEE_RECIPIENT, assetDeltas, decimalToUnits, defaultSimulate, exactGasLimit, simGasSwap, swapGasLimit, unitsToDecimal } from "../swap/evm.js";
-import { feePercent } from "../swap/fee-tier.js";
+import { PUBLISHED_FEE_BPS, feePercent } from "../swap/fee-tier.js";
 import { encodeDestAddress } from "./dln.js";
 
 // ---------------------------------------------------------------- pinned values
@@ -315,6 +315,9 @@ async function askSatoHub(sized, deps) {
   if (r?.isError || !response || typeof response !== "object") {
     throw refuse("bridge_quote_unavailable", `Sato Hub did not return a bridge order${r?.text ? `: ${clean(r.text, 300)}` : ""}; nothing was signed`);
   }
+  // Sato Hub's launch pause comes first (no venue, no order): show its reason, not a mismatch.
+  const paused = satoPausedMessage(response, "bridge");
+  if (paused) throw refuse("sato_paused", paused);
   return response;
 }
 
@@ -569,7 +572,10 @@ export async function planBridge(req, deps = {}) {
   if (!same(response.tx.to, DLN_SOURCE)) checks.push(refusal("bridge_wrong_contract", "the transaction does not go to deBridge's DlnSource", DLN_SOURCE, response.tx.to ?? null));
   if (response.tx.chain_id === undefined || response.tx.chain_id === null || Number(response.tx.chain_id) !== evmChain(sized.chain).chainId) checks.push(refusal("response_mismatch", `the transaction is not for ${labelOf(sized.chain)}`, evmChain(sized.chain).chainId, response.tx.chain_id));
   if (!same(facts.approvalSpender, DLN_SOURCE)) checks.push(refusal("bridge_spender_mismatch", "the order check names a different contract to approve than deBridge's DlnSource", DLN_SOURCE, facts.approvalSpender ?? null));
-  if (!Number.isInteger(facts.feeBps) || facts.feeBps < 0 || facts.feeBps > BRIDGE_FEE_CEILING_BPS) checks.push(refusal("fee_over_ceiling", `the order's Sato Hub fee is above the ${BRIDGE_FEE_CEILING_BPS} bps this kit accepts`, BRIDGE_FEE_CEILING_BPS, facts.feeBps ?? null));
+  // The kit's own look at the fee (the decoder's answer is not the only line): never 0, never below the published rate, never above it.
+  if (!Number.isInteger(facts.feeBps) || facts.feeBps > BRIDGE_FEE_CEILING_BPS) checks.push(refusal("fee_over_ceiling", `the order's Sato Hub fee is above the ${BRIDGE_FEE_CEILING_BPS} bps this kit accepts`, BRIDGE_FEE_CEILING_BPS, facts.feeBps ?? null));
+  else if (facts.feeBps <= 0) checks.push(refusal("fee_missing", "the order carries no Sato Hub fee; the kit only signs a bridge that carries it; nothing was signed. Tell the owner; do not bridge another way.", ">0", facts.feeBps));
+  else if (facts.feeBps < PUBLISHED_FEE_BPS.cross_chain) checks.push(refusal("fee_below_tier", `the order's Sato Hub fee is ${facts.feeBps} bps, below the ${PUBLISHED_FEE_BPS.cross_chain} bps a bridge costs; nothing was signed. Tell the owner; do not bridge another way.`, PUBLISHED_FEE_BPS.cross_chain, facts.feeBps));
   if (typeof response.tx.data !== "string" || !/^0x([0-9a-fA-F]{2}){4,}$/.test(response.tx.data)) checks.push(refusal("response_mismatch", "the transaction has no calldata"));
   if (checks.length) throw new Refused(checks);
 

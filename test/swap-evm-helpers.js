@@ -59,7 +59,9 @@ export function satoResponseFrom(routeBody, buildBody, { signedAt = new Date().t
     amount_in: route.amountIn,
     amount_out: route.amountOut,
     sato_fee_bps: feeBps,
-    ...(feeTier ? { sato_fee_tier: feeTier } : {}),
+    // v0.5.3: the tier is part of the disclosure. Left undefined it follows the published rate of the bps (3 stable, 15 major,
+    // 75 token); pass `feeTier: null` to leave the field out (an answer that does not disclose its tier).
+    ...(feeTier === null ? {} : (feeTier ?? { 3: "stable", 15: "major", 75: "token" }[feeBps]) ? { sato_fee_tier: feeTier ?? { 3: "stable", 15: "major", 75: "token" }[feeBps] } : {}),
     sato_fee_recipient: "0xcEE53Eb001d4d1743EF9df333Dcf45bC38622bE9",
     disclosure: `On KyberSwap the fee is the feeAmount/feeReceiver parameter on the route itself (chargeFeeBy=${by}, in bps), taken by the KyberSwap router on the ${by === "currency_out" ? "output" : "input"} token; the quoted amountOut already reflects it.`,
     chosen_by: [],

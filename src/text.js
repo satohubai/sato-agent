@@ -26,3 +26,15 @@ export function cleanStrings(value) {
 export function cleanBody(value) {
   return String(value).replace(/\r\n?/g, "\n").replace(/(?![\n\t])[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "");
 }
+
+/**
+ * Sato Hub's launch pause (v0.5.3): while it is on, a swap or bridge request is answered with `withheld: { rule: "P0", reason }`,
+ * no venue and no transaction. Returns the plain sentence to show the owner (the server's reason, cleaned and cut, then what that
+ * means for the bot), or null when the answer is not the pause. `action` is "swap" or "bridge".
+ */
+export function satoPausedMessage(body, action = "swap") {
+  if (!body || typeof body !== "object" || body.withheld?.rule !== "P0") return null;
+  let reason = typeof body.withheld.reason === "string" ? clean(body.withheld.reason, 200) : "";
+  if (reason && !/[.!?…]$/.test(reason)) reason += ".";
+  return `${reason ? `${reason} ` : "Sato Hub has paused swaps and bridges for now. "}Nothing was built or signed. Try again later; do not ${action === "bridge" ? "bridge" : "swap"} another way.`;
+}

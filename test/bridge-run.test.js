@@ -486,6 +486,16 @@ test("Sato Hub's answer is held to the signature and to the order check: nothing
   assert.equal(wrong.state.sent.length, 0);
 });
 
+test("Sato Hub's launch pause (P0) is shown as sato_paused with the server's reason on a bridge; nothing is verified or signed", async () => {
+  const pausedBody = { mode: "build-tx", venue: "none", tx: null, sato_fee_bps: null, withheld: { rule: "P0", reason: "Sato Hub has paused bridges for the launch" } };
+  const w = world({ hubReply: () => ({ structured: pausedBody, isError: false }), verifySignature: async () => { throw new Error("must not be reached"); } });
+  const err = await B.runBridge(req(), {}, w.deps).then(() => null, (e) => e);
+  assert.deepEqual(err.refusals.map((r) => r.rule), ["sato_paused"]);
+  assert.equal(err.refusals[0].message, "Sato Hub has paused bridges for the launch. Nothing was built or signed. Try again later; do not bridge another way.");
+  assert.equal(w.state.sent.length, 0);
+  assert.equal(w.seen.verify.length, 0);
+});
+
 test("the kit looks at what the order check returned too: a wrong contract, value, amount, spender or fee is refused", async () => {
   const cases = [
     [{ txTo: "0x663DC15D3C1aC63ff12E45Ab68FeA3F0a883C251" }, "bridge_wrong_contract"],
@@ -493,6 +503,9 @@ test("the kit looks at what the order check returned too: a wrong contract, valu
     [{ factsExtra: { giveAmount: usdcUnits(999) } }, "bridge_give_mismatch"],
     [{ factsExtra: { approvalSpender: "0x663DC15D3C1aC63ff12E45Ab68FeA3F0a883C251" } }, "bridge_spender_mismatch"],
     [{ factsExtra: { feeBps: 26 } }, "fee_over_ceiling"],
+    [{ factsExtra: { feeBps: 0 } }, "fee_missing"],
+    [{ factsExtra: { feeBps: 10 } }, "fee_below_tier"],
+    [{ factsExtra: { feeBps: null } }, "fee_over_ceiling"],
     [{ factsExtra: { takeAmount: 0n } }, "bridge_take_mismatch"],
   ];
   for (const [o, rule] of cases) {

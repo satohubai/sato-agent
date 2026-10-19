@@ -43,7 +43,7 @@ import { callTool, looksLikeLink, resolveTokenViaHub, runCheck } from "../satohu
 import { verifyHubSignature } from "../hub-signature.js";
 import { addressFor, addresses } from "../wallet.js";
 import { usdcUnits, roundUsd } from "../amount.js";
-import { clean, cleanBody } from "../text.js";
+import { clean, cleanBody, satoPausedMessage } from "../text.js";
 import { clients as baseClients } from "../base.js";
 import * as evm from "./evm.js";
 import * as sol from "./solana.js";
@@ -504,6 +504,9 @@ async function satoSolanaDisclosure(sized, deps) {
   const badReferrer = referrer ? referrerRefusalMessage(body, r) : null;
   if (badReferrer) throw refuse("referrer_invalid", badReferrer);
   if (r.isError || !body) throw refuse("sato_quote_unavailable", "Sato Hub did not return a quote for this swap; nothing was signed");
+  // Sato Hub's launch pause comes first: its answer has no venue and no fee, and the reason must reach the owner, not "Sato Hub chose none".
+  const paused = satoPausedMessage(body, "swap");
+  if (paused) throw refuse("sato_paused", paused);
   try {
     // Same two-minute window as Base: a disclosure is for this swap, now.
     await (deps.verifySignature ?? verifyHubSignature)(body, { maxAgeMs: DISCLOSURE_MAX_AGE_MS });
@@ -522,8 +525,9 @@ async function satoSolanaDisclosure(sized, deps) {
   if (!Number.isInteger(body.sato_fee_bps)) throw refuse("fee_disclosure_missing", "Sato Hub's quote does not state its fee");
   // A swap without the fee is not this kit's swap (planSolanaSwap refuses it too; this stops it before Jupiter is asked).
   if (body.sato_fee_bps === 0) throw refuse("fee_missing", "Sato Hub's quote states no fee for this swap; the kit only signs a swap that carries the disclosed fee. Tell the owner; do not swap another way.");
-  // The tiered ceilings (src/swap/fee-tier.js), with the kit's own reading of the pair: 1% at most on any pair, 0.15% unless
-  // a long-tail token is traded, and a disclosed tier that disagrees is refused.
+  // The tiered rules (src/swap/fee-tier.js), with the kit's own reading of the pair: the tier must be disclosed, the fee must
+  // equal its published rate (a lower fee is `fee_below_tier`), 1% at most on any pair, 0.15% unless a long-tail token is
+  // traded, and a disclosed tier dearer than the kit's reading is refused.
   const tierRefusals = feeTierRefusals({ bps: body.sato_fee_bps, tier: tierOfSized(sized), disclosedTier: body.sato_fee_tier });
   if (tierRefusals.length) throw new Refused(tierRefusals);
   // Where the fee is taken: the major side, never the token. A Sato Hub that says otherwise is not followed; one that is silent is
@@ -536,7 +540,8 @@ async function satoSolanaDisclosure(sized, deps) {
   if (typeof body.sato_fee_token === "string" && body.sato_fee_token !== majorAsset.id && body.sato_fee_token.toUpperCase() !== majorAsset.symbol) {
     throw refuse("fee_side_mismatch", `Sato Hub's signed quote takes its fee in ${clean(body.sato_fee_token, 60)}; the kit only accepts it in ${majorAsset.symbol}; nothing was signed`);
   }
-  return { feeBps: body.sato_fee_bps, tier: tierOfSized(sized), disclosure: body.disclosure ?? null, route_id: body.route_id ?? null, receipt_url: body.receipt_url ?? null, side: body.sato_fee_side ?? null, referral: referralView(referrer, body.referral, body.sato_fee_bps) };
+  // `tier` is the tier Sato Hub DISCLOSED (feeTierRefusals above refused a missing or dearer one): the fee is held to its published rate.
+  return { feeBps: body.sato_fee_bps, tier: body.sato_fee_tier, disclosure: body.disclosure ?? null, route_id: body.route_id ?? null, receipt_url: body.receipt_url ?? null, side: body.sato_fee_side ?? null, referral: referralView(referrer, body.referral, body.sato_fee_bps) };
 }
 
 // ---------------------------------------------------------------- prepare
@@ -640,7 +645,7 @@ function majorOutUsd(plan, sized, oracleUsd) {
 async function prepareSolana(sized, deps) {
   await presizeTokenSale(sized, deps); // before Sato Hub is asked: its quote writes a public record
   const fee = await satoSolanaDisclosure(sized, deps);
-  const planOnce = () => (deps.planSolanaSwap ?? sol.planSolanaSwap)({ from: sized.fromAsset.arg, to: sized.toAsset.arg, amount: sized.amount, slippageBps: sized.slippageBps }, { satoFeeBps: fee.feeBps, ...(deps.solDeps ?? {}) });
+  const planOnce = () => (deps.planSolanaSwap ?? sol.planSolanaSwap)({ from: sized.fromAsset.arg, to: sized.toAsset.arg, amount: sized.amount, slippageBps: sized.slippageBps }, { satoFeeBps: fee.feeBps, satoFeeTier: fee.tier, ...(deps.solDeps ?? {}) });
   // The bound the transaction is held to: the owner's slippage and the fee Sato Hub disclosed, never the plan's own values.
   const intentFor = (p) => ({ agent: p.agent, from: p.from, to: p.to, amount_in: p.amount_in, slippage_bps: sized.slippageBps, fee_bps: fee.feeBps, fee_tier: fee.tier });
   let plan = await planOnce();

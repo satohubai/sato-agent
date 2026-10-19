@@ -433,9 +433,9 @@ test("a sale: every fee field is held to the disclosure (receivers, rates, bps f
   // IN_BPS cleared: 15 would be read as 15 base units of USDC, not 0.15%
   assert.deepEqual(await rules(verifyLT("degen-to-usdc", { ...side, edit: tamper((d) => (d.flags = d.flags & ~FLAGS.FEE_IN_BPS)) })), ["fee_not_as_disclosed"]);
   // the disclosure itself: a rate over the ceiling, a recipient that is not Sato's
-  // (a token pair may cost up to 1%: 100 bps is within the ceiling, and still refused because the transaction takes 15)
-  assert.deepEqual(await rules(verifyLT("degen-to-usdc", { ...side, edit: (r) => (r.sato_fee_bps = 100) })), ["fee_not_as_disclosed"]);
-  assert.deepEqual(await rules(verifyLT("degen-to-usdc", { ...side, edit: (r) => (r.sato_fee_bps = 101) })), ["fee_over_ceiling", "fee_not_as_disclosed"]);
+  // (100 bps is above the token tier's published 75 since v0.5.3, and the transaction takes 15 besides; 101 is over the ceiling)
+  assert.deepEqual(await rules(verifyLT("degen-to-usdc", { ...side, edit: (r) => ((r.sato_fee_bps = 100), (r.sato_fee_tier = "token")) })), ["fee_above_tier", "fee_not_as_disclosed"]);
+  assert.deepEqual(await rules(verifyLT("degen-to-usdc", { ...side, edit: (r) => ((r.sato_fee_bps = 101), (r.sato_fee_tier = "token")) })), ["fee_over_ceiling", "fee_not_as_disclosed"]);
   assert.deepEqual(await rules(verifyLT("degen-to-usdc", { ...side, edit: (r) => (r.sato_fee_recipient = STRANGER) })), ["fee_recipient_not_pinned"]);
   // a partial fill weakens the minimum even with the right fee
   assert.deepEqual(await rules(verifyLT("degen-to-usdc", { ...side, edit: tamper((d) => (d.flags = d.flags | FLAGS.PARTIAL_FILL)) })), ["min_out_not_enforced"]);
@@ -460,9 +460,14 @@ test("tiered fee (rc.3): a token pair may cost 0.75% (and up to 1%); 101 bps is 
     const s = evm.summarizeBaseSwapPlan(plan);
     assert.equal(s.sato_fee.percent, "0.75%");
     assert.equal(s.sato_fee.asset, "USDC", "taken in USDC, never in DEGEN");
-    await verifyLT(name, { feeSide, edit: at(75) }); // no tier disclosed: the kit's own reading (token) applies
-    await verifyLT(name, { feeSide, edit: at(100, "token") });
+    // v0.5.3: no tier disclosed is refused (the kit's own reading no longer stands in), and the fee is exactly the tier's rate
+    assert.deepEqual(await rules(verifyLT(name, { feeSide, edit: (r) => (at(75)(r), delete r.sato_fee_tier) })), ["fee_tier_missing"], name);
+    assert.deepEqual(await rules(verifyLT(name, { feeSide, edit: at(76, "token") })), ["fee_above_tier"], name);
+    assert.deepEqual(await rules(verifyLT(name, { feeSide, edit: at(100, "token") })), ["fee_above_tier"], name);
     assert.deepEqual(await rules(verifyLT(name, { feeSide, edit: at(101, "token") })), ["fee_over_ceiling"], name);
+    assert.deepEqual(await rules(verifyLT(name, { feeSide, edit: at(10, "token") })), ["fee_below_tier"], name);
+    assert.deepEqual(await rules(verifyLT(name, { feeSide, edit: at(10, "major") })), ["fee_below_tier"], name);
+    assert.ok((await rules(verifyLT(name, { feeSide, edit: at(0, "token") }))).includes("fee_missing"), name);
     // Sato Hub's majors are wider than the kit's: DEGEN priced as "major" at 15 bps charges less, and is accepted;
     // as "major" or "stable" it is held to 0.15%, so 75 bps under that claim is refused.
     const { plan: cheaper } = await verifyLT(name, { feeSide, edit: at(15, "major") });

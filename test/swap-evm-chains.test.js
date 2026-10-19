@@ -157,9 +157,11 @@ for (const key of ["bnb", "arbitrum", "polygon"]) {
     assert.deepEqual([plan.fee.tier, plan.fee.bps], ["stable", 3]);
     assert.equal(plan.usd, 10);
     assert.equal(plan.long_tail, null);
-    // the kit's own reading of the pair, whatever Sato Hub says
-    const hub = await verifyCase(key, "stable-to-stable", { edit: (r) => (r.sato_fee_tier = undefined) });
-    assert.equal(hub.plan.fee.tier, "stable");
+    // v0.5.3: the disclosed tier is required; the kit's own reading of the pair no longer stands in for it
+    assert.deepEqual(await rules(verifyCase(key, "stable-to-stable", { edit: (r) => (r.sato_fee_tier = undefined) })), ["fee_tier_missing"]);
+    // and the fee must be the stable tier's published rate: 2 bps is below it, 0 is no fee at all
+    assert.deepEqual((await rules(verifyCase(key, "stable-to-stable", { edit: (r) => (r.sato_fee_bps = 2) }))).slice(0, 1), ["fee_below_tier"]);
+    assert.ok((await rules(verifyCase(key, "stable-to-stable", { edit: (r) => (r.sato_fee_bps = 0) }))).includes("fee_missing"));
   });
 
   test(`${key}: a stablecoin pair priced as "major" by Sato Hub is refused as dearer than the kit's reading`, async () => {

@@ -63,6 +63,7 @@ import { record, release, reserve } from "../ledger.js";
 import { withLock } from "../store.js";
 import { callTool as satoCallTool } from "../satohub.js";
 import { unitsToUsd } from "../amount.js";
+import { satoPausedMessage } from "../text.js";
 import { userAgent } from "../version.js";
 import { FEE_CEILING_BPS, feePercent, feeTierRefusals, pairTier } from "./fee-tier.js";
 import { readReferral, referralView, referrerRefusalMessage } from "./referral.js";
@@ -526,6 +527,9 @@ export async function planBaseSwap({ from, to, amount, slippageBps }, deps = {})
   // Sato Hub refused the referral address: say so in plain words and stop (nothing signed); the owner decides what to do.
   const badReferrer = referrer ? referrerRefusalMessage(response, r) : null;
   if (badReferrer) throw new Refused([refusal("referrer_invalid", badReferrer)]);
+  // Sato Hub's launch pause comes first: no venue, no transaction, a reason the owner should read.
+  const paused = satoPausedMessage(response, "swap");
+  if (paused) throw new Refused([refusal("sato_paused", paused)]);
   if (r.isError || !response || typeof response !== "object") {
     throw new Error(`Sato Hub did not return a swap quote${r.text ? `: ${String(r.text).slice(0, 300)}` : ""}`);
   }
@@ -612,8 +616,9 @@ function staticChecks(response, intent) {
     out.push(refusal("fee_disclosure_missing", "the response does not state the Sato Hub fee (rate, recipient and sentence)"));
   } else {
     if (!same(response.sato_fee_recipient, SATO_FEE_RECIPIENT)) out.push(refusal("fee_recipient_not_pinned", "the fee goes to an address this kit does not know", SATO_FEE_RECIPIENT, response.sato_fee_recipient));
-    // The tiered ceilings (src/swap/fee-tier.js): at most 1% on any pair, at most 0.15% unless a long-tail token is traded,
-    // and a disclosed tier must match the kit's own reading of the pair.
+    // The tiered rules (src/swap/fee-tier.js): a fee of 0 is `fee_missing`, the tier must be disclosed, the fee must equal
+    // that tier's published rate (below it `fee_below_tier`), at most 1% on any pair, at most 0.15% unless a long-tail token
+    // is traded, and a disclosed tier dearer than the kit's own reading of the pair is refused.
     out.push(...feeTierRefusals({ bps: feeBps, tier: tierOf(intent), disclosedTier: response.sato_fee_tier }));
   }
 
@@ -646,7 +651,7 @@ function staticChecks(response, intent) {
   // (h) the router calldata: what the contract itself will do, decoded, not what the response says it does
   let calldata = null;
   if (typeof tx.data === "string" && /^0x([0-9a-fA-F]{2}){4,}$/.test(tx.data)) {
-    const checked = checkRouterCalldata(tx.data, { intent, minOut: minOut !== null && minOut > 0n ? minOut : null, feeBps: feeDisclosed ? feeBps : null, feeSide, feeSideInferred: !feeSideDisclosed });
+    const checked = checkRouterCalldata(tx.data, { intent, minOut: minOut !== null && minOut > 0n ? minOut : null, feeBps: feeDisclosed && feeBps > 0 ? feeBps : null, feeSide, feeSideInferred: !feeSideDisclosed }); // a disclosed 0 was refused above (fee_missing)
     out.push(...checked.refusals);
     calldata = checked.facts;
   }
@@ -708,7 +713,7 @@ export function requiredCalldataMin(minOut, tolerance = 1n) {
  * Returns { refusals, facts }. Anything this kit cannot decode, or that does not re-encode to the
  * same bytes (so the decoder and the contract could read it differently), is refused whole.
  */
-export function checkRouterCalldata(data, { intent, minOut, feeBps, feeSide = "in", feeSideInferred = false }) {
+export function checkRouterCalldata(data, { intent, minOut, feeBps, feeSide = "in", feeSideInferred = false, sellBack = false }) {
   const out = [];
   const chain = chainKeyOf(intent);
   const executor = executorOf(chain);
@@ -748,7 +753,11 @@ export function checkRouterCalldata(data, { intent, minOut, feeBps, feeSide = "i
   if (feeBps !== null) {
     const receivers = d.feeReceivers;
     const amounts = d.feeAmounts;
-    if (feeBps === 0) {
+    // No fee in the calldata is only for the kit's own sell-back leg (`sellBack`: simulated, never signed, carries no Sato fee).
+    // Any other transaction with a fee of 0 is `fee_missing`: a swap never goes without the Sato fee (v0.5.3).
+    if (feeBps === 0 && !sellBack) {
+      out.push(refusal("fee_missing", "this swap carries no Sato Hub fee; the kit only signs a swap that carries the disclosed fee. Tell the owner; do not swap another way.", ">0", 0));
+    } else if (feeBps === 0) {
       if (receivers.length !== 0 || amounts.length !== 0) out.push(refusal("fee_not_as_disclosed", "the response says there is no fee, but the transaction pays fee receivers", "none", receivers.join(",")));
     } else {
       if (receivers.length !== 1 || !same(receivers[0], SATO_FEE_RECIPIENT)) out.push(refusal("fee_not_as_disclosed", "the transaction pays fee receivers other than the one Sato Hub disclosed", SATO_FEE_RECIPIENT, receivers.join(",") || "none"));
@@ -1194,7 +1203,7 @@ async function sellBackCheck({ intent, facts, tx, approvalNeeded, sim, deps, get
     // The sell-back transaction gets the real swap's calldata rules: pinned executor, the agent as receiver, the right tokens
     // and amount, no permit, and NO fee receivers (this leg carries no Sato fee).
     const sellIntent = { chain, from: intent.to, to: intent.from, tokenIn: token, tokenOut: major, amountIn: units, taker: intent.taker };
-    const checked = checkRouterCalldata(built.data, { intent: sellIntent, minOut: null, feeBps: 0, feeSide: "in" });
+    const checked = checkRouterCalldata(built.data, { intent: sellIntent, minOut: null, feeBps: 0, feeSide: "in", sellBack: true });
     if (checked.refusals.length) throw new Refused(checked.refusals.map((r) => ({ ...r, message: `in the sell-back route: ${r.message}` })));
 
     const calls = [...baseCalls, ...sellBackCalls({ chain, token, units, data: built.data })];
@@ -1289,6 +1298,8 @@ export async function verifyBaseSwapPlan(response, intent, deps = {}) {
   const now = deps.now ?? Date.now();
 
   if (!response || typeof response !== "object") throw new Refused([refusal("response_mismatch", "no response to check")]);
+  const paused = satoPausedMessage(response, "swap"); // also here: a response handed straight to the verifier
+  if (paused) throw new Refused([refusal("sato_paused", paused)]);
   const signature = await checkSignature(response, deps, now);
 
   if (response.unavailable) {

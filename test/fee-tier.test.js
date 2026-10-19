@@ -23,60 +23,110 @@ test("the kit's own tier for a pair: stable, major or token", () => {
   assert.equal(F.pairTier(null, "SOL"), "token");
 });
 
-test("75 bps on a token pair is accepted; up to 100; 101 is refused on any pair", () => {
-  assert.deepEqual(F.feeTierRefusals({ bps: 75, tier: "token" }), []);
+test("75 bps on a token pair is accepted; 76 to 100 is refused as above the tier's rate; 101 is refused on any pair", () => {
   assert.deepEqual(F.feeTierRefusals({ bps: 75, tier: "token", disclosedTier: "token" }), []);
-  assert.deepEqual(F.feeTierRefusals({ bps: 100, tier: "token" }), []);
-  assert.deepEqual(rules(F.feeTierRefusals({ bps: 101, tier: "token" })), ["fee_over_ceiling"]);
-  assert.deepEqual(rules(F.feeTierRefusals({ bps: 101, tier: "major" })), ["fee_over_ceiling"]);
+  assert.deepEqual(rules(F.feeTierRefusals({ bps: 76, tier: "token", disclosedTier: "token" })), ["fee_above_tier"]);
+  assert.deepEqual(rules(F.feeTierRefusals({ bps: 100, tier: "token", disclosedTier: "token" })), ["fee_above_tier"]);
+  assert.deepEqual(rules(F.feeTierRefusals({ bps: 101, tier: "token", disclosedTier: "token" })), ["fee_over_ceiling"]);
+  assert.deepEqual(rules(F.feeTierRefusals({ bps: 101, tier: "major", disclosedTier: "major" })), ["fee_over_ceiling"]);
 });
 
-test("a major or stable pair above 15 bps is refused (75 bps on USDC <-> ETH); 3 bps on a stable pair and 15 on a major are unchanged", () => {
-  assert.deepEqual(rules(F.feeTierRefusals({ bps: 75, tier: "major" })), ["fee_over_major_ceiling"]);
-  assert.deepEqual(rules(F.feeTierRefusals({ bps: 16, tier: "major" })), ["fee_over_major_ceiling"]);
-  assert.deepEqual(rules(F.feeTierRefusals({ bps: 16, tier: "stable" })), ["fee_over_major_ceiling"]);
+test("a major or stable pair above its rate is refused (75 bps on USDC <-> ETH); 3 bps on a stable pair and 15 on a major pass", () => {
+  assert.deepEqual(rules(F.feeTierRefusals({ bps: 75, tier: "major", disclosedTier: "major" })), ["fee_over_major_ceiling"]);
+  assert.deepEqual(rules(F.feeTierRefusals({ bps: 16, tier: "major", disclosedTier: "major" })), ["fee_over_major_ceiling"]);
+  assert.deepEqual(rules(F.feeTierRefusals({ bps: 16, tier: "stable", disclosedTier: "stable" })), ["fee_over_major_ceiling"]);
   assert.deepEqual(F.feeTierRefusals({ bps: 15, tier: "major", disclosedTier: "major" }), []);
   assert.deepEqual(F.feeTierRefusals({ bps: 3, tier: "stable", disclosedTier: "stable" }), []);
-  assert.deepEqual(F.feeTierRefusals({ bps: 0, tier: "stable" }), []);
 });
 
-test("a disclosed tier MORE expensive than the kit's reading is refused (fee_tier_mismatch); no tier means the kit's own applies", () => {
+test("never without the fee: 0 bps is fee_missing for every tier, with the plain 'do not swap another way' ending", () => {
+  for (const tier of ["stable", "major", "token"]) {
+    const got = F.feeTierRefusals({ bps: 0, tier, disclosedTier: tier });
+    assert.deepEqual(rules(got), ["fee_missing"], tier);
+    assert.match(got[0].message, /Tell the owner; do not swap another way\.$/);
+  }
+  assert.deepEqual(rules(F.feeTierRefusals({ bps: 0, tier: "stable", prefix: "solana_swap." })), ["solana_swap.fee_missing"], "0 with no tier is still fee_missing");
+  assert.deepEqual(rules(F.feeTierRefusals({ bps: null, tier: "major", disclosedTier: "major" })), ["fee_disclosure_missing"]);
+});
+
+test("the disclosed tier must be present (fee_tier_missing), the kit's own reading is no stand-in", () => {
+  for (const disclosedTier of [undefined, null]) {
+    assert.deepEqual(rules(F.feeTierRefusals({ bps: 75, tier: "token", disclosedTier })), ["fee_tier_missing"]);
+    assert.deepEqual(rules(F.feeTierRefusals({ bps: 15, tier: "major", disclosedTier, prefix: "solana_swap." })), ["solana_swap.fee_tier_missing"]);
+  }
+});
+
+test("a fee BELOW the published rate of the disclosed tier is refused (fee_below_tier): token at 10, major at 5, stable at 1", () => {
+  for (const [tier, bps] of [["token", 10], ["token", 74], ["major", 5], ["major", 14], ["stable", 1], ["stable", 2], ["token", 15], ["token", 3]]) {
+    const got = F.feeTierRefusals({ bps, tier, disclosedTier: tier });
+    assert.deepEqual(rules(got), ["fee_below_tier"], `${tier} ${bps}`);
+    assert.deepEqual([got[0].limit, got[0].observed], [F.PUBLISHED_FEE_BPS[tier], bps]);
+    assert.match(got[0].message, /Tell the owner; do not swap another way\.$/);
+  }
+  assert.deepEqual(rules(F.feeTierRefusals({ bps: 5, tier: "major", disclosedTier: "major", prefix: "solana_swap." })), ["solana_swap.fee_below_tier"]);
+});
+
+test("every published tier at its exact rate passes, on the kit's own reading and on a cheaper-than-the-kit disclosure", () => {
+  for (const [tier, bps] of Object.entries({ stable: 3, major: 15, token: 75 })) {
+    assert.deepEqual(F.feeTierRefusals({ bps, tier, disclosedTier: tier }), [], tier);
+    assert.equal(F.PUBLISHED_FEE_BPS[tier], bps);
+  }
+  // Sato Hub reads USDC -> USDT as stable (3) and SOL -> PYUSD as major (15) while the kit reads both as a token trade.
+  assert.deepEqual(F.feeTierRefusals({ bps: 3, tier: "token", disclosedTier: "stable" }), []);
+  assert.deepEqual(F.feeTierRefusals({ bps: 15, tier: "token", disclosedTier: "major" }), []);
+  assert.deepEqual(F.feeTierRefusals({ bps: 3, tier: "major", disclosedTier: "stable" }), []);
+  assert.deepEqual(F.feeTierRefusals({ bps: 3, tier: "token", disclosedTier: "stable", prefix: "solana_swap." }), []);
+});
+
+test("a disclosed tier MORE expensive than the kit's reading is refused (fee_tier_mismatch)", () => {
   // USDC <-> ETH priced as a "token" trade: an overcharge.
   assert.deepEqual(rules(F.feeTierRefusals({ bps: 15, tier: "major", disclosedTier: "token" })), ["fee_tier_mismatch"]);
   assert.deepEqual(rules(F.feeTierRefusals({ bps: 3, tier: "stable", disclosedTier: "major" })), ["fee_tier_mismatch"]);
   // A server calling a major pair a "token" pair to charge 75 bps: both rules fire (the ceiling is the kit's tier then).
   assert.deepEqual(rules(F.feeTierRefusals({ bps: 75, tier: "major", disclosedTier: "token" })), ["fee_tier_mismatch", "fee_over_major_ceiling"]);
   assert.deepEqual(rules(F.feeTierRefusals({ bps: 3, tier: "token", disclosedTier: "premium" })), ["fee_tier_mismatch"], "an unknown tier is not accepted");
-  assert.deepEqual(F.feeTierRefusals({ bps: 75, tier: "token", disclosedTier: null }), []);
+  assert.deepEqual(rules(F.feeTierRefusals({ bps: 3, tier: "token", disclosedTier: "cross_chain" })), ["fee_tier_mismatch"], "a swap can never claim the bridge tier");
   assert.deepEqual(rules(F.feeTierRefusals({ bps: 15, tier: "major", disclosedTier: "token", prefix: "solana_swap." })), ["solana_swap.fee_tier_mismatch"]);
 });
 
-test("a disclosed tier CHEAPER than the kit's reading is accepted, held to the ceiling of the tier Sato Hub claimed", () => {
+test("a disclosed tier CHEAPER than the kit's reading is accepted, held to the rate of the tier Sato Hub claimed", () => {
   // USDC -> USDT: Sato Hub's majors include USDT ("stable"); the kit reads USDT as a long-tail token ("token").
   assert.deepEqual(F.feeTierRefusals({ bps: 3, tier: "token", disclosedTier: "stable" }), []);
   assert.deepEqual(rules(F.feeTierRefusals({ bps: 75, tier: "token", disclosedTier: "stable" })), ["fee_over_major_ceiling"], "a stable claim never charges 0.75%");
   // DEGEN (a kit long-tail token) priced as "major" at 15 bps: cheaper, accepted; at 16+ it is over the claimed tier.
   assert.deepEqual(F.feeTierRefusals({ bps: 15, tier: "token", disclosedTier: "major" }), []);
   assert.deepEqual(rules(F.feeTierRefusals({ bps: 16, tier: "token", disclosedTier: "major" })), ["fee_over_major_ceiling"]);
-  // USDC <-> ETH priced as "stable": cheaper, accepted at 3 or 15 bps.
+  // A cheaper claim still has a floor: "stable" at 1 bps, "major" at 10 bps.
+  assert.deepEqual(rules(F.feeTierRefusals({ bps: 1, tier: "token", disclosedTier: "stable" })), ["fee_below_tier"]);
+  assert.deepEqual(rules(F.feeTierRefusals({ bps: 10, tier: "token", disclosedTier: "major" })), ["fee_below_tier"]);
+  // USDC <-> ETH priced as "stable": cheaper, accepted at 3; 15 is over the stable rate.
   assert.deepEqual(F.feeTierRefusals({ bps: 3, tier: "major", disclosedTier: "stable" }), []);
   assert.deepEqual(rules(F.feeTierRefusals({ bps: 15, tier: "major", disclosedTier: "stable" })), ["fee_over_major_ceiling"], "a stable claim is held to the stable ceiling");
 });
 
 test("each tier has its own ceiling: a stable pair is held to 3 bps, not to the major tier's 15 (4 bps refused, 3 accepted)", () => {
   assert.deepEqual(F.TIER_CEILING_BPS, { stable: 3, major: 15, token: 100, cross_chain: 25 });
-  assert.deepEqual(F.feeTierRefusals({ bps: 3, tier: "stable" }), []);
   assert.deepEqual(F.feeTierRefusals({ bps: 3, tier: "stable", disclosedTier: "stable" }), []);
-  for (const disclosedTier of [undefined, "stable"]) {
-    const got = F.feeTierRefusals({ bps: 4, tier: "stable", disclosedTier });
-    assert.deepEqual(rules(got), ["fee_over_major_ceiling"], String(disclosedTier));
-    assert.deepEqual([got[0].limit, got[0].observed], [3, 4]);
-    assert.match(got[0].message, /priced as stable, whose most is 0\.03%/);
-  }
-  assert.deepEqual(F.feeTierRefusals({ bps: 15, tier: "major" }), []);
-  assert.deepEqual(rules(F.feeTierRefusals({ bps: 16, tier: "major" })), ["fee_over_major_ceiling"]);
-  assert.deepEqual(F.feeTierRefusals({ bps: 100, tier: "token" }), []);
+  const got = F.feeTierRefusals({ bps: 4, tier: "stable", disclosedTier: "stable" });
+  assert.deepEqual(rules(got), ["fee_over_major_ceiling"]);
+  assert.deepEqual([got[0].limit, got[0].observed], [3, 4]);
+  assert.match(got[0].message, /priced as stable, whose most is 0\.03%/);
+  assert.deepEqual(F.feeTierRefusals({ bps: 15, tier: "major", disclosedTier: "major" }), []);
+  assert.deepEqual(rules(F.feeTierRefusals({ bps: 16, tier: "major", disclosedTier: "major" })), ["fee_over_major_ceiling"]);
   assert.deepEqual([F.approvalFeeCeiling("stable"), F.approvalFeeCeiling("major"), F.approvalFeeCeiling("token")], [3, 15, 100]);
+});
+
+test("a bridge: exactly the cross_chain rate (25 bps); 0 is fee_missing, 10 is fee_below_tier, 26 is over the ceiling; the tier must be cross_chain", () => {
+  assert.deepEqual(F.bridgeFeeRefusals({ bps: 25, disclosedTier: "cross_chain" }), []);
+  assert.deepEqual(rules(F.bridgeFeeRefusals({ bps: 0, disclosedTier: "cross_chain" })), ["fee_missing"]);
+  const low = F.bridgeFeeRefusals({ bps: 10, disclosedTier: "cross_chain" });
+  assert.deepEqual(rules(low), ["fee_below_tier"]);
+  assert.match(low[0].message, /nothing was signed\. Tell the owner; do not bridge another way\.$/);
+  assert.deepEqual(rules(F.bridgeFeeRefusals({ bps: 26, disclosedTier: "cross_chain" })), ["fee_over_ceiling"]);
+  assert.deepEqual(rules(F.bridgeFeeRefusals({ bps: 25, disclosedTier: undefined })), ["fee_tier_missing"]);
+  assert.deepEqual(rules(F.bridgeFeeRefusals({ bps: 25, disclosedTier: null })), ["fee_tier_missing"]);
+  assert.deepEqual(rules(F.bridgeFeeRefusals({ bps: 25, disclosedTier: "major" })), ["fee_tier_mismatch"]);
+  assert.deepEqual(rules(F.bridgeFeeRefusals({ bps: 1.5, disclosedTier: "cross_chain" })), ["fee_amount_mismatch"]);
 });
 
 test("a pair where neither side is a kit major (USDT <-> DAI, \"stable\" to Sato Hub) is refused before any quote: the fee could not be kept off a token", async () => {
@@ -100,7 +150,10 @@ test("the fee is shown as a percent and in bps", () => {
 test("Solana: the ceiling is 1% for a token pair, and USDC <-> SOL is held to 0.15% before anything is built", async () => {
   assert.equal(S.FEE_BPS_MAX, 100);
   const noFetch = { fetch: () => assert.fail("nothing is fetched for a fee the kit refuses"), minGapMs: 0, agent: "11111111111111111111111111111111" };
-  await assert.rejects(S.planSolanaSwap({ from: "USDC", to: "SOL", amount: "1", slippageBps: 50 }, { ...noFetch, satoFeeBps: 75 }), (e) => e.refusals?.[0]?.rule === "solana_swap.fee_over_major_ceiling");
+  await assert.rejects(S.planSolanaSwap({ from: "USDC", to: "SOL", amount: "1", slippageBps: 50 }, { ...noFetch, satoFeeBps: 75, satoFeeTier: "major" }), (e) => e.refusals?.[0]?.rule === "solana_swap.fee_over_major_ceiling");
+  // The tier is required, and the fee must be its published rate.
+  await assert.rejects(S.planSolanaSwap({ from: "USDC", to: "SOL", amount: "1", slippageBps: 50 }, { ...noFetch, satoFeeBps: 15 }), (e) => e.refusals?.[0]?.rule === "solana_swap.fee_tier_missing");
+  await assert.rejects(S.planSolanaSwap({ from: "USDC", to: "SOL", amount: "1", slippageBps: 50 }, { ...noFetch, satoFeeBps: 5, satoFeeTier: "major" }), (e) => e.refusals?.[0]?.rule === "solana_swap.fee_below_tier");
   await assert.rejects(S.planSolanaSwap({ from: "USDC", to: "SOL", amount: "1", slippageBps: 50 }, { ...noFetch, satoFeeBps: 101 }), /whole number from 1 to 100/);
   // No fee at all is refused too, before anything is fetched (a swap without the fee is not this kit's).
   await assert.rejects(S.planSolanaSwap({ from: "USDC", to: "SOL", amount: "1", slippageBps: 50 }, { ...noFetch, satoFeeBps: 0 }), (e) => e.refusals?.[0]?.rule === "solana_swap.fee_missing");

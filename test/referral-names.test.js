@@ -194,12 +194,12 @@ function bot(origin) {
       child.stdin.end(input ?? "");
     });
   /** The owner's yes: the first run stops with exit 5 and a code; the SAME command with --approve <code> runs. Returns { first, second }. */
-  const approved = async (args, env) => {
-    const first = await run(args, undefined, env);
+  const approved = async (args, env, input) => {
+    const first = await run(args, input, env);
     assert.equal(first.status, 5, `expected exit 5, got ${first.status}: ${first.stderr}`);
     const code = /--approve ([0-9a-f]{8})/.exec(first.stderr)?.[1];
     assert.ok(code, first.stderr);
-    return { first, code, second: await run([...args, "--approve", code], undefined, env) };
+    return { first, code, second: await run([...args, "--approve", code], input, env) };
   };
   const file = (f) => join(dir, f);
   const saved = () => JSON.parse(readFileSync(file("settings.json"), "utf8"));
@@ -250,14 +250,14 @@ test("CLI: settings set --referrer <name> checks the name first; 200 saves it (l
   const hub = await newHub();
   hub.state.names.set("sunny-otter", { signer: "x", payout: "y", payout_chain: "base", last: "" });
   const b = bot(hub.origin);
-  const set = await b.run(["settings", "set", "--referrer", "Sunny-Otter"]);
+  const { second: set } = await b.approved(["settings", "set", "--referrer", "Sunny-Otter"]);
   assert.equal(set.status, 0, set.stderr);
   assert.match(set.stdout, /Referral name saved: sunny-otter/);
   assert.match(set.stdout, /30% of its swap fee/);
   assert.equal(b.saved().referrer, "sunny-otter");
   assert.equal(statSync(b.file("settings.json")).mode & 0o777, 0o600);
   const lookups = hub.state.requests.filter((r) => r.method === "GET");
-  assert.deepEqual(lookups.map((r) => r.url), ["/api/referral/name/sunny-otter"]);
+  assert.deepEqual(lookups.map((r) => r.url), ["/api/referral/name/sunny-otter", "/api/referral/name/sunny-otter"], "the name is checked on the ask and again on the approved run");
   assert.match(lookups[0].ua, /^sato-agent\//);
   assert.deepEqual(b.ledger().filter((r) => r.kind === "settings").map((r) => [r.status, r.from, r.to]), [["referrer_set", null, "sunny-otter"]]);
   assert.match((await b.run(["settings", "show"])).stdout, /Referral name: sunny-otter/);
@@ -275,11 +275,11 @@ test("CLI: settings set --referrer <name> checks the name first; 200 saves it (l
   assert.equal(JSON.parse((await b.run(["settings", "show", "--json"])).stdout).ship_to, null, "the address was not saved either");
   // the stdin key works for a good name
   hub.state.names.set("calm-heron", { signer: "x", payout: "y", payout_chain: "base", last: "" });
-  assert.equal((await b.run(["settings", "set", "--stdin"], JSON.stringify({ referrer: "calm-heron" }))).status, 0);
+  assert.equal((await b.approved(["settings", "set", "--stdin"], undefined, JSON.stringify({ referrer: "calm-heron" }))).second.status, 0);
   assert.equal(b.saved().referrer, "calm-heron");
-  // an address and none behave exactly as before (no lookup)
+  // an address needs the owner's yes too (no lookup); none is free (no lookup either)
   const before = hub.state.requests.length;
-  assert.equal((await b.run(["settings", "set", "--referrer", OTHER_BASE.toUpperCase().replace("0X", "0x")])).status, 0);
+  assert.equal((await b.approved(["settings", "set", "--referrer", OTHER_BASE.toUpperCase().replace("0X", "0x")])).second.status, 0);
   assert.equal(b.saved().referrer, OTHER_BASE);
   assert.equal((await b.run(["settings", "set", "--referrer", "none"])).status, 0);
   assert.equal(hub.state.requests.length, before, "addresses and none are never looked up");
@@ -294,6 +294,57 @@ test("CLI: settings set --referrer <name> checks the name first; 200 saves it (l
   assert.equal(down.status, 1);
   assert.equal(down.stderr.trim(), "Couldn't reach Sato Hub to check the name; try again.");
   assert.equal(b.saved().referrer, undefined);
+});
+
+test("CLI v0.5.3: setting or changing the referrer stops with exit 5 and a code, whatever the approval mode; none stays free", async () => {
+  const hub = await newHub();
+  hub.state.names.set("sunny-otter", { signer: "x", payout: "y", payout_chain: "base", last: "" });
+  const b = bot(hub.origin);
+  await b.run(["init"]);
+  const ref = () => (existsSync(b.file("settings.json")) ? b.saved().referrer : undefined);
+  const OTHER_ADDR = "0xAbCdEf0123456789aBcDeF0123456789abcdef01";
+  for (const mode of ["ask", "auto"]) {
+    const set = await b.run(["policy", "set", "--per-tx", "50", "--per-day", "100", "--chains", "base", "--approval", mode]);
+    assert.equal(set.status, 0, set.stderr);
+    const stop = await b.run(["settings", "set", "--referrer", OTHER_BASE]);
+    assert.equal(stop.status, 5, `${mode}: ${stop.stderr}`);
+    assert.equal(ref(), undefined, "nothing is saved before the owner says yes");
+    assert.ok(!b.ledger().some((r) => r.kind === "settings"), "and nothing is logged as a change");
+  }
+  // the intent carries the full referrer, so the owner can check it
+  const jr = await b.run(["settings", "set", "--referrer", OTHER_BASE, "--json"]);
+  assert.equal(jr.status, 5);
+  const json = JSON.parse(jr.stdout || jr.stderr);
+  assert.equal(json.needs_approval.intent.cmd, "settings set --referrer");
+  assert.equal(json.needs_approval.intent.referrer, OTHER_BASE);
+  // a code is for THIS referrer: it does not save another one, and an unknown code saves nothing
+  const first = await b.run(["settings", "set", "--referrer", OTHER_BASE]);
+  const code = /--approve ([0-9a-f]{8})/.exec(first.stderr)[1];
+  const wrong = await b.run(["settings", "set", "--referrer", OTHER_ADDR, "--approve", code]);
+  assert.equal(wrong.status, 1);
+  assert.match(wrong.stderr, /different intent/);
+  assert.equal((await b.run(["settings", "set", "--referrer", OTHER_BASE, "--approve", "deadbeef"])).status, 1);
+  assert.equal(ref(), undefined);
+  // the right code saves it once; the same code again saves nothing
+  assert.equal((await b.run(["settings", "set", "--referrer", OTHER_BASE, "--approve", code])).status, 0);
+  assert.equal(ref(), OTHER_BASE);
+  assert.deepEqual(b.ledger().filter((r) => r.kind === "settings").map((r) => [r.status, r.to]), [["referrer_set", OTHER_BASE]]);
+  assert.ok(b.ledger().some((r) => r.kind === "approval" && r.status === "requested" && r.intent?.cmd === "settings set --referrer"), "the request is in the ledger, like set-payout");
+  const reused = await b.run(["settings", "set", "--referrer", "sunny-otter", "--approve", code]);
+  assert.equal(reused.status, 1);
+  assert.equal(ref(), OTHER_BASE, "a used code saves nothing");
+  // saving the one already saved changes nothing and needs no yes; changing it needs a new one
+  assert.equal((await b.run(["settings", "set", "--referrer", OTHER_BASE])).status, 0);
+  assert.equal((await b.run(["settings", "set", "--referrer", "sunny-otter"])).status, 5);
+  assert.equal(ref(), OTHER_BASE);
+  // a ship address in the same command is not saved either while the referrer waits
+  const mixed = await b.run(["settings", "set", "--stdin"], JSON.stringify({ name: "A", line1: "1 Main", city: "X", state: "CA", postalCode: "90001", country: "US", email: "a@b.co", referrer: "sunny-otter" }));
+  assert.equal(mixed.status, 5);
+  assert.equal(JSON.parse((await b.run(["settings", "show", "--json"])).stdout).ship_to, null);
+  // none is free in every mode
+  assert.equal((await b.run(["settings", "set", "--referrer", "none"])).status, 0);
+  assert.equal(ref(), undefined);
+  await hub.close();
 });
 
 // ---------------------------------------------------------------- referral create / set-payout / show / share-text
@@ -576,7 +627,7 @@ test("CLI: referral decline stops every offer; an own name stops them too; a ref
   const c = bot(hub.origin);
   await c.run(["init"]);
   hub.state.names.set("calm-heron", { signer: "x", payout: "y", payout_chain: "base", last: "" });
-  await c.run(["settings", "set", "--referrer", "calm-heron"]);
+  await c.approved(["settings", "set", "--referrer", "calm-heron"]);
   assert.equal((await c.run(["referral", "offer", "--when", "setup"])).stdout, `${names.OFFER_TEXT}\n`, "being referred does not stop the offer: copies get both offers");
   assert.match((await c.run(["referral", "show"])).stdout, /Referred by: calm-heron/);
   assert.equal(JSON.parse((await c.run(["referral", "show", "--json"])).stdout).referred_by, "calm-heron");
@@ -764,7 +815,7 @@ test("a bot cannot be referred by its own name (settings set --referrer refuses;
   assert.equal(b.saved().referrer, undefined);
   // another name is fine
   hub.state.names.set("calm-heron", { signer: "x", payout: "y", payout_chain: "base", last: "" });
-  assert.equal((await b.run(["settings", "set", "--referrer", "calm-heron"])).status, 0);
+  assert.equal((await b.approved(["settings", "set", "--referrer", "calm-heron"])).second.status, 0);
   assert.equal(b.saved().referrer, "calm-heron");
   assert.equal(b.saved().referral_name, "sunny-otter");
 });

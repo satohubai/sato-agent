@@ -134,7 +134,15 @@ test("settings --stdin: a referrer key alone, with address fields, and nothing e
 test("CLI: settings set --referrer / --stdin / none, settings show, status and help", () => {
   const dir = join(mkdtempSync(join(tmpdir(), "sato-agent-ref-")), "agent");
   const run = (args, input) => spawnSync(process.execPath, [BIN, ...args], { env: { ...process.env, SATO_AGENT_HOME: dir, SATO_AGENT_MCP_URL: "https://satohub.ai/api/mcp" }, encoding: "utf8", input, timeout: 30_000 });
-  const set = run(["settings", "set", "--referrer", REF_EVM_MIXED]);
+  // v0.5.3: setting a referrer is the owner's decision: exit 5 and a code first, then the same command with --approve <code>
+  const approvedRun = (args, input) => {
+    const first = run(args, input);
+    assert.equal(first.status, 5, `expected exit 5, got ${first.status}: ${first.stderr}`);
+    const code = /--approve ([0-9a-f]{8})/.exec(first.stderr)?.[1];
+    assert.ok(code, first.stderr);
+    return run([...args, "--approve", code], input);
+  };
+  const set = approvedRun(["settings", "set", "--referrer", REF_EVM_MIXED]);
   assert.equal(set.status, 0, set.stderr);
   assert.match(set.stdout, new RegExp(`Referral address saved: ${REF_EVM}`));
   assert.match(set.stdout, /30% of its swap fee/);
@@ -154,7 +162,7 @@ test("CLI: settings set --referrer / --stdin / none, settings show, status and h
   assert.match(bad.stderr, /--referrer must be a Base address/);
   assert.equal(JSON.parse(run(["settings", "show", "--json"]).stdout).referrer, REF_EVM);
   // --stdin with a referrer key
-  const viaStdin = run(["settings", "set", "--stdin"], JSON.stringify({ referrer: REF_SOL }));
+  const viaStdin = approvedRun(["settings", "set", "--stdin"], JSON.stringify({ referrer: REF_SOL }));
   assert.equal(viaStdin.status, 0, viaStdin.stderr);
   assert.equal(JSON.parse(run(["settings", "show", "--json"]).stdout).referrer, REF_SOL);
   // a bad referrer on stdin alongside a good address writes neither
@@ -167,7 +175,7 @@ test("CLI: settings set --referrer / --stdin / none, settings show, status and h
   assert.equal(run(["settings", "set"]).status, 2);
   assert.equal(run(["settings", "set", "--ship-clear", "--referrer", REF_EVM]).status, 2);
   // an address and a referrer in one go
-  assert.equal(run(["settings", "set", "--stdin"], JSON.stringify({ ...SHIP, referrer: REF_EVM })).status, 0);
+  assert.equal(approvedRun(["settings", "set", "--stdin"], JSON.stringify({ ...SHIP, referrer: REF_EVM })).status, 0);
   const both = JSON.parse(run(["settings", "show", "--json"]).stdout);
   assert.equal(both.referrer, REF_EVM);
   assert.equal(both.ship_to.line1, SHIP.line1);
@@ -321,7 +329,7 @@ test("Base: planBaseSwap sends `referrer` only when given, and the plan remember
 
 // ---------------------------------------------------------------- Solana: the fee disclosure
 
-const satoSol = (extra = {}) => ({ mode: "recommend", chain: "Solana", token_in: USDC_MINT, token_out: WSOL_MINT, amount_in: "11000000", venue: "jupiter-aggregator", sato_fee_bps: 15, disclosure: "fee", route_id: "rt_s", ...extra });
+const satoSol = (extra = {}) => ({ mode: "recommend", chain: "Solana", token_in: USDC_MINT, token_out: WSOL_MINT, amount_in: "11000000", venue: "jupiter-aggregator", sato_fee_bps: 15, sato_fee_tier: "major", disclosure: "fee", route_id: "rt_s", ...extra });
 const solPlan = { agent: "A", from: "USDC", to: "SOL", amount_in: "11000000", quote: { out_amount: "99500000", min_out: "98505000" }, disclosure: ["line"] };
 function solRig({ answer = (r) => r, execute } = {}) {
   const asked = [];
@@ -618,16 +626,16 @@ test("readReferral / referralView / referralFeeSentence", () => {
 test("v0.3.2: the version is the same everywhere, and the docs say what the contract says", () => {
   const pkg = JSON.parse(readFileSync(ROOT("package.json"), "utf8"));
   const lock = JSON.parse(readFileSync(ROOT("npm-shrinkwrap.json"), "utf8"));
-  assert.equal(pkg.version, "0.5.2");
-  assert.equal(lock.version, "0.5.2");
-  assert.equal(lock.packages[""].version, "0.5.2");
-  assert.equal(VERSION, "0.5.2");
+  assert.equal(pkg.version, "0.5.3");
+  assert.equal(lock.version, "0.5.3");
+  assert.equal(lock.packages[""].version, "0.5.3");
+  assert.equal(VERSION, "0.5.3");
 
   const bot = readFileSync(ROOT("BOT.md"), "utf8");
   const readme = readFileSync(ROOT("README.md"), "utf8");
   const skill = readFileSync(ROOT("skills/sato-agent/SKILL.md"), "utf8");
-  assert.match(bot, /github:satohubai\/sato-agent#v0\.5\.2/);
-  assert.match(bot, /grep -q ' 0\.5\.2:' && echo "kit ready \(0\.5\.2\)"/);
+  assert.match(bot, /github:satohubai\/sato-agent#v0\.5\.3/);
+  assert.match(bot, /grep -q ' 0\.5\.3:' && echo "kit ready \(0\.5\.3\)"/);
   assert.doesNotMatch(bot, /0\.3\.[01]/);
   // the setup question comes after funding, and reads a Referral memory or a REFERRER line
   const fund = bot.indexOf("**Ask the owner to fund the wallet");
@@ -694,4 +702,18 @@ test("v0.3.2: the version is the same everywhere, and the docs say what the cont
   assert.match(skill, /referral name/);
   assert.match(skill, /REFERRER = <name or address>/);
   assert.match(skill, /Share this bot \(referral\)/);
+});
+
+test("v0.5.3: the docs say that setting a referrer needs the owner's approval, and the three changes are in the upgrade notes", () => {
+  const bot = readFileSync(ROOT("BOT.md"), "utf8");
+  const readme = readFileSync(ROOT("README.md"), "utf8");
+  const skill = readFileSync(ROOT("skills/sato-agent/SKILL.md"), "utf8");
+  assert.match(bot, /After upgrading to 0\.5\.3, nothing changes for a bot that was working/);
+  assert.match(bot, /Only after the owner says yes in chat, run the same command again with `--approve <code>`/);
+  assert.match(bot, /`fee_missing`.*`fee_below_tier`.*`fee_tier_missing`/s);
+  assert.match(bot, /`sato_paused`/);
+  assert.match(readme, /\*\*Upgrading to v0\.5\.3:\*\* nothing changes for a working agent/);
+  assert.match(readme, /Setting or changing the referrer needs the owner's approval, in every approval mode/);
+  assert.match(skill, /\*\*Upgrading to 0\.5\.3:\*\*/);
+  assert.match(skill, /only after they say yes in chat run the same command with `--approve <code>`/);
 });

@@ -107,6 +107,17 @@ const rules = async (p) => {
   assert.fail("expected a refusal");
 };
 
+test("Sato Hub's launch pause (P0) is shown as sato_paused with the server's reason on an EVM chain (no signature check, no 'tx_withheld')", async () => {
+  owner();
+  const paused = { mode: "build-tx", chain: "BNB Chain", venue: "none", tx: null, sato_fee_bps: null, withheld: { rule: "P0", reason: "Sato Hub has paused swaps for the launch." } };
+  // (the rig feeds the recorded answer to the real verifier; here the answer is the pause, unsigned: the pause is read before the signature)
+  const r = rig("bnb", "stable-to-stable", { editResponse: (res) => { for (const k of Object.keys(res)) delete res[k]; Object.assign(res, paused); } });
+  const err = await prepareSwap(r.req, r.deps).then(() => null, (e) => e);
+  assert.deepEqual(err.refusals.map((x) => x.rule), ["sato_paused"]);
+  assert.equal(err.refusals[0].message, "Sato Hub has paused swaps for the launch. Nothing was built or signed. Try again later; do not swap another way.");
+  assert.equal(r.executed.length, 0);
+});
+
 for (const key of ["bnb", "arbitrum", "polygon"]) {
   const c = evmChain(key);
   const T = majorTokens(key);

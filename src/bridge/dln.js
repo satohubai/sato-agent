@@ -19,7 +19,7 @@ import { getAddressEncoder } from "@solana/kit";
 import { Refused } from "../errors.js";
 import { NATIVE_PLACEHOLDER, debridgeChainIdOf, dlnSourceOf, evmChain, isEvm, isKnownChain, isSolana, labelOf } from "../chains.js";
 import { SATO_FEE_RECIPIENT } from "../swap/evm.js";
-import { BRIDGE_FEE_TIER, TIER_CEILING_BPS, feePercent } from "../swap/fee-tier.js";
+import { BRIDGE_FEE_TIER, TIER_CEILING_BPS, bridgeFeeRefusals, feePercent } from "../swap/fee-tier.js";
 
 /** The DlnSource proxy: one address on Base, Arbitrum, Polygon and BNB Chain (the registry's pin, src/chains.js). */
 export const DLN_SOURCE = evmChain("base").dln.source;
@@ -272,18 +272,19 @@ export function verifyDlnTx({ response, intent, fixFeeWei }) {
   // (f) the Sato Hub fee. It is inside giveAmount and reaches Sato Hub only when the order is filled.
   const feeBps = response.sato_fee_bps;
   const bpsOk = Number.isInteger(feeBps) && feeBps >= 0;
-  if (response.sato_fee_tier != null && response.sato_fee_tier !== BRIDGE_FEE_TIER) out.push(refusal("fee_tier_mismatch", `Sato Hub priced this as a "${clip(response.sato_fee_tier, 20)}" trade, not as a bridge; ${NOTHING}`, BRIDGE_FEE_TIER, clip(response.sato_fee_tier, 20)));
-  if (bpsOk && feeBps > BRIDGE_FEE_CEILING_BPS) out.push(refusal("fee_over_ceiling", `the fee is ${feePercent(feeBps)} (${feeBps} bps), above the ${feePercent(BRIDGE_FEE_CEILING_BPS)} this kit accepts on a bridge; ${NOTHING}`, BRIDGE_FEE_CEILING_BPS, feeBps));
-  if (response.sato_fee_recipient != null && !same(response.sato_fee_recipient, SATO_FEE_RECIPIENT)) out.push(refusal("fee_recipient_mismatch", `Sato Hub names a fee address this kit does not know; ${NOTHING}`, SATO_FEE_RECIPIENT, clip(response.sato_fee_recipient, 60)));
-  if (affiliateFee !== null && !same(affiliateFee.recipient, SATO_FEE_RECIPIENT)) out.push(refusal("fee_recipient_mismatch", `the order pays its fee to an address that is not Sato Hub's; ${NOTHING}`, SATO_FEE_RECIPIENT, affiliateFee.recipient));
+  // Never without the fee (v0.5.3): the disclosed rate must be the bridge's published rate (0 is `fee_missing`, below it `fee_below_tier`,
+  // above it `fee_over_ceiling`), the tier must be disclosed as cross_chain, the fee address must be Sato Hub's (a missing one is
+  // refused, not skipped), and the order itself must carry the fee in its bytes.
+  out.push(...bridgeFeeRefusals({ bps: feeBps, disclosedTier: response.sato_fee_tier }));
+  if (typeof response.sato_fee_recipient !== "string" || !same(response.sato_fee_recipient, SATO_FEE_RECIPIENT)) out.push(refusal("fee_recipient_mismatch", `Sato Hub names no fee address, or one this kit does not know; ${NOTHING}. Tell the owner; do not bridge another way.`, SATO_FEE_RECIPIENT, clip(response.sato_fee_recipient, 60)));
+  if (affiliateFee === null) out.push(refusal("fee_missing", `the order carries no Sato Hub fee; ${NOTHING}. Tell the owner; do not bridge another way.`, "the Sato Hub fee in the order", "none"));
+  else if (!same(affiliateFee.recipient, SATO_FEE_RECIPIENT)) out.push(refusal("fee_recipient_mismatch", `the order pays its fee to an address that is not Sato Hub's; ${NOTHING}`, SATO_FEE_RECIPIENT, affiliateFee.recipient));
   const feeAmount = affiliateFee?.amount ?? 0n;
   if (affiliateFee !== null && feeAmount * 10_000n > order.giveAmount * BigInt(BRIDGE_FEE_CEILING_BPS) + 10_000n) {
     // The order's own fee, read from the bytes, whatever Sato Hub said: more than 25 bps of the amount given (one base unit of rounding allowed).
     out.push(refusal("fee_over_ceiling", `the order takes a fee of more than ${feePercent(BRIDGE_FEE_CEILING_BPS)} of the amount sent; ${NOTHING}`, BRIDGE_FEE_CEILING_BPS, `${feeAmount} of ${order.giveAmount}`));
   }
-  if (!bpsOk) {
-    out.push(refusal("fee_amount_mismatch", `Sato Hub does not state its fee as a whole number of basis points; ${NOTHING}`, "0-25", clip(feeBps, 20)));
-  } else {
+  if (bpsOk) {
     const wantFee = (order.giveAmount * BigInt(feeBps)) / 10_000n;
     const gap = feeAmount > wantFee ? feeAmount - wantFee : wantFee - feeAmount;
     if (gap > 1n) out.push(refusal("fee_amount_mismatch", `the fee in the order is not the ${feePercent(feeBps)} of the amount sent that Sato Hub disclosed; ${NOTHING}`, wantFee.toString(), feeAmount.toString()));

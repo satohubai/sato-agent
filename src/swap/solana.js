@@ -730,8 +730,9 @@ export async function publicQuoteOut({ inputMint, outputMint, units, slippageBps
  * calls write public receipts, so they are not used here). It is not the whole story
  * though: the caller (src/swap/run.js) asks Sato Hub for a signed fee disclosure
  * before a Solana swap, and Sato Hub keeps a public record of that quote (the asset
- * pair and the amount, not the wallet). Needs `deps.satoFeeBps` from that disclosure
- * (0 = no fee).
+ * pair and the amount, not the wallet). Needs `deps.satoFeeBps` and `deps.satoFeeTier`
+ * from that disclosure (0 bps = no fee, refused; the tier is required and the fee must be
+ * its published rate).
  *
  * The minimum output is set here, not copied: Jupiter's `outAmount` less the owner's
  * slippage, rounded down, which is what Jupiter's program works out from the numbers
@@ -775,8 +776,9 @@ export async function planSolanaSwap({ from, to, amount, slippageBps }, deps = {
   // Sato Hub's quote always states a fee for a swap (its lowest tier is a few bps), so a
   // plan with none is not built: a swap without the disclosed fee is not this kit's swap.
   if (feeBps === 0) throw new Refused([refuse("solana_swap.fee_missing", NO_FEE_MESSAGE)]);
-  // A USDC <-> SOL pair is held to the major ceiling before anything is built.
-  const tierRefusals = feeTierRefusals({ bps: feeBps, tier: pairTier(a.major, b.major), prefix: "solana_swap." });
+  // The disclosed tier is required and the fee must be its published rate (a lower fee is `fee_below_tier`); a USDC <-> SOL pair
+  // is held to the major ceiling. All before anything is built.
+  const tierRefusals = feeTierRefusals({ bps: feeBps, tier: pairTier(a.major, b.major), disclosedTier: d.satoFeeTier, prefix: "solana_swap." });
   if (tierRefusals.length) throw new Refused(tierRefusals);
   // The fee account is pinned per mint of the fee side (USDC or wSOL; never the long-tail
   // token). A different one from the caller (or a response) is a kit release, not something to follow.
@@ -1774,7 +1776,7 @@ export async function executeSolanaSwap(plan, deps = {}) {
 export async function dryRunSolanaSwap(params, deps = {}) {
   const d = withDefaults(deps);
   const plan = await planSolanaSwap(params, d);
-  const verification = await verifySolanaSwapPlan(plan, { agent: plan.agent, from: plan.from, to: plan.to, amount_in: plan.amount_in, fee_bps: d.satoFeeBps }, d);
+  const verification = await verifySolanaSwapPlan(plan, { agent: plan.agent, from: plan.from, to: plan.to, amount_in: plan.amount_in, fee_bps: d.satoFeeBps, fee_tier: d.satoFeeTier }, d);
   const { swap_transaction: tx, ...rest } = plan;
   return { dry_run: true, chain: "solana", plan: d.includeTransaction ? plan : rest, verification, simulated: true, usd: plan.usd_estimate };
 }

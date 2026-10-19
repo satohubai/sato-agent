@@ -8,8 +8,10 @@
 // in FEE_TIERS, so a same-chain swap can never claim it (`feeTierRefusals` refuses it as a mismatch), and the swap code never classifies
 // a pair as cross_chain.
 //
-// Sato Hub sets the rate server-side and discloses it in its signed quote (`sato_fee_bps`, and `sato_fee_tier`). The kit
-// does not pin the rate; it holds it to two ceilings so a broken or hostile server cannot overcharge:
+// Sato Hub sets the rate server-side and discloses it in its signed quote (`sato_fee_bps`, and `sato_fee_tier`). Since v0.5.3
+// the disclosed fee must EQUAL the published rate of the disclosed tier (a floor, not only a ceiling), the tier must be
+// disclosed, and a fee of 0 is refused (`fee_missing`): a swap or bridge never goes without the Sato fee. On top of that the
+// kit holds the rate to two ceilings so a broken or hostile server cannot overcharge:
 //
 //   - any pair: at most FEE_CEILING_BPS (1%);
 //   - a pair of its tier: at most TIER_CEILING_BPS (stable 0.03%, major 0.15%). Only a pair with a long-tail token may go higher.
@@ -36,6 +38,7 @@ export const FEE_TIERS = Object.freeze(["stable", "major", "token"]);
 export const BRIDGE_FEE_TIER = "cross_chain";
 /** Sato Hub's published rate per tier, for display and docs only: the kit enforces the ceilings above, not these. */
 export const PUBLISHED_FEE_BPS = Object.freeze({ stable: 3, major: 15, token: 75, cross_chain: 25 });
+const NO_FEE_WORDS = "Sato Hub's quote states no fee for this swap; the kit only signs a swap that carries the disclosed fee. Tell the owner; do not swap another way.";
 /** Stablecoins among the kit's majors: the stables of every chain in src/chains.js (today USDC). */
 const STABLE_SYMBOLS = new Set(stableSymbols());
 
@@ -74,27 +77,78 @@ export function feeText(bps, tier, chain) {
 export function feeTierRefusals({ bps, tier, disclosedTier, prefix = "" }) {
   const out = [];
   const r = (rule, message, limit, observed) => out.push({ rule: `${prefix}${rule}`, limit, observed, message });
-  // Tiers are ordered by cost. Sato Hub's set of majors is wider than the kit's (USDT, DAI, USDbC, EURC, ...), so it may
-  // call a pair cheaper than the kit does (USDC -> USDT: "stable" to Sato Hub, "token" to the kit): that charges the owner
-  // LESS and is accepted, held to the ceiling of the tier Sato Hub claimed. Only a tier MORE expensive than the kit's own
-  // reading is an overcharge, and is refused.
-  const claimed = disclosedTier === undefined || disclosedTier === null ? null : disclosedTier;
-  let ceilingTier = tier;
-  if (claimed !== null) {
-    if (!FEE_TIERS.includes(claimed) || TIER_ORDER[claimed] > TIER_ORDER[tier]) {
-      r("fee_tier_mismatch", `Sato Hub priced this as a "${String(claimed).slice(0, 20)}" trade, which costs more than the ${tier} pair it is to this kit; nothing was signed`, tier, String(claimed).slice(0, 20));
-    } else {
-      ceilingTier = claimed;
-    }
-  }
   if (!Number.isInteger(bps) || bps < 0) {
     r("fee_disclosure_missing", "Sato Hub's fee is not a whole number of basis points", "0-100", bps ?? null);
-  } else if (bps > FEE_CEILING_BPS) {
+    return out;
+  }
+  // Never without the fee: a disclosed fee of 0 is not a cheap swap, it is a swap this kit does not sign.
+  if (bps === 0) {
+    r("fee_missing", NO_FEE_WORDS, ">0", 0);
+    return out;
+  }
+  // The disclosed tier is required: the fee is held to the published rate OF that tier, so a swap with no tier cannot be checked.
+  const claimed = disclosedTier === undefined || disclosedTier === null ? null : disclosedTier;
+  if (claimed === null) {
+    r("fee_tier_missing", "Sato Hub's quote does not say which fee tier this swap is priced at, so the fee cannot be checked against the published rate; nothing was signed. Tell the owner; do not swap another way.", FEE_TIERS.join(" | "), null);
+    return out;
+  }
+  // Tiers are ordered by cost. Sato Hub's set of majors is wider than the kit's (USDT, DAI, USDbC, EURC, ...), so it may
+  // call a pair cheaper than the kit does (USDC -> USDT: "stable" to Sato Hub, "token" to the kit): that charges the owner
+  // LESS and is accepted, held to the rate of the tier Sato Hub claimed. Only a tier MORE expensive than the kit's own
+  // reading is an overcharge, and is refused.
+  let ceilingTier = tier;
+  let tierOk = false;
+  if (!FEE_TIERS.includes(claimed) || TIER_ORDER[claimed] > TIER_ORDER[tier]) {
+    r("fee_tier_mismatch", `Sato Hub priced this as a "${String(claimed).slice(0, 20)}" trade, which costs more than the ${tier} pair it is to this kit; nothing was signed`, tier, String(claimed).slice(0, 20));
+  } else {
+    ceilingTier = claimed;
+    tierOk = true;
+  }
+  if (bps > FEE_CEILING_BPS) {
     r("fee_over_ceiling", `the fee is ${feePercent(bps)} (${bps} bps), above the ${feePercent(FEE_CEILING_BPS)} this kit ever accepts; nothing was signed`, FEE_CEILING_BPS, bps);
   } else if (ceilingTier !== "token" && bps > TIER_CEILING_BPS[ceilingTier]) {
     const ceiling = TIER_CEILING_BPS[ceilingTier];
     r("fee_over_major_ceiling", `the fee is ${feePercent(bps)} (${bps} bps) on a pair priced as ${ceilingTier}, whose most is ${feePercent(ceiling)}; only a trade with a long-tail token may cost more than ${feePercent(MAJOR_FEE_CEILING_BPS)}; nothing was signed`, ceiling, bps);
+  } else if (tierOk) {
+    // The floor: the fee is the published rate of the tier Sato Hub disclosed, not a number below it.
+    const rate = PUBLISHED_FEE_BPS[claimed];
+    if (bps < rate) {
+      r("fee_below_tier", `the fee is ${feePercent(bps)} (${bps} bps) on a pair priced as ${claimed}, whose published rate is ${feePercent(rate)} (${rate} bps); the kit only signs a swap that carries the published fee. Tell the owner; do not swap another way.`, rate, bps);
+    } else if (bps > rate) {
+      r("fee_above_tier", `the fee is ${feePercent(bps)} (${bps} bps) on a pair priced as ${claimed}, whose published rate is ${feePercent(rate)} (${rate} bps); nothing was signed`, rate, bps);
+    }
   }
+  return out;
+}
+
+/**
+ * The same rule for a bridge (src/bridge/dln.js): the disclosed tier must be `cross_chain` and the fee must be exactly its
+ * published rate. 0 is `fee_missing`, anything below the rate `fee_below_tier`, above it `fee_over_ceiling`.
+ * Returns refusals as { rule, limit, observed, message } (empty = allowed).
+ */
+export function bridgeFeeRefusals({ bps, disclosedTier }) {
+  const out = [];
+  const r = (rule, message, limit, observed, advise = false) => out.push({ rule, limit, observed, message: `${message}; nothing was signed${advise ? ". Tell the owner; do not bridge another way." : ""}` });
+  const rate = PUBLISHED_FEE_BPS[BRIDGE_FEE_TIER];
+  if (!Number.isInteger(bps) || bps < 0) {
+    r("fee_amount_mismatch", "Sato Hub does not state its fee as a whole number of basis points", `0-${TIER_CEILING_BPS[BRIDGE_FEE_TIER]}`, bps ?? null);
+    return out;
+  }
+  if (bps === 0) {
+    r("fee_missing", "Sato Hub's quote states no fee for this bridge; the kit only signs a bridge that carries the disclosed fee", ">0", 0, true);
+    return out;
+  }
+  if (disclosedTier === undefined || disclosedTier === null) {
+    r("fee_tier_missing", "Sato Hub's quote does not say which fee tier this bridge is priced at, so the fee cannot be checked against the published rate", BRIDGE_FEE_TIER, null, true);
+  } else if (disclosedTier !== BRIDGE_FEE_TIER) {
+    r("fee_tier_mismatch", `Sato Hub priced this as a "${String(disclosedTier).slice(0, 20)}" trade, not as a bridge`, BRIDGE_FEE_TIER, String(disclosedTier).slice(0, 20));
+  }
+  if (bps > TIER_CEILING_BPS[BRIDGE_FEE_TIER]) {
+    r("fee_over_ceiling", `the fee is ${feePercent(bps)} (${bps} bps), above the ${feePercent(TIER_CEILING_BPS[BRIDGE_FEE_TIER])} this kit accepts on a bridge`, TIER_CEILING_BPS[BRIDGE_FEE_TIER], bps);
+  } else if (bps < rate) {
+    r("fee_below_tier", `the fee is ${feePercent(bps)} (${bps} bps) on a bridge, whose published rate is ${feePercent(rate)} (${rate} bps); the kit only signs a bridge that carries the published fee`, rate, bps, true);
+  }
+  // (A bridge's ceiling IS its published rate, so there is no "above the rate but under the ceiling" case.)
   return out;
 }
 

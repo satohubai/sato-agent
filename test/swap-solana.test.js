@@ -426,7 +426,8 @@ test("plan: a stop on unbuildable routes carries a rule id, so the owner and Sat
   await assert.rejects(planFrom(SOL_BONK, { fetch: fetch429 }), (e) => /Jupiter answered HTTP 503/.test(e.message) && e.code === undefined);
   // A real no-route answer says so, with its rule id.
   const none = unbuildableFirst(SOL_BONK);
-  const fetchNone = async (url, init) => (String(url).includes("excludeDexes") ? new Response(JSON.stringify({ error: "No routes found", errorCode: "COULD_NOT_FIND_ANY_ROUTE" }), { status: 400 }) : none.fetch(url, init));
+  // Jupiter's live answer (read 2026-10-19), with the message reworded so the code alone must match.
+  const fetchNone = async (url, init) => (String(url).includes("excludeDexes") ? new Response(JSON.stringify({ error: "Nothing routable", errorCode: "NO_ROUTES_FOUND" }), { status: 400 }) : none.fetch(url, init));
   await assert.rejects(planFrom(SOL_BONK, { fetch: fetchNone }), (e) => e.code === "solana_swap.no_buildable_route" && /found no other route/.test(e.message));
 });
 

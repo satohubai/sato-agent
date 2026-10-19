@@ -96,7 +96,7 @@ const MAX_UNBUILDABLE_ROUNDS = 3;
 /** Jupiter's answer when a route's AMM cannot be built with shared accounts (HTTP 400). */
 const SHARED_NOT_SUPPORTED = /HTTP 400:.*not supported with shared accounts/i;
 /** Jupiter's answer when a quote finds no route at all. */
-const NO_ROUTE = /HTTP 400:.*(ROUTE_NOT_FOUND|COULD_NOT_FIND_ANY_ROUTE|No routes found)/i;
+const NO_ROUTE = /HTTP 400:.*(NO_ROUTES_FOUND|ROUTE_NOT_FOUND|COULD_NOT_FIND_ANY_ROUTE|No routes found)/i;
 /** Order-book venues (Jupiter's labels): what it cannot build with shared accounts, so the first to leave out. */
 const ORDER_BOOK_VENUES = /^(Manifest|Hadron|Phoenix|OpenBook( V2)?|Openbook( V2)?)$/i;
 /** An Error with a rule id, so the last-outcome note (src/last-outcome.js) can say why a swap stopped. */

@@ -393,18 +393,12 @@ test("Solana: a missing or different `referral` warns only; the fee checks are u
   clearAll();
 });
 
-test("a quote with NO Sato fee: no referral warning, no referral line, and nothing reported", async () => {
+test("a quote with NO Sato fee is refused before anything is built; the referral view of no fee is empty", async () => {
   clearAll();
   setReferrer(REF_SOL);
-  // Sato Hub answers `referral: null` when the quote carries no fee (e.g. a Jupiter pair with no referral token account)
+  // A Solana swap always carries the disclosed fee (2026-10-19: a fee-less swap is not this kit's swap).
   for (const answer of [(r) => ({ ...r, sato_fee_bps: 0, referral: null }), (r) => ({ ...r, sato_fee_bps: 0 })]) {
-    const p = await prepareSwap(solReq, solRig({ answer }).deps);
-    assert.equal(p.display.referral, null);
-    const text = swapLines(p.display).join("\n");
-    assert.ok(!/referr/i.test(text), `nothing about the referrer is printed: ${text}`);
-    const r = recorder();
-    assert.equal(await reportSettlement(p.display, { tx: "sig" }, { fetchImpl: r.fetchImpl, origin: "https://satohub.test" }), null);
-    assert.equal(r.calls.length, 0, "and no settle call, since there is no fee to share");
+    await assert.rejects(prepareSwap(solReq, solRig({ answer }).deps), (e) => e instanceof Refused && e.refusals[0].rule === "fee_missing" && /do not swap another way/.test(e.message));
   }
   assert.equal(referralView(REF_SOL, null, 0), null);
   assert.equal(referralView(REF_SOL, referral(REF_SOL), 0), null);

@@ -359,13 +359,16 @@ test("plan: the Sato fee rate is required; a fee account other than the pinned o
 // cannot build with shared accounts (order books such as Manifest or Hadron). The kit re-quotes
 // without those venues and builds again, with the same fee; it never falls back to a fee-less build.
 const NOT_SUPPORTED = JSON.stringify({ error: "Simple AMMs are not supported with shared accounts", errorCode: "NOT_SUPPORTED" });
-function unbuildableFirst(fx, { failures = 1, status = 400, body = NOT_SUPPORTED, newVenueEachQuote = false } = {}) {
+function unbuildableFirst(fx, { failures = 1, status = 400, body = NOT_SUPPORTED, newVenueEachQuote = false, labels = null } = {}) {
   let n = 0;
+  // Each quote is told apart: its own contextSlot, and (when asked) its own venue names.
   const relabel = (path, text) => {
-    if (!newVenueEachQuote || !path.startsWith("/quote")) return text;
+    if (!path.startsWith("/quote")) return text;
     const q = JSON.parse(text);
     n += 1;
-    for (const r of q.routePlan ?? []) r.swapInfo.label = `Book${n}`;
+    q.contextSlot = 1_000_000 + n;
+    if (newVenueEachQuote) for (const r of q.routePlan ?? []) r.swapInfo.label = `Book${n}`;
+    else if (labels && n === 1) q.routePlan = labels.map((label) => ({ ...q.routePlan[0], swapInfo: { ...q.routePlan[0].swapInfo, label } }));
     return JSON.stringify(q);
   };
   const inner = fakeFetch(fx, { edit: relabel });
@@ -397,8 +400,34 @@ test("plan: a token route Jupiter cannot build with shared accounts is re-quoted
     assert.equal(s.useSharedAccounts, true, "never a plain route for a token");
     assert.equal(s.feeAccount, S.SATO_FEE_ACCOUNTS[WSOL], "never without the fee account");
   }
+  // The NEW quote is what is built and what the plan shows, never the first one.
+  assert.equal(f.swaps[0].quoteResponse.contextSlot, 1_000_001);
+  assert.equal(f.swaps[1].quoteResponse.contextSlot, 1_000_002);
+  assert.equal(plan.quote.context_slot, 1_000_002);
+  assert.deepEqual(plan.excluded_venues, [...new Set(labels)]);
+  assert.match(plan.disclosure.join("\n"), /best route \(through .+\) cannot be built with the accounts this kit uses, so this is the next best route/);
   assert.equal(plan.fee.bps, SOL_BONK.request.satoFeeBps);
   assert.equal((await S.verifySolanaSwapPlan(plan, intentOf(SOL_BONK), verifyDeps(SOL_BONK))).ok, true);
+});
+
+test("plan: order books on the failing route are left out first; the AMMs beside them stay", async () => {
+  const f = unbuildableFirst(SOL_BONK, { labels: ["Whirlpool", "Manifest"] });
+  const plan = await planFrom(SOL_BONK, { fetch: f.fetch });
+  assert.equal(f.quotes[1].get("excludeDexes"), "Manifest");
+  assert.deepEqual(plan.excluded_venues, ["Manifest"]);
+});
+
+test("plan: a stop on unbuildable routes carries a rule id, so the owner and Sato Hub can tell it from a timeout", async () => {
+  const f = unbuildableFirst(SOL_BONK, { failures: 99, newVenueEachQuote: true });
+  await assert.rejects(planFrom(SOL_BONK, { fetch: f.fetch }), (e) => e.code === "solana_swap.route_unbuildable");
+  // A re-quote that fails for another reason (a rate limit) is that error, not "no other route".
+  const limited = unbuildableFirst(SOL_BONK);
+  const fetch429 = async (url, init) => (String(url).includes("excludeDexes") ? new Response("busy", { status: 503 }) : limited.fetch(url, init));
+  await assert.rejects(planFrom(SOL_BONK, { fetch: fetch429 }), (e) => /Jupiter answered HTTP 503/.test(e.message) && e.code === undefined);
+  // A real no-route answer says so, with its rule id.
+  const none = unbuildableFirst(SOL_BONK);
+  const fetchNone = async (url, init) => (String(url).includes("excludeDexes") ? new Response(JSON.stringify({ error: "No routes found", errorCode: "COULD_NOT_FIND_ANY_ROUTE" }), { status: 400 }) : none.fetch(url, init));
+  await assert.rejects(planFrom(SOL_BONK, { fetch: fetchNone }), (e) => e.code === "solana_swap.no_buildable_route" && /found no other route/.test(e.message));
 });
 
 test("plan: after three rounds of unbuildable routes it stops, says why, and tells the bot not to swap another way", async () => {

@@ -1167,9 +1167,11 @@ const errLine = (text) => {
 main().catch((err) => {
   // A swap that ended without a swap leaves one note (exit code + rule ids, nothing else), sent once
   // with the next swap quote so Sato Hub can see why the kit stopped (src/last-outcome.js).
-  if (cmd === "swap") {
-    const exit = err instanceof Refused ? 3 : err instanceof PlainError ? 1 : err instanceof Pending ? 4 : err instanceof NeedsApproval ? 5 : err instanceof UsageError ? 2 : 1;
+  // A signed swap that is not confirmed yet (exit 4) leaves no note: it may still land.
+  if (cmd === "swap" && !(err instanceof Pending)) {
+    const exit = err instanceof Refused ? 3 : err instanceof PlainError ? 1 : err instanceof NeedsApproval ? 5 : err instanceof UsageError ? 2 : 1;
     const rules = err instanceof Refused ? err.refusals.map((r) => r.rule) : err instanceof NeedsApproval ? (err.reason_codes ?? []) : [];
+    if (typeof err?.code === "string") rules.push(err.code); // e.g. solana_swap.route_unbuildable; anything not a plain rule id is dropped
     recordSwapOutcome({ exit, rules });
   }
   if (err instanceof Refused) {

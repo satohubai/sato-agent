@@ -94,7 +94,13 @@ export const FEE_BPS_MAX = FEE_CEILING_BPS;
 /** How many times a token swap is re-quoted around venues that cannot be built with shared accounts. */
 const MAX_UNBUILDABLE_ROUNDS = 3;
 /** Jupiter's answer when a route's AMM cannot be built with shared accounts (HTTP 400). */
-const SHARED_NOT_SUPPORTED = /HTTP 400:.*"errorCode"\s*:\s*"NOT_SUPPORTED".*shared accounts|HTTP 400:.*not supported with shared accounts/i;
+const SHARED_NOT_SUPPORTED = /HTTP 400:.*not supported with shared accounts/i;
+/** Jupiter's answer when a quote finds no route at all. */
+const NO_ROUTE = /HTTP 400:.*(ROUTE_NOT_FOUND|COULD_NOT_FIND_ANY_ROUTE|No routes found)/i;
+/** Order-book venues (Jupiter's labels): what it cannot build with shared accounts, so the first to leave out. */
+const ORDER_BOOK_VENUES = /^(Manifest|Hadron|Phoenix|OpenBook( V2)?|Openbook( V2)?)$/i;
+/** An Error with a rule id, so the last-outcome note (src/last-outcome.js) can say why a swap stopped. */
+const coded = (code, message) => Object.assign(new Error(message), { code });
 /** Why a Solana swap with no Sato Hub fee is refused (planned, verified or signed). */
 const NO_FEE_MESSAGE =
   "a swap with no Sato Hub fee is not built or signed: Sato Hub's quote always states its fee, and this kit only signs the swap that carries it. Run the swap with `sato-agent swap`; if it is refused, show the owner the reason rather than swapping another way.";
@@ -819,7 +825,10 @@ export async function planSolanaSwap({ from, to, amount, slippageBps }, deps = {
   // asked for again WITHOUT every venue that could not be built so far (a few rounds: the next
   // best route can be another order book), and built the same way, with the same fee. The last
   // quote is what the plan shows and what verification checks.
+  // Order books are excluded first (they are what Jupiter cannot build this way); only when the failing
+  // route names none of them is every venue on it excluded.
   const excluded = [];
+  const firstOut = quote.outAmount;
   let built;
   for (let round = 0; ; round++) {
     try {
@@ -827,15 +836,20 @@ export async function planSolanaSwap({ from, to, amount, slippageBps }, deps = {
       break;
     } catch (err) {
       if (!tail || !SHARED_NOT_SUPPORTED.test(String(err.message))) throw err;
-      const venues = (quote.routePlan ?? []).map((r) => r?.swapInfo?.label).filter((l) => typeof l === "string" && /^[\w .()+-]{1,40}$/.test(l) && !excluded.includes(l));
+      const labels = [...new Set((quote.routePlan ?? []).map((r) => r?.swapInfo?.label).filter((l) => typeof l === "string" && /^[\w .()+-]{1,40}$/.test(l) && !excluded.includes(l)))];
+      const books = labels.filter((l) => ORDER_BOOK_VENUES.test(l));
+      const venues = books.length ? books : labels;
       if (!venues.length || round >= MAX_UNBUILDABLE_ROUNDS) {
-        throw new Error(`Jupiter cannot build this token's routes (through ${[...excluded, ...venues].join(", ") || "an unnamed venue"}) with the accounts this kit uses; nothing was signed. Tell the owner; do not swap another way.`);
+        throw coded("solana_swap.route_unbuildable", `Jupiter cannot build this token's routes (through ${[...excluded, ...venues].join(", ") || "an unnamed venue"}) with the accounts this kit uses; nothing was signed. Tell the owner; do not swap another way.`);
       }
-      excluded.push(...new Set(venues));
+      excluded.push(...venues);
       try {
         quote = await quoteWithout(excluded);
       } catch (again) {
-        throw new Error(`Jupiter cannot build this token's best routes (through ${excluded.join(", ")}) with the accounts this kit uses, and found no other route (${String(again.message).slice(0, 160)}); nothing was signed. Tell the owner; do not swap another way.`);
+        // Only Jupiter saying there is no route means there is none; a rate limit, a timeout or a
+        // quote that does not match the request is that error, as it would be on a first quote.
+        if (!NO_ROUTE.test(String(again.message))) throw again;
+        throw coded("solana_swap.no_buildable_route", `Jupiter cannot build this token's best routes (through ${excluded.join(", ")}) with the accounts this kit uses, and found no other route; nothing was signed. Tell the owner; do not swap another way.`);
       }
     }
   }
@@ -916,6 +930,12 @@ export async function planSolanaSwap({ from, to, amount, slippageBps }, deps = {
     if (plan.quote.price_impact_bps !== null) {
       plan.disclosure.push(`Price impact: Jupiter estimates this swap moves the price by about ${plan.quote.price_impact_bps / 100}% at this size. It is shown for you to weigh; the kit does not limit it. ${route.length > 1 ? "The route goes through more than one pool." : ""}`.trim());
     }
+  }
+  if (excluded.length) {
+    // The best route could not be built with the accounts this kit uses: say what was left out and what it cost.
+    plan.excluded_venues = [...excluded];
+    plan.first_quote_out_amount = String(firstOut);
+    plan.disclosure.push(`Jupiter's best route (through ${excluded.join(", ")}) cannot be built with the accounts this kit uses, so this is the next best route. Jupiter's estimate for the best route was ${formatUnits(big(firstOut), b.decimals)} ${b.label}.`);
   }
   return plan;
 }

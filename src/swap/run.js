@@ -520,6 +520,8 @@ async function satoSolanaDisclosure(sized, deps) {
   if (mismatch.length) throw refuse("response_mismatch", `Sato Hub's signed quote is about a different swap (${mismatch.join(", ")} differ); nothing was signed`);
   if (body.venue !== "jupiter-aggregator" && body.venue !== "jupiter") throw refuse("venue_unexpected", `Sato Hub chose ${body.venue ?? "no venue"}; this kit swaps on Solana through Jupiter only`);
   if (!Number.isInteger(body.sato_fee_bps)) throw refuse("fee_disclosure_missing", "Sato Hub's quote does not state its fee");
+  // A swap without the fee is not this kit's swap (planSolanaSwap refuses it too; this stops it before Jupiter is asked).
+  if (body.sato_fee_bps === 0) throw refuse("fee_missing", "Sato Hub's quote states no fee for this swap; the kit only signs a swap that carries the disclosed fee. Tell the owner; do not swap another way.");
   // The tiered ceilings (src/swap/fee-tier.js), with the kit's own reading of the pair: 1% at most on any pair, 0.15% unless
   // a long-tail token is traded, and a disclosed tier that disagrees is refused.
   const tierRefusals = feeTierRefusals({ bps: body.sato_fee_bps, tier: tierOfSized(sized), disclosedTier: body.sato_fee_tier });

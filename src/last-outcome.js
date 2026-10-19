@@ -5,9 +5,11 @@
 // Sato Hub saw only the quotes, never why the kit stopped. So the kit keeps one small
 // note about its LAST swap that ended without a swap: the exit code and the rule ids
 // that stopped it (e.g. "max_usd_per_tx", "solana_swap.price_impact"), never amounts,
-// addresses, tokens, error text or anything the owner typed. The next swap quote sends
-// it once in the `x-sato-agent-last-outcome` header and the note is deleted. A note
-// older than a day is dropped unsent. README "What is reported" says the same.
+// addresses, tokens, error text or anything the owner typed. The next call to Sato Hub's
+// onchain_agent_swap (a swap quote, or a bridge quote, which uses the same tool) sends it
+// once in the `x-sato-agent-last-outcome` header and the note is deleted. A note older
+// than a day is dropped unsent. A swap that was signed but not confirmed (exit 4) leaves
+// no note: it may still land. README "What is reported" says the same.
 
 import fs from "node:fs";
 import { join } from "node:path";
@@ -21,7 +23,8 @@ const MAX_RULES = 5;
 const MAX_AGE_MS = 24 * 3600 * 1000;
 
 const file = () => join(home(), "last-outcome.json");
-const cleanRules = (rules) => [...new Set((rules ?? []).map(String).filter((r) => RULE.test(r)))].slice(0, MAX_RULES);
+// Lower-cased first: some codes carry a name in CamelCase (issuer_power_PermanentDelegate).
+const cleanRules = (rules) => [...new Set((rules ?? []).map((r) => String(r).toLowerCase()).filter((r) => RULE.test(r)))].slice(0, MAX_RULES);
 
 /** Note how the last swap ended (exit code + rule ids). Never throws: a note that cannot be written is simply not sent. */
 export function recordSwapOutcome({ exit, rules }, now = Date.now()) {

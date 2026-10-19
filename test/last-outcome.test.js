@@ -45,6 +45,9 @@ test("anything that is not a plain rule id is dropped; at most five; duplicates 
   assert.equal(takeSwapOutcome(), "exit=5;rules=price_impact,r1,r2,r3,r4");
   recordSwapOutcome({ exit: 1, rules: [] });
   assert.equal(takeSwapOutcome(), "exit=1");
+  // A code with a CamelCase name is lower-cased, not dropped.
+  recordSwapOutcome({ exit: 5, rules: ["issuer_power_PermanentDelegate", "solana_swap.route_unbuildable"] });
+  assert.equal(takeSwapOutcome(), "exit=5;rules=issuer_power_permanentdelegate,solana_swap.route_unbuildable");
 });
 
 test("a note older than a day, from the future, or unreadable is dropped unsent", () => {

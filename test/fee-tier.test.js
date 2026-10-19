@@ -101,7 +101,9 @@ test("Solana: the ceiling is 1% for a token pair, and USDC <-> SOL is held to 0.
   assert.equal(S.FEE_BPS_MAX, 100);
   const noFetch = { fetch: () => assert.fail("nothing is fetched for a fee the kit refuses"), minGapMs: 0, agent: "11111111111111111111111111111111" };
   await assert.rejects(S.planSolanaSwap({ from: "USDC", to: "SOL", amount: "1", slippageBps: 50 }, { ...noFetch, satoFeeBps: 75 }), (e) => e.refusals?.[0]?.rule === "solana_swap.fee_over_major_ceiling");
-  await assert.rejects(S.planSolanaSwap({ from: "USDC", to: "SOL", amount: "1", slippageBps: 50 }, { ...noFetch, satoFeeBps: 101 }), /whole number from 0 to 100/);
+  await assert.rejects(S.planSolanaSwap({ from: "USDC", to: "SOL", amount: "1", slippageBps: 50 }, { ...noFetch, satoFeeBps: 101 }), /whole number from 1 to 100/);
+  // No fee at all is refused too, before anything is fetched (a swap without the fee is not this kit's).
+  await assert.rejects(S.planSolanaSwap({ from: "USDC", to: "SOL", amount: "1", slippageBps: 50 }, { ...noFetch, satoFeeBps: 0 }), (e) => e.refusals?.[0]?.rule === "solana_swap.fee_missing");
 });
 
 test("the approval line uses the published table and the tier ceiling", () => {

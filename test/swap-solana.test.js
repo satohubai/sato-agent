@@ -175,12 +175,13 @@ async function planFrom(fx, extra = {}) {
   return S.planSolanaSwap(fx.request, { agent: fx.wallet, satoFeeBps: fx.request.satoFeeBps, fetch, rpc: fakeRpc(fx).rpc, minGapMs: 0, now: () => fx.built_at, ...extra });
 }
 const verifyDeps = (fx, o) => ({ rpc: fakeRpc(fx, o).rpc, minGapMs: 0 });
-const intentOf = (fx) => ({ agent: fx.wallet, from: fx.request.from, to: fx.request.to, amount: fx.request.amount });
+// fee_bps is what Sato Hub's quote disclosed: verify refuses an intent without it.
+const intentOf = (fx) => ({ agent: fx.wallet, from: fx.request.from, to: fx.request.to, amount: fx.request.amount, fee_bps: fx.request.satoFeeBps });
 const withTx = (plan, tx) => ({ ...plan, swap_transaction: tx });
 
-async function refusedBy(plan, fx, o) {
+async function refusedBy(plan, fx, o, intentEdit = {}) {
   try {
-    await S.verifySolanaSwapPlan(plan, intentOf(fx), verifyDeps(fx, o));
+    await S.verifySolanaSwapPlan(plan, { ...intentOf(fx), ...intentEdit }, verifyDeps(fx, o));
   } catch (err) {
     assert.ok(err instanceof Refused, `expected Refused, got ${err.stack}`);
     return rules(err);
@@ -343,18 +344,98 @@ test("plan: the Sato fee rate is required; a fee account other than the pinned o
   await assert.rejects(S.planSolanaSwap(USDC_SOL.request, mk({ satoFeeBps: 101 })), /satoFeeBps/);
   await assert.rejects(S.planSolanaSwap(USDC_SOL.request, mk({ satoFeeBps: 15, feeAccount: "11111111111111111111111111111111" })), (e) => e instanceof Refused && rules(e)[0] === "solana_swap.fee_account_unpinned");
 
-  // No fee: the quote carries none and the build gets no feeAccount.
+  // No fee: refused before Jupiter is asked for anything (2026-10-19: a bot that went around the
+  // kit signed Jupiter swaps with no fee; the kit's own modules must never build one).
   const calls = [];
-  const noFee = fakeFetch(USDC_SOL, {
-    onRequest: (u, init) => calls.push({ u: String(u), body: init.body }),
-    edit: (path, text) => (path.startsWith("/quote") ? JSON.stringify({ ...JSON.parse(text), platformFee: null }) : text),
-  });
-  const plan = await S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 0, fetch: noFee.fetch, minGapMs: 0 });
-  assert.equal(new URL(calls[0].u).searchParams.has("platformFeeBps"), false);
-  assert.equal("feeAccount" in JSON.parse(calls[1].body), false);
-  assert.equal(plan.fee.bps, 0);
-  assert.equal(plan.fee.account, null);
-  assert.match(plan.disclosure.join("\n"), /No Sato Hub fee/);
+  const noFee = fakeFetch(USDC_SOL, { onRequest: (u) => calls.push(String(u)) });
+  await assert.rejects(
+    S.planSolanaSwap(USDC_SOL.request, { agent: WALLET, satoFeeBps: 0, fetch: noFee.fetch, minGapMs: 0 }),
+    (e) => e instanceof Refused && rules(e)[0] === "solana_swap.fee_missing" && /not built or signed/.test(e.message),
+  );
+  assert.deepEqual(calls, [], "nothing was asked of Jupiter");
+});
+
+// 2026-10-19: Jupiter answers 400 NOT_SUPPORTED when a token's best route runs through a venue it
+// cannot build with shared accounts (order books such as Manifest or Hadron). The kit re-quotes
+// without those venues and builds again, with the same fee; it never falls back to a fee-less build.
+const NOT_SUPPORTED = JSON.stringify({ error: "Simple AMMs are not supported with shared accounts", errorCode: "NOT_SUPPORTED" });
+function unbuildableFirst(fx, { failures = 1, status = 400, body = NOT_SUPPORTED, newVenueEachQuote = false } = {}) {
+  let n = 0;
+  const relabel = (path, text) => {
+    if (!newVenueEachQuote || !path.startsWith("/quote")) return text;
+    const q = JSON.parse(text);
+    n += 1;
+    for (const r of q.routePlan ?? []) r.swapInfo.label = `Book${n}`;
+    return JSON.stringify(q);
+  };
+  const inner = fakeFetch(fx, { edit: relabel });
+  const quotes = [];
+  const swaps = [];
+  let left = failures;
+  const fetch = async (url, init) => {
+    const path = String(url).replace(S.JUPITER_API, "");
+    if (path.startsWith("/quote")) quotes.push(new URL(String(url)).searchParams);
+    if (path === "/swap") {
+      swaps.push(JSON.parse(init.body));
+      if (left-- > 0) return new Response(body, { status });
+    }
+    return inner.fetch(url, init);
+  };
+  return { fetch, quotes, swaps };
+}
+
+test("plan: a token route Jupiter cannot build with shared accounts is re-quoted without its venues, and built with the same fee", async () => {
+  const f = unbuildableFirst(SOL_BONK);
+  const plan = await planFrom(SOL_BONK, { fetch: f.fetch });
+  const labels = JSON.parse(SOL_BONK.http.find((h) => h.url.startsWith("/quote")).text).routePlan.map((r) => r.swapInfo.label);
+  assert.equal(f.quotes.length, 2);
+  assert.equal(f.quotes[0].has("excludeDexes"), false);
+  assert.deepEqual(f.quotes[1].get("excludeDexes").split(","), [...new Set(labels)]);
+  assert.equal(f.quotes[1].get("platformFeeBps"), String(SOL_BONK.request.satoFeeBps), "the re-quote carries the same fee");
+  assert.equal(f.swaps.length, 2);
+  for (const s of f.swaps) {
+    assert.equal(s.useSharedAccounts, true, "never a plain route for a token");
+    assert.equal(s.feeAccount, S.SATO_FEE_ACCOUNTS[WSOL], "never without the fee account");
+  }
+  assert.equal(plan.fee.bps, SOL_BONK.request.satoFeeBps);
+  assert.equal((await S.verifySolanaSwapPlan(plan, intentOf(SOL_BONK), verifyDeps(SOL_BONK))).ok, true);
+});
+
+test("plan: after three rounds of unbuildable routes it stops, says why, and tells the bot not to swap another way", async () => {
+  const f = unbuildableFirst(SOL_BONK, { failures: 99, newVenueEachQuote: true });
+  await assert.rejects(planFrom(SOL_BONK, { fetch: f.fetch }), /cannot build this token's routes \(through Book1, Book2, Book3, Book4\).*nothing was signed\. Tell the owner; do not swap another way/);
+  assert.equal(f.swaps.length, 4, "the first build and three re-quoted ones");
+  assert.ok(f.swaps.every((s) => s.useSharedAccounts === true && s.feeAccount));
+  assert.equal(f.quotes.at(-1).get("excludeDexes"), "Book1,Book2,Book3", "each round excludes every venue that failed so far");
+  // A re-quote that only names venues already excluded (Jupiter ignored the exclusion) stops at once.
+  const same = unbuildableFirst(SOL_BONK, { failures: 99 });
+  await assert.rejects(planFrom(SOL_BONK, { fetch: same.fetch }), /do not swap another way/);
+  assert.equal(same.swaps.length, 2);
+});
+
+test("plan: only that answer, and only for a token swap, is re-quoted", async () => {
+  // USDC <-> SOL never uses shared accounts: the same answer is just an error.
+  const major = unbuildableFirst(USDC_SOL);
+  await assert.rejects(planFrom(USDC_SOL, { fetch: major.fetch }), /Jupiter answered HTTP 400/);
+  assert.equal(major.quotes.length, 1);
+  // Any other 400 is not retried.
+  const other = unbuildableFirst(SOL_BONK, { body: JSON.stringify({ error: "Insufficient liquidity", errorCode: "ROUTE_NOT_FOUND" }) });
+  await assert.rejects(planFrom(SOL_BONK, { fetch: other.fetch }), /Jupiter answered HTTP 400/);
+  assert.equal(other.quotes.length, 1);
+});
+
+test("a swap with no Sato Hub fee is never verified, dry-run or signed: fee_bps is required, and 0 is refused", async () => {
+  // A plan that carries no fee, on the recorded fee-free Jupiter build.
+  const base = await planFrom(USDC_SOL);
+  const noFeeTx = JSON.parse(NOFEE.http.find((h) => h.url === "/swap").text).swapTransaction;
+  const none = { ...base, fee: { bps: 0, account: null, text: "" }, swap_transaction: noFeeTx };
+  // Disclosed as 0: refused for having no fee.
+  assert.ok((await refusedBy(none, USDC_SOL, undefined, { fee_bps: 0 })).includes("solana_swap.fee_missing"));
+  // No fee_bps in the intent at all: refused before anything else is trusted.
+  const noIntentFee = await refusedBy(base, USDC_SOL, undefined, { fee_bps: undefined });
+  assert.ok(noIntentFee.includes("solana_swap.fee_not_disclosed"), noIntentFee.join());
+  // The honest plan with the disclosed fee still passes.
+  assert.equal((await S.verifySolanaSwapPlan(base, intentOf(USDC_SOL), verifyDeps(USDC_SOL))).ok, true);
 });
 
 test("plan: a quote that does not match the request, or a failed build, is an error before anything is signed", async () => {
@@ -531,7 +612,8 @@ test("verify refuses: a plan for the wrong agent, assets, amount, fee account, o
 // recorded REAL Jupiter build and changes one thing in Jupiter's instruction.
 
 test("verify reads Jupiter's route instruction out of the transaction, and an honest build agrees with everything the plan says", async () => {
-  for (const [fx, fee] of [[USDC_SOL, 15], [SOL_USDC, 15], [NOFEE, 0]]) {
+  // (The recorded fee-free build, NOFEE, can no longer be planned: a plan with no fee is refused.)
+  for (const [fx, fee] of [[USDC_SOL, 15], [SOL_USDC, 15]]) {
     const plan = await planFrom(fx);
     const route = S.decodeJupiterRoute(jupiterIxs(compiledOf(plan.swap_transaction))[0].data);
     assert.equal(route.inAmount.toString(), plan.amount_in);
@@ -563,7 +645,7 @@ test("verify refuses: slippage_bps rewritten to 10000 (the floor is nothing at a
 });
 
 test("verify refuses: the reviewer's tamper (quoted_out=1 AND slippage_bps=10000) on both directions", async () => {
-  for (const fx of [USDC_SOL, SOL_USDC, NOFEE]) {
+  for (const fx of [USDC_SOL, SOL_USDC]) {
     const plan = await planFrom(fx);
     const rules_ = await refusedBy(withArgs(plan, { quotedOut: 1n, slippageBps: 10_000 }), fx);
     assert.ok(rules_.includes("solana_swap.min_out_not_enforced"), rules_.join());
@@ -617,13 +699,7 @@ test("verify refuses: the fee paid to a stranger's account, with the pinned fee 
     assert.deepEqual(got.map((r) => r.rule), ["solana_swap.fee_not_as_disclosed"]);
     assert.match(got[0].message, new RegExp(`pays its platform fee to ${stranger}, not the disclosed account ${pinned}`));
   }
-  // With no fee disclosed, naming a fee account at all is refused; absent (Jupiter's own id) passes.
-  const none = await planFrom(NOFEE);
-  assert.equal((await S.verifySolanaSwapPlan(none, intentOf(NOFEE), verifyDeps(NOFEE))).ok, true);
-  const named = await refusalsOf(withAccount(none, 6, stranger), NOFEE);
-  assert.deepEqual(named.map((r) => r.rule), ["solana_swap.fee_not_as_disclosed"]);
-  assert.match(named[0].message, /names a fee account.*but no fee was disclosed/);
-  // And a fee-free plan on a transaction that does charge one.
+  // A fee-free plan on a transaction that does charge one (a fee-free plan is refused whatever its transaction).
   assert.ok((await refusedBy({ ...(await planFrom(USDC_SOL)), fee: { bps: 0, account: null, text: "" } }, USDC_SOL)).includes("solana_swap.fee_not_as_disclosed"));
 });
 
@@ -847,7 +923,7 @@ const SIM_WSOL = 2;
 const SIM_FEE = 3;
 
 test("verify passes the recorded builds' post-state: the agent's accounts are its own, with no delegate and no close authority", async () => {
-  for (const fx of [USDC_SOL, SOL_USDC, NOFEE]) {
+  for (const fx of [USDC_SOL, SOL_USDC]) {
     const plan = await planFrom(fx);
     const seen = [];
     await S.verifySolanaSwapPlan(plan, intentOf(fx), verifyDeps(fx, { editSim: (v) => seen.push(...v.accounts) }));
@@ -1210,7 +1286,8 @@ async function setup(fxName = USDC_SOL, o = {}) {
   const { fx, plan } = await readdressed(fxName, signer, o.extraMints);
   const rig = fakeRpc(fx, { accountKeys: compiledOf(plan.swap_transaction).staticAccounts, ...o });
   // usdNotional is what the orchestrator measures independently; the plan's own estimate is never used.
-  const deps = { rpc: rig.rpc, signer, now: () => plan.built_at + 2_000, sleep: async () => {}, minGapMs: 0, pollMs: 0, usdNotional: 25, ...(o.deps ?? {}) };
+  // intent.fee_bps: the fee Sato Hub disclosed, as the orchestrator passes it (run.js intentFor).
+  const deps = { rpc: rig.rpc, signer, now: () => plan.built_at + 2_000, sleep: async () => {}, minGapMs: 0, pollMs: 0, usdNotional: 25, intent: { fee_bps: fx.request.satoFeeBps }, ...(o.deps ?? {}) };
   return { signer, fx, plan, rig, deps };
 }
 const policyAllow = (perTx = "50", perDay = "100") => setPolicy({ perTx, perDay, chains: "solana", swapSlippageBps: "500", maxTradesPerDay: "none" });

@@ -6,6 +6,9 @@
   "bin": {
     "sato-agent": "bin/sato-agent.js"
   },
+  "exports": {
+    "./package.json": "./package.json"
+  },
   "files": [
     "bin/",
     "src/",

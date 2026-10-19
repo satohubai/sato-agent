@@ -11,6 +11,7 @@
 // the spend is safe; it means nothing on record stood in the way.
 
 import { isKnownChain } from "./chains.js";
+import { OUTCOME_HEADER, takeSwapOutcome } from "./last-outcome.js";
 import { userAgent } from "./version.js";
 
 export const DEFAULT_MCP_URL = "https://satohub.ai/api/mcp";
@@ -19,9 +20,12 @@ export const MCP_URL = process.env.SATO_AGENT_MCP_URL || DEFAULT_MCP_URL;
 export const customEndpoint = () => MCP_URL !== DEFAULT_MCP_URL;
 
 export async function callTool(name, args, { timeoutMs = 30_000 } = {}) {
+  // A swap quote carries, once, how the previous swap ended when it did not finish
+  // (exit code + rule ids only; src/last-outcome.js).
+  const outcome = name === "onchain_agent_swap" ? takeSwapOutcome() : null;
   const res = await fetch(MCP_URL, {
     method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "user-agent": userAgent() },
+    headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "user-agent": userAgent(), ...(outcome ? { [OUTCOME_HEADER]: outcome } : {}) },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
     signal: AbortSignal.timeout(timeoutMs),
   });

@@ -91,6 +91,13 @@ export const SATO_FEE_ACCOUNTS = Object.freeze({
  * ceiling as Base). USDC <-> SOL is a major pair and is held to 0.15%; only a trade with a long-tail token may cost more.
  */
 export const FEE_BPS_MAX = FEE_CEILING_BPS;
+/** How many times a token swap is re-quoted around venues that cannot be built with shared accounts. */
+const MAX_UNBUILDABLE_ROUNDS = 3;
+/** Jupiter's answer when a route's AMM cannot be built with shared accounts (HTTP 400). */
+const SHARED_NOT_SUPPORTED = /HTTP 400:.*"errorCode"\s*:\s*"NOT_SUPPORTED".*shared accounts|HTTP 400:.*not supported with shared accounts/i;
+/** Why a Solana swap with no Sato Hub fee is refused (planned, verified or signed). */
+const NO_FEE_MESSAGE =
+  "a swap with no Sato Hub fee is not built or signed: Sato Hub's quote always states its fee, and this kit only signs the swap that carries it. Run the swap with `sato-agent swap`; if it is refused, show the owner the reason rather than swapping another way.";
 
 export const JUPITER_PROGRAM = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
 const SYSTEM_PROGRAM = "11111111111111111111111111111111";
@@ -757,8 +764,11 @@ export async function planSolanaSwap({ from, to, amount, slippageBps }, deps = {
 
   const feeBps = d.satoFeeBps;
   if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > FEE_BPS_MAX) {
-    throw new Error(`satoFeeBps is required (from Sato Hub's quote; 0 for none) and must be a whole number from 0 to ${FEE_BPS_MAX}`);
+    throw new Error(`satoFeeBps is required (from Sato Hub's quote) and must be a whole number from 1 to ${FEE_BPS_MAX}`);
   }
+  // Sato Hub's quote always states a fee for a swap (its lowest tier is a few bps), so a
+  // plan with none is not built: a swap without the disclosed fee is not this kit's swap.
+  if (feeBps === 0) throw new Refused([refuse("solana_swap.fee_missing", NO_FEE_MESSAGE)]);
   // A USDC <-> SOL pair is held to the major ceiling before anything is built.
   const tierRefusals = feeTierRefusals({ bps: feeBps, tier: pairTier(a.major, b.major), prefix: "solana_swap." });
   if (tierRefusals.length) throw new Refused(tierRefusals);
@@ -778,12 +788,18 @@ export async function planSolanaSwap({ from, to, amount, slippageBps }, deps = {
   const q = new URLSearchParams({ inputMint: a.mint, outputMint: b.mint, amount: units.toString(), slippageBps: String(slip), swapMode: "ExactIn", restrictIntermediateTokens: "true" });
   if (!tail) q.set("onlyDirectRoutes", "true");
   if (feeBps > 0) q.set("platformFeeBps", String(feeBps));
-  const quote = await jupiter(`/quote?${q}`, {}, d);
-  checkQuote(quote, { a, b, units, slip, feeBps });
+  const quoteWithout = async (excluded) => {
+    const qq = new URLSearchParams(q);
+    if (excluded.length) qq.set("excludeDexes", excluded.join(","));
+    const got = await jupiter(`/quote?${qq}`, {}, d);
+    checkQuote(got, { a, b, units, slip, feeBps });
+    return got;
+  };
+  let quote = await quoteWithout([]);
 
-  const body = {
+  const bodyFor = (quoteResponse) => ({
     userPublicKey: agent,
-    quoteResponse: quote,
+    quoteResponse,
     wrapAndUnwrapSol: true,
     // USDC <-> SOL: ask for the plain `route` instruction. Left to itself Jupiter sometimes
     // answers with `shared_accounts_route` (seen live on 2026-10-09, about one build in three),
@@ -793,9 +809,36 @@ export async function planSolanaSwap({ from, to, amount, slippageBps }, deps = {
     dynamicComputeUnitLimit: true,
     // Capped, not "auto": Jupiter picks a level, we bound what it may cost.
     prioritizationFeeLamports: { priorityLevelWithMaxLamports: { maxLamports: PRIORITY_MAX_LAMPORTS, priorityLevel: "high" } },
-  };
-  if (feeBps > 0) body.feeAccount = pinned;
-  const built = await jupiter("/swap", { method: "POST", body }, d);
+    ...(feeBps > 0 ? { feeAccount: pinned } : {}),
+  });
+  // A route through a venue Jupiter cannot build with shared accounts (an order book such as
+  // Manifest or Hadron, which it calls a "simple AMM") is answered 400 NOT_SUPPORTED, every time
+  // (2026-10-19: a bot's swaps of two pump.fun tokens failed this way until it swapped around the
+  // kit, without the fee). The plain `route` form is no way out: with the fee in wSOL and a
+  // Token-2022 token, Jupiter's own simulation fails (IncorrectTokenProgramID). So the quote is
+  // asked for again WITHOUT every venue that could not be built so far (a few rounds: the next
+  // best route can be another order book), and built the same way, with the same fee. The last
+  // quote is what the plan shows and what verification checks.
+  const excluded = [];
+  let built;
+  for (let round = 0; ; round++) {
+    try {
+      built = await jupiter("/swap", { method: "POST", body: bodyFor(quote) }, d);
+      break;
+    } catch (err) {
+      if (!tail || !SHARED_NOT_SUPPORTED.test(String(err.message))) throw err;
+      const venues = (quote.routePlan ?? []).map((r) => r?.swapInfo?.label).filter((l) => typeof l === "string" && /^[\w .()+-]{1,40}$/.test(l) && !excluded.includes(l));
+      if (!venues.length || round >= MAX_UNBUILDABLE_ROUNDS) {
+        throw new Error(`Jupiter cannot build this token's routes (through ${[...excluded, ...venues].join(", ") || "an unnamed venue"}) with the accounts this kit uses; nothing was signed. Tell the owner; do not swap another way.`);
+      }
+      excluded.push(...new Set(venues));
+      try {
+        quote = await quoteWithout(excluded);
+      } catch (again) {
+        throw new Error(`Jupiter cannot build this token's best routes (through ${excluded.join(", ")}) with the accounts this kit uses, and found no other route (${String(again.message).slice(0, 160)}); nothing was signed. Tell the owner; do not swap another way.`);
+      }
+    }
+  }
   if (typeof built?.swapTransaction !== "string" || !built.swapTransaction) throw new Error("Jupiter returned no transaction");
   if (built.simulationError) throw new Error(`Jupiter's own simulation of the swap failed: ${jsonSafe(built.simulationError).slice(0, 200)}`);
   if (!Number.isFinite(built.lastValidBlockHeight)) throw new Error("Jupiter returned no lastValidBlockHeight");
@@ -1393,7 +1436,11 @@ export async function verifySolanaSwapPlan(plan, intent, deps = {}) {
   if (feeBps > 0 && plan.fee.mint !== undefined && plan.fee.mint !== feeSide.mint) fail("solana_swap.fee_account", `the plan takes its fee in ${plan.fee.mint}; the fee is only ever taken in ${feeSide.symbol}`);
   if (feeBps > 0 && plan.fee.leg !== undefined && plan.fee.leg !== feeLeg) fail("solana_swap.fee_account", `the plan takes its fee from the ${plan.fee.leg}; for this swap it comes from the ${feeLeg}`);
   if (feeBps === 0 && plan.fee?.account) fail("solana_swap.fee_account", "a fee account is set but the plan discloses no fee");
-  if (want.feeBps !== undefined && want.feeBps !== feeBps) fail("solana_swap.fee_not_as_disclosed", `the plan charges ${feeBps} bps; ${want.feeBps} bps was disclosed`);
+  // The fee Sato Hub's quote disclosed must come with the intent, and the plan must charge it.
+  // A plan with no fee is never signed: the kit's swaps always carry the disclosed fee.
+  if (!Number.isInteger(want.feeBps)) fail("solana_swap.fee_not_disclosed", "the intent carries no fee_bps (the fee Sato Hub's quote disclosed); nothing was signed");
+  else if (want.feeBps !== feeBps) fail("solana_swap.fee_not_as_disclosed", `the plan charges ${feeBps} bps; ${want.feeBps} bps was disclosed`);
+  if (feeBps === 0) fail("solana_swap.fee_missing", NO_FEE_MESSAGE);
   const feeAccount = feeBps > 0 ? pinnedFee : null;
   // An input fee is a share of the amount swapped, known now. An output fee is a share of what the pool pays out,
   // known from the simulation below.
@@ -1707,7 +1754,7 @@ export async function executeSolanaSwap(plan, deps = {}) {
 export async function dryRunSolanaSwap(params, deps = {}) {
   const d = withDefaults(deps);
   const plan = await planSolanaSwap(params, d);
-  const verification = await verifySolanaSwapPlan(plan, { agent: plan.agent, from: plan.from, to: plan.to, amount_in: plan.amount_in }, d);
+  const verification = await verifySolanaSwapPlan(plan, { agent: plan.agent, from: plan.from, to: plan.to, amount_in: plan.amount_in, fee_bps: d.satoFeeBps }, d);
   const { swap_transaction: tx, ...rest } = plan;
   return { dry_run: true, chain: "solana", plan: d.includeTransaction ? plan : rest, verification, simulated: true, usd: plan.usd_estimate };
 }

@@ -739,6 +739,7 @@ async function prepareSolana(sized, deps) {
 /** A NeedsApproval that also says, in plain words, why a trade within the limits still needs the owner. */
 async function needsApproval(intent, reasons) {
   const err = new NeedsApproval(intent, await requestApproval(intent));
+  err.reason_codes = reasons.map((r) => r.code).filter(Boolean); // for the last-outcome note (src/last-outcome.js)
   if (reasons.length) {
     err.reasons = reasons.map((r) => r.text);
     err.message = `This swap needs the owner's approval even though the agent acts within its limits, because:\n${reasons.map((r) => `  - ${r.text}`).join("\n")}\n${err.message}`;

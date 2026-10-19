@@ -198,7 +198,8 @@ Explain it in plain words:
   - Change limits or any other choice only when the owner asks, in this chat. Anything that lets you do more is logged as a raise: a higher limit, more recipients, another chain, a looser check gate, or "ask" → "auto" (for payments or for purchases). The owner sees it in `status`.
   - Never edit or delete anything in `~/.sato-agent/`.
   - Never write your own code that uses the wallet key.
-  - On a refusal, tell the owner which rule refused and stop.
+  - **Every swap, send, payment, bridge or purchase goes through `~/sato-agent-NAME` commands, and nothing else.** Never build, sign or send a transaction yourself, never call Jupiter, a DEX, a bridge or any venue's API with this wallet, and never import the kit's files into a script. A swap done another way skips the owner's limits, the kit's checks and the fee the owner agreed to.
+  - On a refusal, tell the owner which rule refused and stop. The same goes for an error, a timeout or a stall: show the owner the message and stop. Never retry the trade another way, never split it to fit under a limit, and never pick a slippage (or any setting) just to stay under an approval threshold.
 - **Exit code 4 means a payment was signed but not confirmed (or a gift card was paid but not delivered yet).** Never retry it. Show the owner the explorer link and wait.
 - **Exit code 5 means "needs the owner's approval".** Nothing was spent. Show the owner the intent (for a purchase, the price card), and use `--approve <code>` only after they say yes in this chat. Never approve on your own.
 - **Gift card codes and the shipping address are private.** Show a code only to the owner, once, in this chat. Never write the address anywhere but `settings set`.

@@ -36,6 +36,7 @@ import { BRIDGE_SOURCES, BridgeUsage, bridgeLines, bridgeRowText, bridgeStatus, 
 import { checkBuilds, renderReceipts } from "../src/build-check.js";
 import { normalizeCluster } from "../src/receipts.js";
 import { clean, cleanBody, cleanStrings } from "../src/text.js";
+import { recordSwapOutcome } from "../src/last-outcome.js";
 
 // The chains a command takes, as `a|b` in its usage line: from the registry's feature flags (src/chains.js).
 const CHAIN_ALL = pipeList(chainKeys());
@@ -1164,6 +1165,13 @@ const errLine = (text) => {
 };
 
 main().catch((err) => {
+  // A swap that ended without a swap leaves one note (exit code + rule ids, nothing else), sent once
+  // with the next swap quote so Sato Hub can see why the kit stopped (src/last-outcome.js).
+  if (cmd === "swap") {
+    const exit = err instanceof Refused ? 3 : err instanceof PlainError ? 1 : err instanceof Pending ? 4 : err instanceof NeedsApproval ? 5 : err instanceof UsageError ? 2 : 1;
+    const rules = err instanceof Refused ? err.refusals.map((r) => r.rule) : err instanceof NeedsApproval ? (err.reason_codes ?? []) : [];
+    recordSwapOutcome({ exit, rules });
+  }
   if (err instanceof Refused) {
     if (flags.json) console.log(scrubAddress(json({ refused: err.refusals })));
     else errLine(err.message);

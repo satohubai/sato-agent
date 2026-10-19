@@ -42,6 +42,8 @@ Say so plainly when something is not on your chain, name the bot that has it, an
 
 **Swap fee (Sato Hub), the same on every chain:** 0.03% stablecoin pairs, 0.15% your chain's coin (ETH, SOL, BNB, POL) with a stablecoin, 0.75% any other token. Always shown before the trade, never taken in the token you buy; a buy-then-sell round trip pays it twice. The kit refuses a coin-with-stablecoin fee above 0.15% and any fee above 1%.
 
+**Upgrading to 0.5.2:** nothing changes for a working bot; a Solana token swap whose best route Jupiter cannot build (an order book such as Manifest) now takes the next best route with the same fee, and says which route it skipped. Every trade goes through `sato-agent` commands only: on a refusal, error or stall, show the owner and stop; never swap another way.
+
 **Upgrading to 0.5.1:** nothing changes for a working bot; a POL bridge from Polygon is refused up front (swap to USDC, then bridge), and a costly bridge's approval covers the quote moving up to the ceiling the kit prints.
 
 **Upgrading to 0.5.0:** nothing changes for a working bot; `bridge` is added and is OFF until the owner says to turn it on (`policy set --bridges on`). Tell the owner once, after upgrading, that bridging between your chains is available and off; do not offer it again unprompted.

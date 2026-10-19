@@ -51,7 +51,7 @@ Each Bot keeps its own wallet, limits and ledger, even on the same Grok Bot comp
 ## Quickstart (any machine)
 
 ```sh
-npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.5.1
+npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.5.2
 alias sato-agent=~/.sato-agent-cli/node_modules/.bin/sato-agent
 # npm may print "ERESOLVE overriding peer dependency" three times (the Solana x402
 # library's helpers ask for an older @solana/kit). That is expected; the tests run on these versions.
@@ -101,6 +101,8 @@ sato-agent buy "solana:<recipient>?amount=5&spl-token=EPjFWdd5AufqSSqeM2qN1xzyba
 | `status` | Limits, spend in the last 24 hours, limit changes, recent spends |
 
 Add `--json` to any command for machine-readable output.
+
+**Upgrading to v0.5.2:** nothing changes for a working agent. A Solana token swap whose best route Jupiter cannot build with shared accounts (an order book such as Manifest or Hadron, common for pump.fun tokens) used to fail every time; the kit now re-quotes without those venues (up to three rounds), with the same Sato Hub fee, and says which route it skipped and what that route quoted. A Solana swap without Sato Hub's fee is never built, verified or signed, whoever calls the kit's code. A `swap` that stops leaves a note of why (exit code and rule ids only; see "What is reported"). The package exports nothing but `package.json`: the CLI is the interface.
 
 **Upgrading to v0.5.1:** nothing changes for a working agent. `bridge` refuses a POL bridge from Polygon up front, with the way round it (swap to USDC, then bridge), instead of after the quote; and an approval for a bridge that costs more than 3% is bound to a cost ceiling (what the owner saw, rounded up, plus 2 points; printed with the code) rather than to the exact percent, so a quote that moves a point between the yes and the run does not ask again.
 

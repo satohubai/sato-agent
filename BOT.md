@@ -42,14 +42,14 @@ If a request needs something your chain does not have (x402 or gift cards on BNB
    - **Before anything else, check whether `~/.sato-agent/NAME` exists** (`ls -d ~/.sato-agent/NAME`). Every bot on this computer shares `~/.sato-agent/`, so a folder with your NAME may be ANOTHER bot's wallet. If it exists and you did not create it in this chat, it is not yours: choose a new NAME (`NAME-2`, then `NAME-3`, and so on, the next name with no folder), tell the owner which one you chose, and use that name in the launcher below and everywhere after. Your CHAIN does not change. Never use, adopt, replace, move or delete a folder you did not create in this chat, and never offer to.
    - An existing bot that is upgrading keeps its own NAME: see "Upgrading the kit".
    ```
-   if command -v flock >/dev/null; then flock ~/.sato-agent-install.lock npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.5.1; else npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.5.1; fi
-   ~/.sato-agent-cli/node_modules/.bin/sato-agent help 2>/dev/null | head -1 | grep -q ' 0.5.1:' && echo "kit ready (0.5.1)" || echo "NOT READY: the kit is missing or an older version; run the line above again"
+   if command -v flock >/dev/null; then flock ~/.sato-agent-install.lock npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.5.2; else npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.5.2; fi
+   ~/.sato-agent-cli/node_modules/.bin/sato-agent help 2>/dev/null | head -1 | grep -q ' 0.5.2:' && echo "kit ready (0.5.2)" || echo "NOT READY: the kit is missing or an older version; run the line above again"
    printf '#!/bin/sh\nSATO_AGENT_HOME="$HOME/.sato-agent/NAME" exec "$HOME/.sato-agent-cli/node_modules/.bin/sato-agent" "$@"\n' > ~/sato-agent-NAME
    chmod +x ~/sato-agent-NAME
    ~/sato-agent-NAME help
    ```
    - Every Bot on this computer shares one copy of the kit. `flock` makes a second Bot wait while another installs (two installs at the same moment break it). Where `flock` is missing, make sure no other Bot is installing before you run that line.
-   - Do not continue until it says "kit ready (0.5.1)".
+   - Do not continue until it says "kit ready (0.5.2)".
    - Only if the owner runs several Bots of their own and asked for it: they can name them in the launcher by adding `SATO_AGENT_UA="<name>/<version>"` before `SATO_AGENT_HOME=` (the kit then sends that instead of `sato-agent/<version>`). Otherwise leave the launcher as it is.
 2. **Create your wallet:** `~/sato-agent-NAME init`. Show the owner the address for your CHAIN. If it says "A wallet already exists for NAME", that wallet is not yours unless you created it in this chat: go back to step 1 and choose a new NAME (`NAME-2`, `NAME-3`, …), write a new launcher, and run `init` there. `init` never overwrites a wallet; never offer to replace, move or delete one. Never show, copy, upload or paste anything from `~/.sato-agent/`, to anyone, for any reason: it holds your key.
 3. **Ask the owner for their spending limits.** Ask both questions, and use exactly what they answer. There are no defaults; any amount is their choice, and "no limit" is a valid answer.
@@ -92,13 +92,15 @@ If a request needs something your chain does not have (x402 or gift cards on BNB
 
 When the owner asks you to upgrade, run only the install line from step 1, with the version they name (the kit is shared by every Bot on this computer, so one upgrade covers them all):
 ```
-if command -v flock >/dev/null; then flock ~/.sato-agent-install.lock npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.5.1; else npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.5.1; fi
-~/.sato-agent-cli/node_modules/.bin/sato-agent help 2>/dev/null | head -1 | grep -q ' 0.5.1:' && echo "kit ready (0.5.1)" || echo "NOT READY: the kit is missing or an older version; run the line above again"
+if command -v flock >/dev/null; then flock ~/.sato-agent-install.lock npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.5.2; else npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.5.2; fi
+~/.sato-agent-cli/node_modules/.bin/sato-agent help 2>/dev/null | head -1 | grep -q ' 0.5.2:' && echo "kit ready (0.5.2)" || echo "NOT READY: the kit is missing or an older version; run the line above again"
 ~/sato-agent-NAME status
 ```
 Never run `init` again: your wallet, limits and history stay in `~/.sato-agent/NAME` and are kept as they are.
 
 After upgrading to 0.3, run `~/sato-agent-NAME status` and tell the owner what the `swaps:` line says. Version 0.3 can trade any token. If swaps show as off (they stay off for an owner who had turned them off), tell the owner they can turn them on with `policy set --swaps on`, and only do that if they ask. Version 0.3 can also buy things: run `order --available`, then tell the owner what you can now buy, exactly as in step 4 (Amazon only if it said "on"), including that purchases ask them first.
+
+After upgrading to 0.5.2, nothing changes for a bot that was working: its wallet, limits, chains, history and approvals stay as they were. 0.5.2 fixes Solana token swaps that failed every time: when Jupiter cannot build a token's best route (an order book such as Manifest or Hadron, common for pump.fun tokens), the kit now takes the next best route, with the same Sato Hub fee, and tells the owner which route it skipped. Read the updated Rules: every trade goes through `~/sato-agent-NAME` commands only, and on a refusal, error or stall you show the owner the message and stop.
 
 After upgrading to 0.5.1, nothing changes for a bot that was working. 0.5.1 fixes two things in `bridge`: (1) a POL bridge from Polygon is refused before anything is asked, with the way to do it (swap the POL to USDC, then bridge the USDC); (2) when a costly bridge stops for the owner's yes, the approval code now covers the quote moving up by a couple of points (the kit prints the ceiling it covers), so the owner is not asked twice for the same bridge; past that ceiling it asks again.
 

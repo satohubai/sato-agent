@@ -1369,7 +1369,8 @@ export async function verifyBaseSwapPlan(response, intent, deps = {}) {
     router: getAddress(tx.to),
     tx: { to: getAddress(tx.to), data: tx.data, value: facts.value, gas_hint: uintOf(tx.gas) },
     approval: { needed: approvalNeeded, token: intent.tokenIn.native ? null : intent.tokenIn.address, spender: router, amount: intent.amountIn, allowance_before: allowance },
-    fee: { bps: response.sato_fee_bps, tier: tierOf(intent), recipient: getAddress(response.sato_fee_recipient), disclosure: response.disclosure, side: facts.feeSide, side_disclosed: facts.feeSideDisclosed, seen_in_simulation: sim.fee_seen },
+    // the tier Sato Hub DISCLOSED (checked above: present, not dearer than the kit's reading, and the fee is its published rate)
+    fee: { bps: response.sato_fee_bps, tier: response.sato_fee_tier, recipient: getAddress(response.sato_fee_recipient), disclosure: response.disclosure, side: facts.feeSide, side_disclosed: facts.feeSideDisclosed, seen_in_simulation: sim.fee_seen },
     /** Which side is the long-tail token: "in" (selling it), "out" (buying it) or null (USDC <-> ETH/WETH). */
     long_tail: intent.longTail,
     major_leg: majorLeg,

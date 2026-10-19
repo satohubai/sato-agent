@@ -19,8 +19,8 @@
 // The kit classifies the pair itself (it already knows which side is a major and which a long-tail token). Sato Hub's
 // majors are a wider set (USDT, DAI, ...), so its disclosed tier may be CHEAPER than the kit's reading: that is accepted,
 // held to the ceiling of the tier Sato Hub claimed (a "stable" claim can never charge 0.75%). A disclosed tier MORE
-// expensive than the kit's reading is an overcharge and is refused (`fee_tier_mismatch`). Without a disclosed tier the
-// kit's own is used. The fee side is always decided by the kit's own majors (USDC / ETH / WETH / SOL), whatever the tier.
+// expensive than the kit's reading is an overcharge and is refused (`fee_tier_mismatch`). A quote without a disclosed
+// tier is refused (`fee_tier_missing`); the kit's own reading is no stand-in. The fee side is always decided by the kit's own majors (USDC / ETH / WETH / SOL), whatever the tier.
 // Where the fee is taken is unchanged: always on the major side, never in the long-tail token (checked elsewhere).
 
 import { DEFAULT_EVM_CHAIN, getChain, orList, stableSymbols } from "../chains.js";
@@ -36,7 +36,10 @@ export const TIER_CEILING_BPS = Object.freeze({ stable: 3, major: MAJOR_FEE_CEIL
 export const FEE_TIERS = Object.freeze(["stable", "major", "token"]);
 /** The tier of a bridge, which the swap tiers above never take. */
 export const BRIDGE_FEE_TIER = "cross_chain";
-/** Sato Hub's published rate per tier, for display and docs only: the kit enforces the ceilings above, not these. */
+/**
+ * Sato Hub's published rate per tier. Since v0.5.3 the kit ENFORCES these: a disclosed fee must equal the rate of its disclosed tier
+ * (below it `fee_below_tier`). The rates are pinned in the kit, so a Sato Hub price change must ship in a kit release first.
+ */
 export const PUBLISHED_FEE_BPS = Object.freeze({ stable: 3, major: 15, token: 75, cross_chain: 25 });
 const NO_FEE_WORDS = "Sato Hub's quote states no fee for this swap; the kit only signs a swap that carries the disclosed fee. Tell the owner; do not swap another way.";
 /** Stablecoins among the kit's majors: the stables of every chain in src/chains.js (today USDC). */

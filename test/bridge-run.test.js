@@ -491,7 +491,7 @@ test("Sato Hub's launch pause (P0) is shown as sato_paused with the server's rea
   const w = world({ hubReply: () => ({ structured: pausedBody, isError: false }), verifySignature: async () => { throw new Error("must not be reached"); } });
   const err = await B.runBridge(req(), {}, w.deps).then(() => null, (e) => e);
   assert.deepEqual(err.refusals.map((r) => r.rule), ["sato_paused"]);
-  assert.equal(err.refusals[0].message, "Sato Hub has paused bridges for the launch. Nothing was built or signed. Try again later; do not bridge another way.");
+  assert.equal(err.refusals[0].message, "Sato Hub says: Sato Hub has paused bridges for the launch. Nothing was built or signed. Try again later; do not bridge another way.");
   assert.equal(w.state.sent.length, 0);
   assert.equal(w.seen.verify.length, 0);
 });
@@ -505,7 +505,8 @@ test("the kit looks at what the order check returned too: a wrong contract, valu
     [{ factsExtra: { feeBps: 26 } }, "fee_over_ceiling"],
     [{ factsExtra: { feeBps: 0 } }, "fee_missing"],
     [{ factsExtra: { feeBps: 10 } }, "fee_below_tier"],
-    [{ factsExtra: { feeBps: null } }, "fee_over_ceiling"],
+    [{ factsExtra: { feeBps: null } }, "fee_amount_mismatch"],
+    [{ factsExtra: { feeBps: 12.5 } }, "fee_amount_mismatch"],
     [{ factsExtra: { takeAmount: 0n } }, "bridge_take_mismatch"],
   ];
   for (const [o, rule] of cases) {

@@ -36,5 +36,6 @@ export function satoPausedMessage(body, action = "swap") {
   if (!body || typeof body !== "object" || body.withheld?.rule !== "P0") return null;
   let reason = typeof body.withheld.reason === "string" ? clean(body.withheld.reason, 200) : "";
   if (reason && !/[.!?…]$/.test(reason)) reason += ".";
-  return `${reason ? `${reason} ` : "Sato Hub has paused swaps and bridges for now. "}Nothing was built or signed. Try again later; do not ${action === "bridge" ? "bridge" : "swap"} another way.`;
+  // The reason is the server's own text, read before its signature is checked (nothing is signed either way): say whose words it is.
+  return `${reason ? `Sato Hub says: ${reason} ` : "Sato Hub has paused swaps and bridges for now. "}Nothing was built or signed. Try again later; do not ${action === "bridge" ? "bridge" : "swap"} another way.`;
 }

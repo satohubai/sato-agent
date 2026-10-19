@@ -472,6 +472,8 @@ test("tiered fee (rc.3): a token pair may cost 0.75% (and up to 1%); 101 bps is 
     // as "major" or "stable" it is held to 0.15%, so 75 bps under that claim is refused.
     const { plan: cheaper } = await verifyLT(name, { feeSide, edit: at(15, "major") });
     assert.equal(cheaper.fee.bps, 15);
+    assert.equal(cheaper.fee.tier, "major", "the plan shows the tier Sato Hub disclosed, not the kit's own reading (token)");
+    assert.equal(evm.summarizeBaseSwapPlan(cheaper).sato_fee.tier, "major");
     // (A 3 bps "stable" claim is covered in test/fee-tier.test.js: the recorded simulation here pays 15 bps, which the kit
     // rightly refuses against a 3 bps disclosure as fee_exceeds_disclosed.)
     assert.deepEqual(await rules(verifyLT(name, { feeSide, edit: at(3, "stable") })), ["fee_exceeds_disclosed"], name);

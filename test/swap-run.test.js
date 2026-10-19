@@ -100,7 +100,7 @@ test("Sato Hub's launch pause (P0) is shown as sato_paused with the server's rea
   const deps = { oraclePrice: solPrice(110), callTool: async () => ({ structured: paused, isError: false }), verifySignature: async () => { throw new Error("must not be reached"); } };
   const err = await prepareSwap({ chain: "solana", from: "USDC", to: "SOL", amount: "11" }, deps).then(() => null, (e) => e);
   assert.deepEqual(err.refusals.map((r) => r.rule), ["sato_paused"]);
-  assert.match(err.refusals[0].message, /^Sato Hub has paused swaps for the launch\. \[31m Back soon\. Nothing was built or signed\. Try again later; do not swap another way\.$/);
+  assert.match(err.refusals[0].message, /^Sato Hub says: Sato Hub has paused swaps for the launch\. \[31m Back soon\. Nothing was built or signed\. Try again later; do not swap another way\.$/);
   assert.doesNotMatch(err.refusals[0].message, /\u001b|chose none|jupiter only/i);
   // a long reason is cut; a withheld block that is not the pause is not mistaken for it
   const long = { ...paused, withheld: { rule: "P0", reason: "x".repeat(500) } };

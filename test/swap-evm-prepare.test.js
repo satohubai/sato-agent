@@ -114,7 +114,7 @@ test("Sato Hub's launch pause (P0) is shown as sato_paused with the server's rea
   const r = rig("bnb", "stable-to-stable", { editResponse: (res) => { for (const k of Object.keys(res)) delete res[k]; Object.assign(res, paused); } });
   const err = await prepareSwap(r.req, r.deps).then(() => null, (e) => e);
   assert.deepEqual(err.refusals.map((x) => x.rule), ["sato_paused"]);
-  assert.equal(err.refusals[0].message, "Sato Hub has paused swaps for the launch. Nothing was built or signed. Try again later; do not swap another way.");
+  assert.equal(err.refusals[0].message, "Sato Hub says: Sato Hub has paused swaps for the launch. Nothing was built or signed. Try again later; do not swap another way.");
   assert.equal(r.executed.length, 0);
 });
 

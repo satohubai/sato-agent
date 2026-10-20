@@ -532,7 +532,7 @@ test("slippage is picked per trade: 50 bps between majors, 150 with a token, plu
 });
 
 test("the thresholds: 300 bps of slippage, 300 bps of price impact, a 3% Base value gap and a 300 bps sell-back loss are the lines; one step over asks", async () => {
-  assert.deepEqual(CONFIRM, { slippageBps: 300, priceImpactBps: 300, valueGapPct: 3, sellBackLossBps: 300 });
+  assert.deepEqual(CONFIRM, { slippageBps: 300, priceImpactBps: 300, valueGapPct: 3, sellBackLossBps: 300, hubQuoteGapBps: 300 });
   owner();
   const at = async (req, plan, deps) => (await prepareSwap(req, deps(plan))).confirm.map((c) => c.code);
   // slippage
@@ -1061,4 +1061,57 @@ test("a non-ASCII token symbol is flagged on the card, and the card names the to
   const plain = await describeToken(DEGEN, {}, { ...hubless, resolveBaseToken: async () => ({ ...degenToken }) });
   assert.equal(plain.symbol_non_ascii, false);
   assert.equal(plain.label, "DEGEN 0x4ed4…efed");
+});
+
+test("EVM token SALE: Sato Hub's amount_out is compared with the kit's own KyberSwap public quote; more than 3% worse (fee added back) needs the owner", async () => {
+  owner();
+  // sellPlan pays 19_900_000 USDC base units after Sato's 15 bps fee on the output: 19_929_894 before it.
+  const run = (publicOut, extra = {}) => prepareSwap(DEGEN_SELL, baseRig(sellPlan(), { publicQuote: async () => publicOut, ...extra }).deps);
+  // equal, better, and a public quote only slightly above: nothing is asked
+  for (const pub of [19_929_894n, 19_000_000n, 20_000_000n]) {
+    const p = await run(pub);
+    assert.deepEqual(p.confirm.map((c) => c.code), [], String(pub));
+    assert.equal(p.display.independent_quote.compared, true);
+  }
+  // exactly 3.00% below: not over the line; one step over it asks, and the reason names the band
+  const at = await run(20_546_200n); // gap = 299.99 bps
+  assert.deepEqual(at.confirm.map((c) => c.code), []);
+  const over = await run(20_547_500n);
+  assert.deepEqual(over.confirm.map((c) => c.code), ["hub_quote_below_public_over_3_pct_upto_4pct"]);
+  assert.match(over.confirm[0].text, /Sato Hub's quote pays 3\.0\d*% less than KyberSwap's own public quote/);
+  assert.equal(over.display.independent_quote.hub_below_public_bps > 300, true);
+  assert.match(swapLines(over.display).join("\n"), /Independent quote: KyberSwap's public quote.*pays 20\.5475 USDC.*% below the public one/);
+  // a much worse Sato Hub quote lands in a worse band: another approval
+  const bad = await run(25_000_000n);
+  assert.deepEqual(bad.confirm.map((c) => c.code), ["hub_quote_below_public_over_3_pct_upto_21pct"]);
+  // it stops for the owner in auto mode (exit 5) with the reason, is never silently refused, and an approved re-run goes ahead
+  const err = await needs(runSwap(DEGEN_SELL, {}, baseRig(sellPlan(), { publicQuote: async () => 25_000_000n }).deps));
+  assert.ok(err instanceof NeedsApproval);
+  assert.deepEqual(err.intent.confirm_reasons, ["hub_quote_below_public_over_3_pct_upto_21pct"]);
+  assert.match(err.message, /Sato Hub's quote pays 20\.\d+% less than KyberSwap's own public quote/);
+  const ok = await runSwap(DEGEN_SELL, { approve: err.approval.code }, baseRig(sellPlan(), { publicQuote: async () => 25_000_000n }).deps);
+  assert.equal(ok.prepared.confirm.length, 1);
+  // the dry run says it would need approval
+  assert.equal((await runSwap(DEGEN_SELL, { dryRun: true }, baseRig(sellPlan(), { publicQuote: async () => 25_000_000n }).deps)).prepared.confirm.length, 1);
+  // ETH out: compared in ETH units
+  const ethPlan = baseTokenPlan({ side: "sell", major: "ETH", majorUnits: 8n * 10n ** 15n, tokenUnits: 5000n * 10n ** 18n, usd: 20 });
+  const ethLow = await prepareSwap({ chain: "base", from: DEGEN, to: "ETH", amount: "5000" }, baseRig(ethPlan, { publicQuote: async () => 9n * 10n ** 15n }).deps);
+  assert.deepEqual(ethLow.confirm.map((c) => c.code), ["hub_quote_below_public_over_3_pct_upto_11pct"]);
+});
+
+test("EVM token SALE: no public quote means no comparison, said plainly (never a made-up pass); a buy and a major pair are not compared", async () => {
+  owner();
+  for (const pub of [null, 0n, undefined]) {
+    const p = await prepareSwap(DEGEN_SELL, baseRig(sellPlan(), { publicQuote: async () => pub }).deps);
+    assert.deepEqual(p.confirm.map((c) => c.code), []);
+    assert.equal(p.display.independent_quote.compared, false);
+    assert.match(swapLines(p.display).join("\n"), /Note: no independent KyberSwap quote could be read/);
+  }
+  const down = await prepareSwap(DEGEN_SELL, baseRig(sellPlan(), { publicQuote: async () => { throw new Error("kyber down"); } }).deps);
+  assert.equal(down.display.independent_quote.compared, false);
+  const buy = await prepareSwap(DEGEN_BUY, baseRig(buyPlan()).deps);
+  assert.equal(buy.display.independent_quote, undefined);
+  assert.doesNotMatch(swapLines(buy.display).join("\n"), /Independent quote/);
+  const major = await prepareSwap({ chain: "base", from: "USDC", to: "ETH", amount: "50" }, { oraclePrice: eth(2500), planAndVerifyBaseSwap: async () => basePlan({ sellAmount: 50, quoted: 0.0199, usd: 50 }), baseDeps: {} });
+  assert.equal(major.display.independent_quote, undefined);
 });

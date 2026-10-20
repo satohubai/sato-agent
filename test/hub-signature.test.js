@@ -3,9 +3,10 @@
 // the network, and none may: every live swap call writes a public record.
 
 import assert from "node:assert/strict";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test, { beforeEach } from "node:test";
-import { HubSignatureError, JWKS_URL, canonicalJson, resetJwksCache, verifyHubSignature } from "../src/hub-signature.js";
+import { HubSignatureError, JWKS_URL, PINNED_HUB_KEYS, canonicalJson, resetJwksCache, verifyHubSignature } from "../src/hub-signature.js";
 
 const load = (name) => JSON.parse(readFileSync(new URL(`./fixtures/hub/${name}`, import.meta.url), "utf8"));
 const real = () => load("swap.json");
@@ -149,4 +150,61 @@ test("canonicalJson matches the server's definition", () => {
   assert.equal(canonicalJson("a\"b"), '"a\\"b"');
   assert.equal(canonicalJson(undefined), "null");
   assert.equal(canonicalJson({ f() {}, n: 1.5 }), '{"n":1.5}');
+});
+
+// ---- the pinned key set (v0.5.4): the live JWKS can only deliver a key this kit version already knows
+
+/** A second Sato-style signing key and a response signed with it (what a rotation would look like). */
+function rotated() {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const x = publicKey.export({ format: "jwk" }).x;
+  const kid = createHash("sha256").update(Buffer.from(x, "base64url")).digest("hex").slice(0, 8);
+  const body = { ...real() };
+  body.meta = { ...body.meta };
+  delete body.meta.signature;
+  const signedAt = new Date(signedAtMs).toISOString();
+  const message = Buffer.concat([Buffer.from(signedAt, "utf8"), Buffer.from([0x0a]), Buffer.from(canonicalJson(body), "utf8")]);
+  body.meta.signature = { alg: "EdDSA", kid, sig: sign(null, message, privateKey).toString("base64url"), signed_at: signedAt };
+  return { body, kid, x, jwks: { keys: [{ kty: "OKP", crv: "Ed25519", x, kid, alg: "EdDSA", use: "sig" }] } };
+}
+
+test("the kit ships Sato Hub's current key id, and it is the hash of its public key", () => {
+  assert.deepEqual(Object.keys(PINNED_HUB_KEYS), ["b04bd38b"]);
+  for (const [kid, x] of Object.entries(PINNED_HUB_KEYS)) assert.equal(createHash("sha256").update(Buffer.from(x, "base64url")).digest("hex").slice(0, 8), kid);
+  assert.equal(PINNED_HUB_KEYS.b04bd38b, jwks.keys[0].x, "the recorded, real JWKS carries the pinned key");
+  assert.throws(() => { PINNED_HUB_KEYS.deadbeef = "x"; }, TypeError, "the set cannot be changed at run time");
+});
+
+test("a rotated key is refused with a plain 'upgrade the kit' message, and the network is not even asked", async () => {
+  const r = rotated();
+  assert.notEqual(r.kid, "b04bd38b");
+  // a perfectly valid signature by a key that the live JWKS publishes: still not a key this kit version knows
+  const err = await verifyHubSignature(r.body, { fetchImpl: noNetwork, now: signedAtMs }).catch((e) => e);
+  assert.ok(fails("unknown_kid")(err), String(err));
+  assert.match(err.message, new RegExp(`key ${r.kid}, which this version of the kit does not know`));
+  assert.match(err.message, /rotated its signing key: upgrade the kit/);
+  assert.match(err.message, /Nothing was signed/);
+  // the same with the JWKS injected
+  await assert.rejects(verifyHubSignature(r.body, { jwks: r.jwks, now: signedAtMs }), fails("unknown_kid"));
+  // a later kit release that pins the new key (alongside the old one) accepts it, and still accepts the old key's answers
+  const both = { ...PINNED_HUB_KEYS, [r.kid]: r.x };
+  assert.equal((await verifyHubSignature(r.body, { jwks: r.jwks, now: signedAtMs, pinned: both })).kid, r.kid);
+  assert.equal((await verifyHubSignature(real(), { jwks, now: signedAtMs, pinned: both })).kid, "b04bd38b");
+});
+
+test("a published key whose bytes differ from the pinned ones is refused even under the pinned kid", async () => {
+  // a key that only has the right 8-hex label is not enough: the pinned key itself is compared
+  const imposter = { keys: [{ ...jwks.keys[0], x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo" }] };
+  const err = await verifyHubSignature(real(), { jwks: imposter, now: signedAtMs, pinned: { b04bd38b: jwks.keys[0].x } }).catch((e) => e);
+  assert.ok(fails("unknown_kid")(err));
+  assert.match(err.message, /not the key this version of the kit has pinned/);
+  assert.match(err.message, /Upgrade the kit/);
+});
+
+test("an inherited property name is not a pinned kid", async () => {
+  const b = real();
+  b.meta.signature.kid = "constructor";
+  await assert.rejects(verifyHubSignature(b, { jwks, now: signedAtMs }), fails("unknown_kid"));
+  b.meta.signature.kid = "__proto__";
+  await assert.rejects(verifyHubSignature(b, { jwks, now: signedAtMs }), fails("unknown_kid"));
 });

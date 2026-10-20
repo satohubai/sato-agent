@@ -29,6 +29,17 @@ import { createHash, createPublicKey, verify } from "node:crypto";
 import { userAgent } from "./version.js";
 
 export const JWKS_URL = "https://satohub.ai/.well-known/jwks.json";
+/**
+ * The Sato Hub signing keys THIS version of the kit trusts, by kid, each with its raw public key (the JWK `x`). The live JWKS is
+ * only ever used to FETCH one of these: a signature under any other kid, or a published key whose bytes differ from the pinned
+ * ones, is refused, so a changed JWKS (a hijacked response, a cache, a proxy) cannot make the kit trust a new key. A kid is only
+ * 8 hex characters of the key's hash, so the key itself is pinned too. When Sato Hub rotates its key, a new kit release adds the
+ * new kid here (keep the old one while answers signed with it can still be in flight); an older kit refuses, and says to upgrade.
+ * Checked 2026-10-19 against https://satohub.ai/.well-known/jwks.json (active_kid in sato-signing.json: b04bd38b).
+ */
+export const PINNED_HUB_KEYS = Object.freeze({
+  b04bd38b: "O6p4TLC9-KCD0JOA8Uga4cpX5G56DhgOEE884qIk7Zg",
+});
 const FETCH_TIMEOUT_MS = 15_000;
 // A signed_at slightly ahead of our clock is clock skew, not a forged future.
 const CLOCK_SKEW_MS = 30_000;
@@ -36,6 +47,12 @@ const CLOCK_SKEW_MS = 30_000;
 // more than once a minute, so a stream of bad responses cannot hammer the endpoint.
 const REFETCH_MIN_INTERVAL_MS = 60_000;
 const JWKS_TTL_MS = 60 * 60_000; // the server sends max-age=3600
+
+/**
+ * For tests only: the pinned set that trusts exactly the keys of an injected JWKS (`{ keys: [{ kid, x }] }`). Production code never
+ * injects a JWKS, so it is always held to PINNED_HUB_KEYS; the order-quote code passes this alongside the `jwks` it is given.
+ */
+export const pinnedFromJwks = (jwks) => Object.fromEntries((Array.isArray(jwks) ? jwks : jwks?.keys ?? []).filter((k) => k && typeof k.kid === "string" && typeof k.x === "string").map((k) => [k.kid, k.x]));
 
 /** Why a response could not be shown to come from Sato Hub. `code` is stable; the message is for people. */
 export class HubSignatureError extends Error {
@@ -114,7 +131,7 @@ async function findJwk(kid, { jwks, fetchImpl, now }) {
  * `jwks` (a { keys } object) skips the network entirely; `now` and `fetchImpl`
  * exist so tests are offline and deterministic.
  */
-export async function verifyHubSignature(body, { fetchImpl = fetch, now = Date.now(), maxAgeMs = 10 * 60 * 1000, jwks } = {}) {
+export async function verifyHubSignature(body, { fetchImpl = fetch, now = Date.now(), maxAgeMs = 10 * 60 * 1000, jwks, pinned = PINNED_HUB_KEYS } = {}) {
   const sig = body?.meta?.signature;
   if (!sig || typeof sig !== "object") {
     throw new HubSignatureError("missing_signature", "this response is not signed by Sato Hub (meta.signature is missing or null); refusing to use it");
@@ -123,10 +140,19 @@ export async function verifyHubSignature(body, { fetchImpl = fetch, now = Date.n
     throw new HubSignatureError("bad_signature", "the signature block is malformed (expected alg EdDSA with kid, sig and signed_at)");
   }
 
+  // Only a key this kit version knows (before any network call). A rotated key is a reason to upgrade, never to trust the new one.
+  const pinnedX = pinned && Object.hasOwn(pinned, sig.kid) ? pinned[sig.kid] : null;
+  if (typeof pinnedX !== "string") {
+    throw new HubSignatureError("unknown_kid", `the response was signed with key ${sig.kid}, which this version of the kit does not know (it knows ${Object.keys(pinned ?? {}).join(", ") || "none"}). Sato Hub may have rotated its signing key: upgrade the kit before swapping or bridging. Nothing was signed.`);
+  }
+
   const jwk = await findJwk(sig.kid, { jwks, fetchImpl, now });
   if (!jwk) throw new HubSignatureError("unknown_kid", `the response was signed with key ${sig.kid}, which is not in Sato Hub's published keys`);
   if (jwk.kty !== "OKP" || jwk.crv !== "Ed25519" || typeof jwk.x !== "string") {
     throw new HubSignatureError("unknown_kid", `key ${sig.kid} in the published keys is not an Ed25519 key`);
+  }
+  if (jwk.x !== pinnedX) {
+    throw new HubSignatureError("unknown_kid", `the published key ${sig.kid} is not the key this version of the kit has pinned for that id; Sato Hub's published keys changed. Upgrade the kit before swapping or bridging. Nothing was signed.`);
   }
   // A kid is a label. It must also be the hash of the key it names.
   if (createHash("sha256").update(b64u(jwk.x)).digest("hex").slice(0, 8) !== sig.kid) {

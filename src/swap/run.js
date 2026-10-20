@@ -57,7 +57,9 @@ const tierOfSized = (sized) => pairTier(sized.fromAsset.kind === "major" ? sized
 const DISCLOSURE_MAX_AGE_MS = 120_000;
 
 /** When a trade stops for the owner's approval even in auto mode. Whole basis points, except the Base value gap (percent). */
-export const CONFIRM = Object.freeze({ slippageBps: 300, priceImpactBps: 300, valueGapPct: 3, sellBackLossBps: 300 });
+export const CONFIRM = Object.freeze({ slippageBps: 300, priceImpactBps: 300, valueGapPct: 3, sellBackLossBps: 300, hubQuoteGapBps: 300 });
+// hubQuoteGapBps (EVM token SALES): how much worse than KyberSwap's own public quote for the same sale (read by the kit, before
+// Sato Hub is asked) Sato Hub's signed amount_out may be, with Sato's disclosed fee added back, before the owner must approve.
 /** The most slippage the kit ever signs (also the most an owner's cap can be). */
 export const SLIPPAGE_HARD_CAP_BPS = 500;
 /** The slippage picked per trade when neither the owner's flag nor the owner's cap says: between majors, and with a token. */
@@ -448,7 +450,7 @@ function oracleDisplay(sized, deviation) {
  * answer skips this, and the figure from Sato Hub's own quote is sized and checked again after it (the real check).
  */
 async function presizeTokenSale(sized, deps) {
-  if (sized.longTail !== "in") return;
+  if (sized.longTail !== "in") return null;
   let out = null;
   try {
     if (deps.publicQuote) out = await deps.publicQuote(sized);
@@ -457,11 +459,45 @@ async function presizeTokenSale(sized, deps) {
   } catch {
     out = null;
   }
-  if (out === null || out === undefined) return;
+  if (out === null || out === undefined) return null;
   const whole = Number(out) / 10 ** sized.toAsset.decimals;
   const usd = roundUsd(isStableAsset(sized.chain, sized.toAsset) ? whole : whole * (sized.oracle?.usd ?? NaN));
-  if (!(usd > 0)) return;
-  recheckLimits(sized, usd, deps);
+  if (usd > 0) recheckLimits(sized, usd, deps);
+  return out; // the venue's own figure, kept for the comparison with Sato Hub's quote (EVM sales)
+}
+
+/**
+ * The independent price check on an EVM token SALE: Sato Hub's signed amount_out against the KyberSwap public quote the kit read
+ * itself before Sato Hub was asked. Sato Hub's figure is net of its own fee, so the disclosed fee is added back first (the fee has
+ * its own checks; this is about the route). Returns the figures for the display, and a reason for the owner when Sato Hub's quote
+ * pays more than CONFIRM.hubQuoteGapBps below the public one. A better quote, or an equal one, never asks. With no public quote
+ * (the venue gave none) nothing can be compared: the display says so, plainly. Unit-exact (bigint) arithmetic; a figure that is
+ * not a whole number of base units counts as no public quote.
+ */
+function independentQuoteCheck(plan, publicOut, sized) {
+  if (sized.longTail !== "in") return { independent: null, reasons: [] };
+  const dec = sized.toAsset.decimals;
+  const text = (units) => unitsToText(units, dec);
+  let pub = null;
+  try {
+    pub = publicOut === null || publicOut === undefined ? null : BigInt(publicOut);
+  } catch {
+    pub = null;
+  }
+  if (pub === null || pub <= 0n || typeof plan.quoted_out !== "bigint" || plan.quoted_out <= 0n) {
+    return { independent: { compared: false, note: "no independent KyberSwap quote could be read, so Sato Hub's quote for this sale was not compared with one" }, reasons: [] };
+  }
+  const feeBps = BigInt(Number.isInteger(plan.fee?.bps) ? plan.fee.bps : 0);
+  const hubGross = (plan.quoted_out * 10_000n) / (10_000n - feeBps); // Sato's quote before its own fee
+  // Exact: over the line means strictly more than hubQuoteGapBps below; the figure shown has one decimal (basis points).
+  const over = (pub - hubGross) * 10_000n > BigInt(CONFIRM.hubQuoteGapBps) * pub;
+  const gapBps = pub > hubGross ? Number(((pub - hubGross) * 100_000n) / pub) / 10 : 0;
+  const independent = { compared: true, source: "KyberSwap's public quote, read by the kit before Sato Hub was asked", public_out: text(pub), sato_hub_out_before_fee: text(hubGross), sato_hub_out: text(plan.quoted_out), asset: sized.to, hub_below_public_bps: gapBps, allowed_bps: CONFIRM.hubQuoteGapBps };
+  const reasons =
+    over
+      ?[reason(`hub_quote_below_public_over_3_pct_${band(gapBps / 100)}`, `Sato Hub's quote pays ${gapBps / 100}% less than KyberSwap's own public quote for the same sale (${text(hubGross)} against ${text(pub)} ${sized.to}, before Sato Hub's fee), above ${CONFIRM.hubQuoteGapBps / 100}%`)]
+      : [];
+  return { independent, reasons };
 }
 
 /** Re-check the owner's caps once the size is known from the quote. Throws Refused. */
@@ -588,7 +624,7 @@ export async function prepareSwap(req, deps = {}) {
 
 async function prepareEvm(sized, deps) {
   const baseDeps = evmDeps(deps, sized.chain);
-  await presizeTokenSale(sized, deps); // before Sato Hub is asked: its quote writes a public record
+  const publicOut = await presizeTokenSale(sized, deps); // before Sato Hub is asked: its quote writes a public record
   const plan = await (deps.planAndVerifyBaseSwap ?? evm.planAndVerifyBaseSwap)(
     { from: sized.fromAsset.arg, to: sized.toAsset.arg, amount: sized.amount, slippageBps: sized.slippageBps },
     // A token sale has no USD figure before the quote; nothing made up is sent to Sato Hub.
@@ -622,7 +658,8 @@ async function prepareEvm(sized, deps) {
 
   // A major pair is held to the independent price; a token has none.
   const deviation = sized.longTail ? null : checkAgainstOracle(sized, impliedPrice(sized, Number(s.sell.amount), Number(s.buy.quoted)));
-  const confirm = merge(sized.confirm, baseConfirm(plan));
+  const { independent, reasons: independentReasons } = independentQuoteCheck(plan, publicOut, sized);
+  const confirm = merge(sized.confirm, baseConfirm(plan), independentReasons);
   return {
     sized,
     confirm,
@@ -633,6 +670,7 @@ async function prepareEvm(sized, deps) {
       usd_held_to_limits: held,
       usd_basis: basis,
       oracle: oracleDisplay(sized, deviation),
+      ...(independent ? { independent_quote: independent } : {}),
       ...(isStablePair(sized) ? { stable_peg: { deviation_pct: deviation, tolerance_pct: STABLE_PEG_TOLERANCE_PCT } } : {}),
       confirm_reasons: confirm,
       notes: sized.notes,
@@ -848,6 +886,10 @@ export function swapLines(d) {
     if (typeof m.value_gap_pct === "number") lines.push(`Value gap: the route values what you give at $${m.amount_in_usd} and what you get at $${m.amount_out_usd}, ${m.value_gap_pct}% apart (this includes pool fees, Sato Hub's fee and gas; it is not a pure price impact).`);
     if (typeof m.price_impact_pct === "number") lines.push(`Price impact reported by the route: ${m.price_impact_pct}%.`);
   }
+  if (d.independent_quote?.compared) {
+    const q = d.independent_quote;
+    lines.push(`Independent quote: KyberSwap's public quote, read by the kit before Sato Hub was asked, pays ${q.public_out} ${q.asset}; Sato Hub's quote is ${q.sato_hub_out} after its fee (${q.sato_hub_out_before_fee} before it)${q.hub_below_public_bps > 0 ? `, ${q.hub_below_public_bps / 100}% below the public one (the kit asks the owner above ${q.allowed_bps / 100}%)` : ", not below the public one"}.`);
+  } else if (d.independent_quote) lines.push(`Note: ${d.independent_quote.note}.`);
   if (d.sell_back) lines.push(`Sell-back test (simulated only, nothing sent): buying and selling straight back returns ${d.sell_back.returned} ${d.sell_back.asset} for ${d.sell_back.asset === d.sell.asset ? d.sell.amount : "the amount sold"}, a loss of ${d.sell_back.loss_bps / 100}% (the kit allows up to ${d.sell_back.allowed_loss_bps / 100}%).`);
   // The stablecoin and the volatile coin are this swap's own (USDC and "ETH or SOL" on Base and Solana, as in v0.3).
   const legacy = d.chain === DEFAULT_EVM_CHAIN || d.chain === "solana" || !isKnownChain(d.chain);

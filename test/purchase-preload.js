@@ -9,7 +9,12 @@
 //                                  at SATO_AGENT_BASE_RPC (https://base-rpc.test)
 
 import { encodePaymentRequiredHeader, encodePaymentResponseHeader, decodePaymentSignatureHeader } from "@x402/core/http";
+import { register } from "node:module";
 import { bitrefillWorld } from "./bitrefill-world.js";
+
+// The kit pins Sato Hub's real signing key; the test JWKS below is a throwaway key, so for this process only it is added to the
+// pinned set (a load hook rewrites the module as it loads; nothing in src/ has a way in).
+register("./stubs/pin-test-key-hooks.mjs", import.meta.url);
 
 const world = bitrefillWorld(JSON.parse(process.env.SATO_TEST_BITREFILL || "{}"));
 const hub = JSON.parse(process.env.SATO_TEST_HUB || "{}");

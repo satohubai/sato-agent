@@ -22,7 +22,7 @@
 
 import { createHash } from "node:crypto";
 import { MCP_URL } from "./satohub.js";
-import { canonicalJson, verifyHubSignature } from "./hub-signature.js";
+import { canonicalJson, pinnedFromJwks, verifyHubSignature } from "./hub-signature.js";
 import { loadPolicy } from "./policy.js";
 import { actions, record, release, reserve } from "./ledger.js";
 import { Pending, Refused, Rejected } from "./errors.js";
@@ -182,7 +182,7 @@ const usdcDecimals = (chain) => stableBySymbol(chain, "USDC").decimals;
 export async function verifyOrderQuote(body, ctx) {
   const now = ctx.now ?? Date.now();
   try {
-    await (ctx.verifySignature ?? verifyHubSignature)(body, { maxAgeMs: QUOTE_MAX_AGE_MS, now, ...(ctx.jwks ? { jwks: ctx.jwks } : {}) });
+    await (ctx.verifySignature ?? verifyHubSignature)(body, { maxAgeMs: QUOTE_MAX_AGE_MS, now, ...(ctx.jwks ? { jwks: ctx.jwks, pinned: pinnedFromJwks(ctx.jwks) } : {}) });
   } catch (err) {
     throw refuse("order_unsigned", `Sato Hub's order quote could not be shown to come from Sato Hub (${clean(err.message, 200)}); nothing was ordered or paid`);
   }
@@ -388,7 +388,7 @@ export async function orderStatus(orderId, { chain, payer }, deps = {}) {
   if (notEnabled(h)) throw NOT_ENABLED();
   if (h.status !== 200 || !h.json) throw new Error(`Sato Hub could not read order ${orderId} (HTTP ${h.status}${hubReason(h)})`);
   try {
-    await (d.verifySignature ?? verifyHubSignature)(h.json, { maxAgeMs: QUOTE_MAX_AGE_MS, ...(d.now ? { now: d.now() } : {}), ...(d.jwks ? { jwks: d.jwks } : {}) });
+    await (d.verifySignature ?? verifyHubSignature)(h.json, { maxAgeMs: QUOTE_MAX_AGE_MS, ...(d.now ? { now: d.now() } : {}), ...(d.jwks ? { jwks: d.jwks, pinned: pinnedFromJwks(d.jwks) } : {}) });
   } catch (err) {
     throw refuse("order_unsigned", `Sato Hub's status for order ${orderId} could not be shown to come from Sato Hub (${clean(err.message, 200)})`);
   }

@@ -215,15 +215,20 @@ const REGISTRY = deepFreeze({
     chainId: 137,
     caip2: "eip155:137",
     hubName: "Polygon",
-    // In order of what was seen to answer eth_simulateV1 (SPIKES.md, 2026-10-12): OnFinality did (and rate-limits about every second
-    // call), ZAN did (but blocks eth_call without an account, "cu limit exceeded", which moves the call on). The last three failed
-    // their TLS handshake from the research Mac (a path problem there, retest from the deploy host) and have never been seen to
-    // simulate, so they come after. Swaps need eth_simulateV1 and refuse without it, so a keyed provider (SATO_AGENT_POLYGON_RPC) is
-    // the dependable route. polygon-rpc.com was dropped 2026-10-15: it answers "API key disabled / tenant disabled". 1rpc.io/matic
-    // served receipts and logs from two hosts that day, but once relayed an eth_call to a paid x402 upstream ("Payment required"), so it
-    // comes last (it may not simulate either; a swap then moves on to the next endpoint).
+    // Probed read-only from the owner's Mac, 2026-10-19 (eth_blockNumber, eth_call latest and 20M blocks back, eth_getLogs, eth_simulateV1,
+    // 40 calls at 5 a second), the failover below keeps the rest:
+    //   rpc.sentio.xyz/matic         keyless; every method incl. eth_simulateV1; 40/40 at 5 a second; eth_call 20M blocks back; getLogs capped at 1000 blocks.
+    //   polygon-bor.publicnode.com   keyless; every method incl. eth_simulateV1; 40/40; eth_call far back needs a token ("Archive requests require a personal token", moves on).
+    //   137.rpc.thirdweb.com         keyless; every method incl. eth_simulateV1 and deep eth_call; 40/40, but slow (about 0.7 s a call).
+    //   polygon.api.onfinality.io    answers eth_simulateV1 but rate-limits (-32029) after about one call a second.
+    //   api.zan.top/polygon-mainnet  answers eth_simulateV1; blocks eth_call and eth_getLogs without an account ("cu limit exceeded") and 5 a second.
+    //   polygon-bor-rpc.publicnode.com, polygon.drpc.org, 1rpc.io/matic: failed their TLS handshake from that Mac (ERR_SSL_WRONG_VERSION_NUMBER,
+    //   a path problem there; other hosts of the same CDN worked), so they come last: they may well work elsewhere, and the list moves on from a
+    //   failure. 1rpc.io/matic once relayed an eth_call to a paid x402 upstream ("Payment required"), so it stays last.
+    // Dropped: polygon-rpc.com (2026-10-15: "API key disabled / tenant disabled"). Swaps need eth_simulateV1 and refuse without it, so an
+    // endpoint of the owner's own (SATO_AGENT_POLYGON_RPC) is still the dependable route. The one that last worked is tried first next time.
     rpcEnv: "SATO_AGENT_POLYGON_RPC",
-    rpcDefaults: ["https://polygon.api.onfinality.io/public", "https://api.zan.top/polygon-mainnet", "https://polygon-bor-rpc.publicnode.com", "https://polygon.drpc.org", "https://1rpc.io/matic"],
+    rpcDefaults: ["https://rpc.sentio.xyz/matic", "https://polygon-bor.publicnode.com", "https://137.rpc.thirdweb.com", "https://polygon.api.onfinality.io/public", "https://api.zan.top/polygon-mainnet", "https://polygon-bor-rpc.publicnode.com", "https://polygon.drpc.org", "https://1rpc.io/matic"],
     explorer: { url: "https://polygonscan.com", tx: "/tx/", address: "/address/" },
     native: { symbol: "POL", name: "Polygon Ecosystem Token", decimals: 18, oracle: "POL" },
     wrappedNative: { symbol: "WPOL", name: "Wrapped Polygon Ecosystem Token", address: "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270", decimals: 18 },

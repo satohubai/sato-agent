@@ -548,8 +548,11 @@ test("every EVM chain carries its own swap gas cap and says whether its gas need
   const caps = Object.fromEntries(chains.evmChainKeys().map((k) => [k, chains.getChain(k).simulation.swapGas]));
   assert.deepEqual(caps, { base: 2_000_000n, bnb: 2_000_000n, arbitrum: 2_000_000n, polygon: 5_000_000n });
   assert.deepEqual(Object.fromEntries(chains.evmChainKeys().map((k) => [k, chains.getChain(k).simulation.exactGasEstimate])), { base: false, bnb: false, arbitrum: true, polygon: false });
-  // the endpoints seen to answer eth_simulateV1 come first on Polygon
-  assert.deepEqual(chains.rpcUrls("polygon", {}).slice(0, 2), ["https://polygon.api.onfinality.io/public", "https://api.zan.top/polygon-mainnet"]);
+  // the keyless endpoints that answered every method (eth_simulateV1 included) come first on Polygon; the rate-limited ones after them
+  const polygon = chains.rpcUrls("polygon", {});
+  assert.deepEqual(polygon.slice(0, 3), ["https://rpc.sentio.xyz/matic", "https://polygon-bor.publicnode.com", "https://137.rpc.thirdweb.com"]);
+  assert.ok(polygon.indexOf("https://polygon.api.onfinality.io/public") > 2 && polygon.indexOf("https://api.zan.top/polygon-mainnet") > 2, "rate-limited endpoints are not first");
+  assert.equal(new Set(polygon).size, polygon.length, "no endpoint twice");
 });
 
 test("the usage text for --chains is the registry's, in every message that shows it", () => {

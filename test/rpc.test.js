@@ -318,7 +318,11 @@ test("the transport for a chain is its owner's endpoints, else the registry's li
   assert.ok(chainTransport("bnb"));
   assert.deepEqual(rpcUrls("bnb", {}), ["https://bsc-dataseed.bnbchain.org", "https://bsc-dataseed1.defibit.io", "https://bsc-dataseed1.ninicoin.io", "https://bsc.drpc.org"]);
   assert.deepEqual(rpcUrls("arbitrum", {}).slice(0, 3), ["https://arb1.arbitrum.io/rpc", "https://arbitrum-one-rpc.publicnode.com", "https://arbitrum.drpc.org"]);
-  assert.deepEqual(rpcUrls("polygon", {}), ["https://polygon.api.onfinality.io/public", "https://api.zan.top/polygon-mainnet", "https://polygon-bor-rpc.publicnode.com", "https://polygon.drpc.org", "https://1rpc.io/matic"], "the endpoints seen to answer eth_simulateV1 come first");
+  assert.deepEqual(
+    rpcUrls("polygon", {}),
+    ["https://rpc.sentio.xyz/matic", "https://polygon-bor.publicnode.com", "https://137.rpc.thirdweb.com", "https://polygon.api.onfinality.io/public", "https://api.zan.top/polygon-mainnet", "https://polygon-bor-rpc.publicnode.com", "https://polygon.drpc.org", "https://1rpc.io/matic"],
+    "keyless endpoints that answered every method (eth_simulateV1 included) come first; the rate-limited and the TLS-failing ones after",
+  );
   assert.deepEqual(rpcUrls("bnb", { SATO_AGENT_BNB_RPC: "http://a, http://b ,," }), ["http://a", "http://b"]);
   assert.deepEqual(rpcUrls("polygon", { SATO_AGENT_POLYGON_RPC: "https://mine" }), ["https://mine"]);
   assert.deepEqual(rpcUrls("arbitrum", { SATO_AGENT_ARBITRUM_RPC: "" }).length, 3);

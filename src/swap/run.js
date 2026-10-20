@@ -39,7 +39,7 @@ import { NeedsApproval, Refused } from "../errors.js";
 import { consumeApproval, requestApproval } from "../approvals.js";
 import { oraclePrice, oracleTolerancePct, quoteWithinOracle, PriceUnavailable } from "../price.js";
 import { DEFAULT_EVM_CHAIN, chainKeys, chainsWith, evmChain, evmChainKeys, getChain, isEvm, isKnownChain, isStableSymbol, labelOf, oracleChainOf, orList } from "../chains.js";
-import { callTool, looksLikeLink, resolveTokenViaHub, runCheck, swapGateRefusals } from "../satohub.js";
+import { callTool, gateTargetsText, gateView, looksLikeLink, resolveTokenViaHub, runCheck, swapGateRefusals } from "../satohub.js";
 import { verifyHubSignature } from "../hub-signature.js";
 import { addressFor, addresses } from "../wallet.js";
 import { usdcUnits, roundUsd } from "../amount.js";
@@ -557,9 +557,12 @@ async function satoSolanaDisclosure(sized, deps) {
     String(body.amount_in) !== amountIn && "amount_in",
   ].filter(Boolean);
   if (mismatch.length) throw refuse("response_mismatch", `Sato Hub's signed quote is about a different swap (${mismatch.join(", ")} differ); nothing was signed`);
-  // The owner's check gate (`policy set --check-gate`) applies to the verdict Sato Hub's signed answer carries, as it does on a
-  // send or a payment. Read only after the signature and the pair are verified; nothing is signed or asked of Jupiter before it.
-  const gateStop = swapGateRefusals(deps.policy ?? loadPolicy(), body.gate);
+  // The owner's check gate (`policy set --check-gate`) applies to the verdict Sato Hub's signed answer carries: a swap stops on `no`
+  // only (the Solana token lane has no `go`: it answers `caution` by design, which is shown, never a refusal), and on "the check
+  // can't say" when the owner chose that. Read only after the signature and the pair are verified; nothing is signed or asked of
+  // Jupiter before it.
+  const gateSeen = gateView(body.gate);
+  const gateStop = swapGateRefusals(deps.policy ?? loadPolicy(), gateSeen);
   if (gateStop.length) throw new Refused(gateStop);
   if (body.venue !== "jupiter-aggregator" && body.venue !== "jupiter") throw refuse("venue_unexpected", `Sato Hub chose ${body.venue ?? "no venue"}; this kit swaps on Solana through Jupiter only`);
   if (!Number.isInteger(body.sato_fee_bps)) throw refuse("fee_disclosure_missing", "Sato Hub's quote does not state its fee");
@@ -581,7 +584,7 @@ async function satoSolanaDisclosure(sized, deps) {
     throw refuse("fee_side_mismatch", `Sato Hub's signed quote takes its fee in ${clean(body.sato_fee_token, 60)}; the kit only accepts it in ${majorAsset.symbol}; nothing was signed`);
   }
   // `tier` is the tier Sato Hub DISCLOSED (feeTierRefusals above refused a missing or dearer one): the fee is held to its published rate.
-  return { feeBps: body.sato_fee_bps, tier: body.sato_fee_tier, disclosure: body.disclosure ?? null, route_id: body.route_id ?? null, receipt_url: body.receipt_url ?? null, side: body.sato_fee_side ?? null, referral: referralView(referrer, body.referral, body.sato_fee_bps) };
+  return { feeBps: body.sato_fee_bps, tier: body.sato_fee_tier, disclosure: body.disclosure ?? null, route_id: body.route_id ?? null, receipt_url: body.receipt_url ?? null, side: body.sato_fee_side ?? null, referral: referralView(referrer, body.referral, body.sato_fee_bps), gate: gateSeen };
 }
 
 // ---------------------------------------------------------------- prepare
@@ -630,10 +633,11 @@ async function prepareEvm(sized, deps) {
     // A token sale has no USD figure before the quote; nothing made up is sent to Sato Hub.
     { ...(sized.usd !== null ? { usdNotional: sized.usd } : { usdFromQuote: true }), referrer: referrerFor(deps), ...baseDeps },
   );
-  // The owner's check gate (`policy set --check-gate`) applies to the verdict Sato Hub's signed answer carries (plan.gate), as it
-  // does on a send, a payment and a Solana swap. Sato Hub's own gate already withholds the transaction on a `no`; this adds the
-  // owner's stricter `caution` choice and the "if the check can't say" choice. Nothing is signed before it.
-  const gateStop = swapGateRefusals(deps.policy ?? loadPolicy(), plan.gate);
+  // The owner's check gate (`policy set --check-gate`) applies to the verdict Sato Hub's signed answer carries (plan.gate), as on a
+  // Solana swap: for a swap it stops on `no` only (Sato Hub's swap gate answers `caution` on almost every swap by design; a caution
+  // is shown, see `sato_hub_gate`) and on "the check can't say" when the owner chose that. Nothing is signed before it.
+  const gateSeen = plan.gate_view ?? gateView(plan.gate);
+  const gateStop = swapGateRefusals(deps.policy ?? loadPolicy(), gateSeen);
   if (gateStop.length) throw new Refused(gateStop);
   const s = evm.summarizeBaseSwapPlan(plan);
 
@@ -671,6 +675,7 @@ async function prepareEvm(sized, deps) {
       usd_basis: basis,
       oracle: oracleDisplay(sized, deviation),
       ...(independent ? { independent_quote: independent } : {}),
+      ...(gateSeen ? { sato_hub_gate: gateSeen } : {}),
       ...(isStablePair(sized) ? { stable_peg: { deviation_pct: deviation, tolerance_pct: STABLE_PEG_TOLERANCE_PCT } } : {}),
       confirm_reasons: confirm,
       notes: sized.notes,
@@ -730,6 +735,7 @@ async function prepareSolana(sized, deps) {
     usd_basis: basis,
     sato_fee: { bps: fee.feeBps, tier: fee.tier, percent: feePercent(fee.feeBps), disclosure: fee.disclosure, route_id: fee.route_id, receipt_url: fee.receipt_url, side: fee.side ?? (plan.fee?.leg === "output" ? "out" : "in"), asset: plan.fee?.symbol ?? null },
     referral: fee.referral,
+    ...(fee.gate ? { sato_hub_gate: fee.gate } : {}),
     disclosure: plan.disclosure,
     simulation: verification.simulated,
     oracle: oracleDisplay(sized, deviation),
@@ -885,6 +891,12 @@ export function swapLines(d) {
     if (typeof m.price_impact_bps === "number") lines.push(`Price impact: Jupiter estimates ${m.price_impact_bps / 100}%${m.route_hops ? ` across ${m.route_hops} hop${m.route_hops === 1 ? "" : "s"}` : ""}. Shown for you to weigh.`);
     if (typeof m.value_gap_pct === "number") lines.push(`Value gap: the route values what you give at $${m.amount_in_usd} and what you get at $${m.amount_out_usd}, ${m.value_gap_pct}% apart (this includes pool fees, Sato Hub's fee and gas; it is not a pure price impact).`);
     if (typeof m.price_impact_pct === "number") lines.push(`Price impact reported by the route: ${m.price_impact_pct}%.`);
+  }
+  // Sato Hub's gate on the swap, when it did not come back `go`: said plainly, with the part and rule it names. A `caution` is common
+  // on swaps (the venue rule, a token lane that never answers `go`): shown for the owner to weigh, never a refusal; only `no` stops.
+  if (d.sato_hub_gate && (d.sato_hub_gate.verdict === "caution" || d.sato_hub_gate.verdict === "no")) {
+    const where = gateTargetsText(d.sato_hub_gate);
+    lines.push(`Sato Hub's gate on this swap says ${d.sato_hub_gate.verdict}${where ? ` (${where})` : ""}. Evidence about the swap's venue and tokens, shown for you to weigh; a caution is common on swaps and never stops one, and with the owner's check gate on only a "no" does.`);
   }
   if (d.independent_quote?.compared) {
     const q = d.independent_quote;

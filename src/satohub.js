@@ -88,21 +88,62 @@ export function gateRefusals(policy, check, { skipped = false } = {}) {
   return [];
 }
 
+const plainId = (v) => (typeof v === "string" && /^[A-Za-z0-9_.-]{1,40}$/.test(v) ? v : null);
+
 /**
- * The owner's `check_gate` applied to the gate verdict that Sato Hub's signed swap answer carries (`body.gate.verdict`, or the
- * verdict string itself). The same rules and wording as every other spend (`gateRefusals`): "no" refuses on `no`, "caution" on
- * `caution` or `no`. `unknown`, or an answer with no gate at all, is "the check could not say": it refuses only when the owner
- * chose that (`on_check_unavailable`; never chosen = refuse, as everywhere), and proceeds when the owner chose "allow". With the
- * gate off nothing is refused here. A swap's gate is part of its quote, so `--skip-check` cannot skip it.
+ * What Sato Hub's signed swap answer says about its gate (`body.gate`, or an already-read view, or a bare verdict string), as
+ * { verdict: "go"|"caution"|"no"|"unknown"|null, targets: [{ target, verdict, rule }] } or null when there is no gate. `targets` are the
+ * parts the gate looked at that did not come back `go` (`gate.targets`: { venue: { verdict, rule }, token_out: { verdict, rule }, ... }),
+ * plus any `gate.refusals` entry that names a target and a rule. Ids are plain tokens only; nothing else of the server's text is kept.
+ */
+export function gateView(gate) {
+  if (gate === undefined || gate === null) return null;
+  const raw = typeof gate === "object" ? gate.verdict : gate;
+  const verdict = typeof raw === "string" ? raw.trim().toLowerCase() : null;
+  const targets = [];
+  const add = (target, v, rule) => {
+    const t = plainId(target);
+    const vv = typeof v === "string" ? v.trim().toLowerCase() : null;
+    if (!t || !vv || vv === "go" || targets.some((x) => x.target === t)) return;
+    targets.push({ target: t, verdict: vv, rule: plainId(rule) });
+  };
+  if (gate && typeof gate === "object") {
+    const t = gate.targets;
+    if (Array.isArray(t)) for (const e of t) add(e?.target ?? e?.name, e?.verdict, e?.rule);
+    else if (t && typeof t === "object") for (const [k, e] of Object.entries(t)) add(k, e?.verdict, e?.rule);
+    if (Array.isArray(gate.refusals)) for (const r of gate.refusals) add(r?.target, "no", r?.rule);
+  }
+  return { verdict: ["go", "caution", "no", "unknown"].includes(verdict) ? verdict : null, targets };
+}
+
+/** "token_out T6", "venue R6": the parts of a gate view that did not come back `go`, as one phrase; "" when none. */
+export const gateTargetsText = (view) => (view?.targets ?? []).map((t) => `${t.target}${t.rule ? ` ${t.rule}` : ""}`).join(", ");
+
+/**
+ * The owner's `check_gate` applied to Sato Hub's signed swap answer (`body.gate`, a gateView, or the bare verdict). For a SWAP the
+ * gate only ever stops on `no`, whether the owner chose "no" or "caution": live, Sato Hub's swap gate answers `caution` on almost
+ * every swap by design (the venue rule for KyberSwap itself; the Solana token lane has no `go`), so a `caution` is shown in the swap's
+ * output (`sato_hub_gate`) and is never a refusal. `unknown`, or an answer with no gate at all, is "the check could not say": it
+ * refuses only when the owner chose that (`on_check_unavailable`; never chosen = refuse, as everywhere), and proceeds when the owner
+ * chose "allow". With the gate off nothing is refused. A swap's gate is part of its quote, so `--skip-check` cannot skip it.
  */
 export function swapGateRefusals(policy, gate) {
-  const raw = gate && typeof gate === "object" ? gate.verdict : gate;
-  const verdict = typeof raw === "string" ? raw.trim().toLowerCase() : null;
-  if (!["go", "caution", "no"].includes(verdict)) {
-    return gateRefusals(policy, { unavailable: true, verdict: null, reason: verdict === "unknown" ? "Sato Hub's gate on this swap answered unknown" : "Sato Hub's swap answer carries no gate verdict" });
+  const gateOn = policy?.check_gate === "no" || policy?.check_gate === "caution";
+  if (!gateOn) return [];
+  const view = gateView(gate);
+  if (!view || !["go", "caution", "no"].includes(view.verdict)) {
+    return gateRefusals(policy, { unavailable: true, verdict: null, reason: view?.verdict === "unknown" ? "Sato Hub's gate on this swap answered unknown" : "Sato Hub's swap answer carries no gate verdict" });
   }
-  const rule = Array.isArray(gate?.refusals) && typeof gate.refusals[0]?.rule === "string" ? gate.refusals[0].rule.slice(0, 80) : null;
-  return gateRefusals(policy, { unavailable: false, verdict, rule });
+  if (view.verdict !== "no") return [];
+  const where = gateTargetsText(view);
+  return [
+    {
+      rule: "check_no",
+      limit: policy.check_gate,
+      observed: `no${where ? ` (${where})` : ""}`,
+      message: `Sato Hub's gate on this swap came back "no"${where ? ` (${where})` : ""}, and the owner set checks to stop on that. Nothing was signed. The gate describes the swap's venue and tokens, not the owner.`,
+    },
+  ];
 }
 
 // ---------------------------------------------------------------- token resolver

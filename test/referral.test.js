@@ -723,7 +723,12 @@ test("v0.5.4: the upgrade notes and the docs say what changed (check gate on swa
   const readme = readFileSync(ROOT("README.md"), "utf8");
   const skill = readFileSync(ROOT("skills/sato-agent/SKILL.md"), "utf8");
   assert.match(bot, /After upgrading to 0\.5\.4, nothing changes for a bot that was working/);
-  assert.match(bot, /`check_no`, `check_caution`/);
+  assert.match(bot, /only on a `no` in Sato Hub's swap gate, under either choice \(rule `check_no`; a `caution`, which is common on swaps/);
+  assert.match(bot, /for swaps both choices stop on `no` only/);
+  assert.doesNotMatch(bot + readme, /check_caution/, "a swap never refuses on caution");
+  assert.match(readme, /a swap stops on `no` only, under `--check-gate no` and `--check-gate caution` alike/);
+  assert.match(readme, /\*\*Sato Hub signing-key rotation/);
+  assert.match(readme, /so an outage there does not block swaps/);
   assert.match(bot, /more than 3% less/);
   assert.match(bot, /signing key it ships with/);
   assert.match(readme, /\*\*Upgrading to v0\.5\.4:\*\* nothing changes for a working agent/);

@@ -35,6 +35,9 @@ export const JWKS_URL = "https://satohub.ai/.well-known/jwks.json";
  * ones, is refused, so a changed JWKS (a hijacked response, a cache, a proxy) cannot make the kit trust a new key. A kid is only
  * 8 hex characters of the key's hash, so the key itself is pinned too. When Sato Hub rotates its key, a new kit release adds the
  * new kid here (keep the old one while answers signed with it can still be in flight); an older kit refuses, and says to upgrade.
+ * ROTATION ORDER (Sato Hub side): 1. ship a kit release that pins the new kid (and keeps the old); 2. publish the new key in the JWKS
+ * beside the old one, signing with the old; 3. switch `active_kid` to the new key only after bots have had time to upgrade (a kit that
+ * does not know the new kid refuses its answers with the upgrade message). README: "Sato Hub signing-key rotation".
  * Checked 2026-10-19 against https://satohub.ai/.well-known/jwks.json (active_kid in sato-signing.json: b04bd38b).
  */
 export const PINNED_HUB_KEYS = Object.freeze({
@@ -146,7 +149,15 @@ export async function verifyHubSignature(body, { fetchImpl = fetch, now = Date.n
     throw new HubSignatureError("unknown_kid", `the response was signed with key ${sig.kid}, which this version of the kit does not know (it knows ${Object.keys(pinned ?? {}).join(", ") || "none"}). Sato Hub may have rotated its signing key: upgrade the kit before swapping or bridging. Nothing was signed.`);
   }
 
-  const jwk = await findJwk(sig.kid, { jwks, fetchImpl, now });
+  let jwk;
+  try {
+    jwk = await findJwk(sig.kid, { jwks, fetchImpl, now });
+  } catch (err) {
+    // The published list could not be fetched (an outage, a proxy). The pinned key is the trust root, so an answer signed under a
+    // pinned kid is still checked against the pinned key itself: no network needed, and an outage does not block swaps.
+    if (!(err instanceof HubSignatureError) || err.code !== "jwks_unavailable") throw err;
+    jwk = { kty: "OKP", crv: "Ed25519", kid: sig.kid, x: pinnedX };
+  }
   if (!jwk) throw new HubSignatureError("unknown_kid", `the response was signed with key ${sig.kid}, which is not in Sato Hub's published keys`);
   if (jwk.kty !== "OKP" || jwk.crv !== "Ed25519" || typeof jwk.x !== "string") {
     throw new HubSignatureError("unknown_kid", `key ${sig.kid} in the published keys is not an Ed25519 key`);

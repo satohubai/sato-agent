@@ -107,6 +107,25 @@ const rules = async (p) => {
   assert.fail("expected a refusal");
 };
 
+test("v0.5.4: the REAL verifier carries Sato Hub's gate (the recorded answers say caution): the owner's check gate caution lets it through and shows the line; a `no` stops it", async () => {
+  try {
+    setPolicy({ checkGate: "caution", onCheckUnavailable: "refuse" });
+    for (const key of ["bnb", "arbitrum", "polygon"]) {
+      const real = { verdict: "caution", refusals: [], targets: { venue: { verdict: "caution", rule: "R6" } } };
+      const ok = rig(key, "stable-to-stable", { editResponse: (r) => { r.gate = real; } });
+      const p = await prepareSwap(ok.req, ok.deps);
+      assert.deepEqual(p.display.sato_hub_gate, { verdict: "caution", targets: [{ target: "venue", verdict: "caution", rule: "R6" }] }, key);
+      assert.match(swapLines(p.display).join("\n"), /Sato Hub's gate on this swap says caution \(venue R6\)/);
+      const no = rig(key, "stable-to-stable", { editResponse: (r) => { r.gate = { verdict: "no", refusals: [], targets: { token_out: { verdict: "no", rule: "T2" } } }; } });
+      assert.deepEqual(await rules(prepareSwap(no.req, no.deps)), ["check_no"], key);
+      const missing = rig(key, "stable-to-stable", { editResponse: (r) => { delete r.gate; } });
+      assert.deepEqual(await rules(prepareSwap(missing.req, missing.deps)), ["check_unavailable"], key);
+    }
+  } finally {
+    setPolicy({ checkGate: "off" });
+  }
+});
+
 test("Sato Hub's launch pause (P0) is shown as sato_paused with the server's reason on an EVM chain (no signature check, no 'tx_withheld')", async () => {
   owner();
   const paused = { mode: "build-tx", chain: "BNB Chain", venue: "none", tx: null, sato_fee_bps: null, withheld: { rule: "P0", reason: "Sato Hub has paused swaps for the launch." } };

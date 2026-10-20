@@ -61,7 +61,7 @@ import { DEFAULT_EVM_CHAIN, NATIVE_PLACEHOLDER, defaultStable, evmChain, explore
 import { loadPolicy } from "../policy.js";
 import { record, release, reserve } from "../ledger.js";
 import { withLock } from "../store.js";
-import { callTool as satoCallTool } from "../satohub.js";
+import { callTool as satoCallTool, gateView } from "../satohub.js";
 import { unitsToUsd } from "../amount.js";
 import { satoPausedMessage } from "../text.js";
 import { userAgent } from "../version.js";
@@ -1354,6 +1354,8 @@ export async function verifyBaseSwapPlan(response, intent, deps = {}) {
     referrer_sent: intent.referrer ?? null,
     referral: readReferral(response.referral),
     gate: response.gate?.verdict ?? null,
+    /** What Sato Hub's gate looked at and did not clear ({ verdict, targets: [{ target, verdict, rule }] }), for the owner's check gate and the display. */
+    gate_view: gateView(response.gate),
     from: intent.from,
     to: intent.to,
     token_in: { ...intent.tokenIn },

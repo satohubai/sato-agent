@@ -135,14 +135,33 @@ test("a rotated key is picked up by that re-fetch", async () => {
   assert.equal((await verifyHubSignature(real(), { fetchImpl, now: signedAtMs + 60_000 })).ok, true);
 });
 
-test("JWKS unavailable: a network error, an HTTP error and a bad body all say so", async () => {
-  await assert.rejects(verifyHubSignature(real(), { fetchImpl: async () => { throw new Error("boom"); }, now: signedAtMs }), fails("jwks_unavailable"));
-  await assert.rejects(verifyHubSignature(real(), { fetchImpl: async () => jwksResponse({}, 503), now: signedAtMs }), fails("jwks_unavailable"));
-  await assert.rejects(verifyHubSignature(real(), { fetchImpl: async () => jwksResponse({ nope: 1 }), now: signedAtMs }), fails("jwks_unavailable"));
-  await assert.rejects(
-    verifyHubSignature(real(), { fetchImpl: async () => ({ ok: true, status: 200, json: async () => { throw new Error("not json"); } }), now: signedAtMs }),
-    fails("jwks_unavailable"),
-  );
+test("JWKS unavailable (a network error, an HTTP error, a bad body): an answer under a PINNED kid is still checked, against the pinned key, with no network", async () => {
+  const down = [
+    async () => { throw new Error("boom"); },
+    async () => jwksResponse({}, 503),
+    async () => jwksResponse({ nope: 1 }),
+    async () => ({ ok: true, status: 200, json: async () => { throw new Error("not json"); } }),
+  ];
+  for (const fetchImpl of down) {
+    resetJwksCache();
+    assert.deepEqual(await verifyHubSignature(real(), { fetchImpl, now: signedAtMs }), { ok: true, kid: "b04bd38b", signed_at: "2026-10-09T04:48:18.692Z" });
+  }
+  // the pinned key still has to verify: a changed body fails even while the JWKS is down
+  const b = real();
+  b.amount_out = "1";
+  resetJwksCache();
+  await assert.rejects(verifyHubSignature(b, { fetchImpl: down[0], now: signedAtMs }), fails("bad_signature"));
+  // and staleness still applies
+  resetJwksCache();
+  await assert.rejects(verifyHubSignature(real(), { fetchImpl: down[0], now: signedAtMs + 11 * 60 * 1000 }), fails("stale"));
+});
+
+test("JWKS unavailable: a kid that is NOT in the pin set still refuses (no fetch needed, no fallback key)", async () => {
+  const r = rotated();
+  resetJwksCache();
+  const err = await verifyHubSignature(r.body, { fetchImpl: async () => { throw new Error("boom"); }, now: signedAtMs }).catch((e) => e);
+  assert.ok(fails("unknown_kid")(err), String(err));
+  assert.match(err.message, /upgrade the kit/);
 });
 
 test("canonicalJson matches the server's definition", () => {

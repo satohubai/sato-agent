@@ -88,6 +88,23 @@ export function gateRefusals(policy, check, { skipped = false } = {}) {
   return [];
 }
 
+/**
+ * The owner's `check_gate` applied to the gate verdict that Sato Hub's signed swap answer carries (`body.gate.verdict`, or the
+ * verdict string itself). The same rules and wording as every other spend (`gateRefusals`): "no" refuses on `no`, "caution" on
+ * `caution` or `no`. `unknown`, or an answer with no gate at all, is "the check could not say": it refuses only when the owner
+ * chose that (`on_check_unavailable`; never chosen = refuse, as everywhere), and proceeds when the owner chose "allow". With the
+ * gate off nothing is refused here. A swap's gate is part of its quote, so `--skip-check` cannot skip it.
+ */
+export function swapGateRefusals(policy, gate) {
+  const raw = gate && typeof gate === "object" ? gate.verdict : gate;
+  const verdict = typeof raw === "string" ? raw.trim().toLowerCase() : null;
+  if (!["go", "caution", "no"].includes(verdict)) {
+    return gateRefusals(policy, { unavailable: true, verdict: null, reason: verdict === "unknown" ? "Sato Hub's gate on this swap answered unknown" : "Sato Hub's swap answer carries no gate verdict" });
+  }
+  const rule = Array.isArray(gate?.refusals) && typeof gate.refusals[0]?.rule === "string" ? gate.refusals[0].rule.slice(0, 80) : null;
+  return gateRefusals(policy, { unavailable: false, verdict, rule });
+}
+
 // ---------------------------------------------------------------- token resolver
 
 /** True for something that is a link (the kit never parses one itself: only Sato Hub's resolver turns a link into a token). */

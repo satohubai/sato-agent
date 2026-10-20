@@ -39,7 +39,7 @@ import { NeedsApproval, Refused } from "../errors.js";
 import { consumeApproval, requestApproval } from "../approvals.js";
 import { oraclePrice, oracleTolerancePct, quoteWithinOracle, PriceUnavailable } from "../price.js";
 import { DEFAULT_EVM_CHAIN, chainKeys, chainsWith, evmChain, evmChainKeys, getChain, isEvm, isKnownChain, isStableSymbol, labelOf, oracleChainOf, orList } from "../chains.js";
-import { callTool, looksLikeLink, resolveTokenViaHub, runCheck } from "../satohub.js";
+import { callTool, looksLikeLink, resolveTokenViaHub, runCheck, swapGateRefusals } from "../satohub.js";
 import { verifyHubSignature } from "../hub-signature.js";
 import { addressFor, addresses } from "../wallet.js";
 import { usdcUnits, roundUsd } from "../amount.js";
@@ -521,6 +521,10 @@ async function satoSolanaDisclosure(sized, deps) {
     String(body.amount_in) !== amountIn && "amount_in",
   ].filter(Boolean);
   if (mismatch.length) throw refuse("response_mismatch", `Sato Hub's signed quote is about a different swap (${mismatch.join(", ")} differ); nothing was signed`);
+  // The owner's check gate (`policy set --check-gate`) applies to the verdict Sato Hub's signed answer carries, as it does on a
+  // send or a payment. Read only after the signature and the pair are verified; nothing is signed or asked of Jupiter before it.
+  const gateStop = swapGateRefusals(deps.policy ?? loadPolicy(), body.gate);
+  if (gateStop.length) throw new Refused(gateStop);
   if (body.venue !== "jupiter-aggregator" && body.venue !== "jupiter") throw refuse("venue_unexpected", `Sato Hub chose ${body.venue ?? "no venue"}; this kit swaps on Solana through Jupiter only`);
   if (!Number.isInteger(body.sato_fee_bps)) throw refuse("fee_disclosure_missing", "Sato Hub's quote does not state its fee");
   // A swap without the fee is not this kit's swap (planSolanaSwap refuses it too; this stops it before Jupiter is asked).
@@ -590,6 +594,11 @@ async function prepareEvm(sized, deps) {
     // A token sale has no USD figure before the quote; nothing made up is sent to Sato Hub.
     { ...(sized.usd !== null ? { usdNotional: sized.usd } : { usdFromQuote: true }), referrer: referrerFor(deps), ...baseDeps },
   );
+  // The owner's check gate (`policy set --check-gate`) applies to the verdict Sato Hub's signed answer carries (plan.gate), as it
+  // does on a send, a payment and a Solana swap. Sato Hub's own gate already withholds the transaction on a `no`; this adds the
+  // owner's stricter `caution` choice and the "if the check can't say" choice. Nothing is signed before it.
+  const gateStop = swapGateRefusals(deps.policy ?? loadPolicy(), plan.gate);
+  if (gateStop.length) throw new Refused(gateStop);
   const s = evm.summarizeBaseSwapPlan(plan);
 
   // What the trade is worth, from the major leg.

@@ -51,7 +51,7 @@ Each Bot keeps its own wallet, limits and ledger, even on the same Grok Bot comp
 ## Quickstart (any machine)
 
 ```sh
-npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.5.3
+npm install --ignore-scripts --prefix ~/.sato-agent-cli github:satohubai/sato-agent#v0.5.4
 alias sato-agent=~/.sato-agent-cli/node_modules/.bin/sato-agent
 # npm may print "ERESOLVE overriding peer dependency" three times (the Solana x402
 # library's helpers ask for an older @solana/kit). That is expected; the tests run on these versions.
@@ -101,6 +101,8 @@ sato-agent buy "solana:<recipient>?amount=5&spl-token=EPjFWdd5AufqSSqeM2qN1xzyba
 | `status` | Limits, spend in the last 24 hours, limit changes, recent spends |
 
 Add `--json` to any command for machine-readable output.
+
+**Upgrading to v0.5.4:** nothing changes for a working agent, with three additions to what the kit checks before it signs. (1) If the owner set `--check-gate`, it now also applies to swaps, on every chain, to the verdict in Sato Hub's signed swap answer (`no` stops under `no`; `caution` or `no` under `caution`; `unknown` or none stops only if the owner chose `--on-check-unavailable refuse`). It used to apply to sends and payments only, although `status` said a check could stop "a spend". (2) A token sale on an EVM chain is now compared with KyberSwap's own public quote, which the kit reads itself: if Sato Hub's quote pays more than 3% less (its fee added back), the sale stops for the owner's approval (exit 5) and says by how much. The kit also pins Sato Hub's signing key id and public key: an answer signed under any other key is refused with a message to upgrade the kit, so after a rotation of that key an older kit stops rather than trusting a new one. (3) Polygon's default RPC list now starts with endpoints that answered every read and simulation in a probe (rpc.sentio.xyz, publicnode, thirdweb); the failover is unchanged.
 
 **Upgrading to v0.5.3:** nothing changes for a working agent. A swap or bridge now never goes without the Sato Hub fee on any chain: a fee of 0 or none is refused (`fee_missing`), and the fee must equal the published rate of the tier Sato Hub names (stable 3, major 15, token 75 bps for a swap; 25 bps for a bridge; a lower fee is `fee_below_tier`, a missing tier `fee_tier_missing`), checked before anything is signed. `settings set --referrer <name|address>` now stops with exit 5 and a one-time code in every approval mode, like `referral set-payout` (the same command with `--approve <code>` saves it; `--referrer none` is still free). And when Sato Hub pauses new transactions, the kit shows why and stops (`sato_paused`) instead of a venue error.
 

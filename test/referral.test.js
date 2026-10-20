@@ -626,16 +626,16 @@ test("readReferral / referralView / referralFeeSentence", () => {
 test("v0.3.2: the version is the same everywhere, and the docs say what the contract says", () => {
   const pkg = JSON.parse(readFileSync(ROOT("package.json"), "utf8"));
   const lock = JSON.parse(readFileSync(ROOT("npm-shrinkwrap.json"), "utf8"));
-  assert.equal(pkg.version, "0.5.3");
-  assert.equal(lock.version, "0.5.3");
-  assert.equal(lock.packages[""].version, "0.5.3");
-  assert.equal(VERSION, "0.5.3");
+  assert.equal(pkg.version, "0.5.4");
+  assert.equal(lock.version, "0.5.4");
+  assert.equal(lock.packages[""].version, "0.5.4");
+  assert.equal(VERSION, "0.5.4");
 
   const bot = readFileSync(ROOT("BOT.md"), "utf8");
   const readme = readFileSync(ROOT("README.md"), "utf8");
   const skill = readFileSync(ROOT("skills/sato-agent/SKILL.md"), "utf8");
-  assert.match(bot, /github:satohubai\/sato-agent#v0\.5\.3/);
-  assert.match(bot, /grep -q ' 0\.5\.3:' && echo "kit ready \(0\.5\.3\)"/);
+  assert.match(bot, /github:satohubai\/sato-agent#v0\.5\.4/);
+  assert.match(bot, /grep -q ' 0\.5\.4:' && echo "kit ready \(0\.5\.4\)"/);
   assert.doesNotMatch(bot, /0\.3\.[01]/);
   // the setup question comes after funding, and reads a Referral memory or a REFERRER line
   const fund = bot.indexOf("**Ask the owner to fund the wallet");
@@ -716,4 +716,20 @@ test("v0.5.3: the docs say that setting a referrer needs the owner's approval, a
   assert.match(readme, /Setting or changing the referrer needs the owner's approval, in every approval mode/);
   assert.match(skill, /\*\*Upgrading to 0\.5\.3:\*\*/);
   assert.match(skill, /only after they say yes in chat run the same command with `--approve <code>`/);
+});
+
+test("v0.5.4: the upgrade notes and the docs say what changed (check gate on swaps, the sale price check, the pinned key, Polygon RPCs)", () => {
+  const bot = readFileSync(ROOT("BOT.md"), "utf8");
+  const readme = readFileSync(ROOT("README.md"), "utf8");
+  const skill = readFileSync(ROOT("skills/sato-agent/SKILL.md"), "utf8");
+  assert.match(bot, /After upgrading to 0\.5\.4, nothing changes for a bot that was working/);
+  assert.match(bot, /`check_no`, `check_caution`/);
+  assert.match(bot, /more than 3% less/);
+  assert.match(bot, /signing key it ships with/);
+  assert.match(readme, /\*\*Upgrading to v0\.5\.4:\*\* nothing changes for a working agent/);
+  assert.match(readme, /so `--skip-check` does not skip it/);
+  assert.match(readme, /pins Sato Hub's signing key id and public key/);
+  assert.match(readme, /EVM chain sales/);
+  assert.match(skill, /\*\*Upgrading to 0\.5\.4:\*\*/);
+  assert.doesNotMatch(readme, /so `--check-gate` and `--skip-check` do not apply to swaps/, "the old sentence is gone");
 });

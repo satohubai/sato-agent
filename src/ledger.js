@@ -108,7 +108,7 @@ export async function reserve(policy, spend) {
 
 /** Kinds that move value: shown in `status`, `history` and `proof`. "order" and "checkout" are purchases; "bridge" moves the agent's own funds to its other chain (it shares the 24-hour limit). */
 export const VALUE_KINDS = ["send", "x402", "swap", "bridge", "order", "checkout"];
-const SPEND_KINDS = [...VALUE_KINDS, "register", "register_sent", "register_uri"];
+const SPEND_KINDS = [...VALUE_KINDS, "register", "register_sent", "register_uri", "set_agent_wallet"];
 
 /**
  * One row per action (its ledger lines share an id; later lines update it),

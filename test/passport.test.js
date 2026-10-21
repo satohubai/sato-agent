@@ -77,7 +77,8 @@ function client({ owner, agentId = 99046n } = {}) {
 /** The data: URI inside a prepared register / setAgentURI request. */
 function uriOf(req) {
   const { functionName, args } = decodeFunctionData({ abi: identityRegistryAbi, data: req.data });
-  return { functionName, uri: args[args.length - 1] };
+  // register(uri) or, with a passport, register(uri, metadata): the uri is the first argument; setAgentURI(agentId, uri): the last.
+  return { functionName, uri: functionName === "register" ? args[0] : args[args.length - 1] };
 }
 
 // ---------------------------------------------------------------- the file itself

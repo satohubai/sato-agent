@@ -126,7 +126,7 @@ test("README and BOT.md describe the link as the agent's own declaration, checke
   assert.match(section, /`register --again` \(another agent from the same wallet\) does \*\*not\*\* take the saved one/);
   assert.match(section, /`register` prints one line saying so/);
   assert.match(readme, /\| `register --name --description .*\[--passport <sato:agt:id\\\|none>\]/);
-  const step = bot.slice(bot.indexOf("If the owner gave you a Sato Passport id"), bot.indexOf("9. **Suggest one routine**"));
+  const step = bot.slice(bot.indexOf("If the owner gave you a Sato Passport id"), bot.indexOf("10. **Suggest one routine**"));
   assert.ok(step.length > 200, "BOT.md has the step");
   assert.match(step, /your own declaration, in your own file/);
   assert.match(step, /The kit checks nothing with Sato Hub/);

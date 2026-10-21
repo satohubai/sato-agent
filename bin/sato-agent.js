@@ -16,7 +16,8 @@ import { VALUE_KINDS, actions, read, record, recordCheckEvent, spentLast24h } fr
 import { inspect, integrityRefusals, repair } from "../src/integrity.js";
 import { purchaseChain, purchaseGate } from "../src/purchase.js";
 import { SHIP_FIELDS, clearShipTo, isReferralName, parseReferrerInput, referrer as savedReferrer, scrubAddress, setReferrer, setShipTo, settingsFromJson, shipTo, shortReferrer, shipToLines, shipToStatus } from "../src/settings.js";
-import { passportResultLines, resolveForRegister, resolvePassport, savedPassport } from "../src/passport.js";
+import { parsePassportId, passportResultLines, resolveForRegister, resolvePassport, savedPassport } from "../src/passport.js";
+import { issueClaim, issueClaimLines, joinLines, joinPassport, parseName, parseVia, passportStatus, passportStatusLines, proveWallet } from "../src/passport-join.js";
 import { reportSettlement, settlementLine } from "../src/swap/referral.js";
 import { REFERRAL_SHARE_PERCENT, createReferralName, declineOffer, lookupReferralName, ownReferral, referralShow, setReferralPayout, shareTextLines, shareTexts, swapOffer, takeOffer } from "../src/referral-names.js";
 import { readFileSync } from "node:fs";
@@ -193,7 +194,31 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
                                          file that links it to this agent's Sato Passport (satohub.ai/passport/<id>): the agent's own
                                          declaration, not checked here and not a verification. It is saved on this computer, so a
                                          later --resume keeps it; --passport none drops it. Another agent (--again) never takes
-                                         the saved one: it gets a passport only from its own --passport
+                                         the saved one: it gets a passport only from its own --passport. With a passport, a
+                                         registration also writes the registry tag satohub.passport (the id) and, on Base when
+                                         SATO_BUILDER_CODE is set, the Base Builder Code (ERC-8021) on each transaction
+  join [--name "<name>"] [--via kit|sato-bot] [--no-solana] [--again] [--approve <code>]
+                                         make this agent's Sato Passport public on satohub.ai. Free. The bot signs one message with
+                                         its own EVM key (the primary wallet) and its Solana key (--no-solana leaves that one off):
+                                         no payment, no gas. Joining proves control of the wallet key and lists the agent publicly; it
+                                         says nothing else about it. It always stops with exit 5 and a one-time code, whatever the
+                                         approval mode: the owner reads the wallets and name it lists, then the same command with
+                                         --approve <code> joins. It prints a claim code ONCE and never saves it: the owner, signed in
+                                         on satohub.ai, enters it once to link the passport. The passport id is saved on this
+                                         computer, so register links to it. A bot with a passport saved refuses to join again
+                                         unless --again (the new id then replaces the saved one)
+  passport status                        the saved Sato Passport id and its page on satohub.ai (no network call)
+  passport issue-claim [--passport <id>] [--chain base|solana] [--approve <code>]
+                                         a new claim code for the passport, signed by this bot's wallet; the earlier unused codes stop
+                                         working. Stops with exit 5 and a code, like join
+  passport prove [--passport <id>] [--chain base|solana] [--approve <code>]
+                                         for a passport made before joins existed, whose wallet was declared and never proven: this
+                                         bot's wallet signs to prove it. Stops with exit 5 and a code, like join
+  passport set-wallet --agent-id <n> [--chain ${CHAIN_REGISTER}] [--dry-run] [--approve <code>]
+                                         after Sato Hub hands an ERC-8004 agent to this wallet, point the agent's payment wallet back
+                                         at this wallet (the registry clears it when an agent is transferred). Spends this wallet's own
+                                         gas on that chain (Base unless --chain says another): it runs only when the wallet owns the
+                                         agent and holds some of the chain's coin, and with approval "ask" it needs a code like register
   check "<install command>" [--cluster mainnet-beta|devnet] [--skip-check]
                                          Solana build receipts for the npm packages in an install command (read
                                          from the chain, no call to Sato Hub), then what the install does with
@@ -240,6 +265,9 @@ try {
       service: { type: "string", multiple: true },
       "x402-support": { type: "boolean" },
       passport: { type: "string" },
+      via: { type: "string" },
+      "no-solana": { type: "boolean" },
+      "agent-id": { type: "string" },
       again: { type: "boolean" },
       resume: { type: "string" },
       "skip-check": { type: "boolean" },
@@ -301,6 +329,22 @@ const usdText = (a) => {
 const limitText = (v) => (v === null ? "no limit" : `$${v}`);
 const say = (text) => {
   if (!flags.json) console.log(text);
+};
+
+/**
+ * The owner's approval for something that makes the agent public or changes who can manage its passport (`join`, `passport issue-claim`,
+ * `passport prove`), in EVERY approval mode, like `settings set --referrer`: without --approve the command stops with exit 5 and a one-time
+ * code for this exact intent, printing `card` first; the same command with --approve <code> goes ahead. Nothing is signed before that.
+ */
+const authorizeOwner = async (intent, card) => {
+  if (!flags.approve) {
+    const err = new NeedsApproval(intent, await requestApproval(intent));
+    err.card = card;
+    throw err;
+  }
+  await consumeApproval(flags.approve, intent).catch((e) => {
+    throw new PlainError(e.message);
+  });
 };
 
 function policyText(p) {
@@ -873,7 +917,80 @@ async function main(command = cmd, args = positionals.slice(1)) {
       // Only when the file carries a passport link (what the entry is: the agent's own declaration), and one line when a saved passport was
       // left out because this is another agent from the same wallet.
       const passportLines = passportResultLines(r, { save: pp.save }).map((l) => `\n  ${l}`).join("");
-      return out(`Registered as ERC-8004 agent ${r.agent_id} on ${labelOf(regChain)} (${r.registry}), registration file stored onchain.\n  ${r.explorer}${passportLines}`, r);
+      // What this call wrote besides the file (only when it did): the registry tag, and the Base Builder Code (an operator's env choice).
+      const extraLines = [
+        ...(r.passport_metadata ? [`The registry also holds ${r.passport_metadata} = ${r.passport} for this agent (written with the registration).`] : []),
+        ...(r.builder_code ? [`Base Builder Code ${r.builder_code} (ERC-8021) was added to ${flags.resume === undefined ? "both transactions" : "the transaction"} sent here.`] : []),
+      ].map((l) => `\n  ${l}`).join("");
+      return out(`Registered as ERC-8004 agent ${r.agent_id} on ${labelOf(regChain)} (${r.registry}), registration file stored onchain.\n  ${r.explorer}${passportLines}${extraLines}`, r);
+    }
+    case "join": {
+      const usage = 'join [--name "<name>"] [--via kit|sato-bot] [--no-solana] [--again] [--approve <code>]';
+      if (rest.length) throw new UsageError(usage);
+      // A bad --name or --via is a usage error before anything else: no approval code is made for it and nothing is signed.
+      try {
+        parseName(flags.name);
+        parseVia(flags.via);
+      } catch (err) {
+        throw new UsageError(err.message);
+      }
+      const r = await joinPassport({ name: flags.name, via: flags.via, noSolana: Boolean(flags["no-solana"]), again: Boolean(flags.again) }, { authorize: authorizeOwner });
+      // The claim code is printed here, once: it is in neither the settings, the ledger nor any file.
+      return out(joinLines(r).join("\n"), r);
+    }
+    case "passport": {
+      const sub = rest[0];
+      const usage = "passport status | passport issue-claim [--passport <id>] [--chain base|solana] | passport prove [--passport <id>] [--chain base|solana] | passport set-wallet --agent-id <n> [--chain <chain>] [--dry-run]";
+      // --passport <id>: checked first, as for register (a bad id is a usage error and makes no approval code).
+      const givenPassport = () => {
+        if (flags.passport === undefined) return undefined;
+        try {
+          return parsePassportId(flags.passport);
+        } catch (err) {
+          throw new UsageError(err.message);
+        }
+      };
+      if (sub === "status") {
+        if (rest.length > 1) throw new UsageError(usage);
+        const s = passportStatus();
+        return out(passportStatusLines(s).join("\n"), s);
+      }
+      if (sub === "issue-claim") {
+        if (rest.length > 1) throw new UsageError(usage);
+        const r = await issueClaim({ passport: givenPassport(), chain: flags.chain }, { authorize: authorizeOwner });
+        return out(issueClaimLines(r).join("\n"), r);
+      }
+      if (sub === "prove") {
+        if (rest.length > 1) throw new UsageError(usage);
+        const r = await proveWallet({ passport: givenPassport(), chain: flags.chain }, { authorize: authorizeOwner });
+        return out(`Proved ${r.wallet} on ${r.passport_id}. It is saved here, so register links to it. Proving a wallet makes its control of the passport show on satohub.ai; it says nothing else about the agent.`, r);
+      }
+      if (sub === "set-wallet") {
+        if (rest.length > 1 || flags["agent-id"] === undefined) throw new UsageError("passport set-wallet --agent-id <n> [--chain <chain>] [--dry-run] [--approve <code>]");
+        if (!/^\d+$/.test(flags["agent-id"])) throw new UsageError("--agent-id takes the ERC-8004 agent id (a whole number)");
+        let chain = DEFAULT_EVM_CHAIN;
+        if (flags.chain !== undefined) {
+          try {
+            chain = evmChainFor(flags.chain, "register");
+          } catch (err) {
+            if (err instanceof Refused) throw err;
+            throw new UsageError(err.message);
+          }
+        }
+        // The usual approval: only when the owner chose "ask", and only after the read-only checks passed (ownership, the current wallet,
+        // gas), so the owner is never asked to approve something that would be refused anyway. It binds the agent, the chain and the wallet.
+        const authorize = async () => {
+          if (loadPolicy()?.approval !== "ask") return;
+          const intent = { cmd: "passport set-wallet", chain, agent_id: String(BigInt(flags["agent-id"])), wallet: addresses().base.toLowerCase() };
+          if (!flags.approve) throw new NeedsApproval(intent, await requestApproval(intent));
+          await consumeApproval(flags.approve, intent);
+        };
+        const r = await baseChain.setAgentWallet({ agentId: flags["agent-id"], chain, dryRun: Boolean(flags["dry-run"]) }, undefined, { authorize });
+        if (r.already) return out(`Nothing to do: agent ${r.agent_id} on ${labelOf(chain)} already has this wallet (${r.wallet}) as its payment wallet.`, r);
+        if (r.dry_run) return out(`DRY RUN: agent ${r.agent_id} on ${labelOf(chain)} belongs to this wallet, its payment wallet is ${r.current_wallet ?? "not set"}, and this wallet holds gas. Run for real, it signs one message and sends one transaction (this wallet's own gas) that sets ${r.wallet}. Nothing was signed or sent.`, r);
+        return out(`Set agent ${r.agent_id}'s payment wallet on ${labelOf(chain)} to ${r.wallet}.\n  ${r.explorer}`, r);
+      }
+      throw new UsageError(usage);
     }
     case "check": {
       const command = rest.join(" ");
@@ -915,7 +1032,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
       const cutoff = Date.now() - windows[since];
       const list = actions().filter((a) => Date.parse(a.first_ts) >= cutoff);
       const line = (a) =>
-        `${a.first_ts}  ${kindLabel(a).padEnd(8)} ${String(a.status).padEnd(16)} ${(a.chain ?? "").padEnd(6)} ${a.kind === "register" || a.kind === "register_uri" ? `agent ${a.agent_id}` : usdText(a)} ${a.kind === "bridge" ? bridgeRowText(a) : a.to ?? a.url ?? ""}${a.explorer ? `\n    ${a.explorer}` : ""}`;
+        `${a.first_ts}  ${kindLabel(a).padEnd(8)} ${String(a.status).padEnd(16)} ${(a.chain ?? "").padEnd(6)} ${a.kind === "register" || a.kind === "register_uri" || a.kind === "set_agent_wallet" ? `agent ${a.agent_id}` : usdText(a)} ${a.kind === "bridge" ? bridgeRowText(a) : a.to ?? a.url ?? ""}${a.explorer ? `\n    ${a.explorer}` : ""}`;
       return out(list.map(line).join("\n") || "(no actions yet)", { since, actions: list });
     }
     case "proof": {
@@ -936,7 +1053,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
         agentId ? `ERC-8004 agent: ${agentId} on ${registered.label} (registry ${registered.erc8004Registry})` : "ERC-8004 agent: not registered",
         `confirmed onchain actions: ${onchain.length} · value moved (sends, payments, swaps and purchases, in USD): $${roundUsd(spent)}`,
         "",
-        ...onchain.slice(-15).map((x) => `${x.first_ts.slice(0, 16).replace("T", " ")}Z  ${kindLabel(x)}  ${x.kind.startsWith("register") ? `agent ${x.agent_id}` : usdText(x)}  ${x.explorer}`),
+        ...onchain.slice(-15).map((x) => `${x.first_ts.slice(0, 16).replace("T", " ")}Z  ${kindLabel(x)}  ${x.kind.startsWith("register") || x.kind === "set_agent_wallet" ? `agent ${x.agent_id}` : usdText(x)}  ${x.explorer}`),
         "",
         "Every line links to the chain. Check it yourself. Built with Sato Hub: https://github.com/satohubai/sato-agent",
       ].join("\n");

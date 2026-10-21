@@ -1,0 +1,125 @@
+{
+  "_about": "Copied from the join contract's own tests in the Sato Hub app (private): the golden messages' sha256 and the fixed test key's EIP-191 signature over each. The keys are TEST keys, never used anywhere real. EVM and SOL in an input stand for the wallets of those keys.",
+  "keys": {
+    "evm_private_key": "0x1111111111111111111111111111111111111111111111111111111111111111",
+    "solana_seed_hex": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "passport_id": "sato:agt:xgfbgxth2qkg",
+  "issued_at": "2026-10-21T18:00:00.000Z",
+  "inputs": {
+    "join": {
+      "action": "join",
+      "passport_id": null,
+      "wallet": "EVM",
+      "wallets": [
+        "EVM",
+        "SOL"
+      ],
+      "issued_at": "2026-10-21T18:00:00.000Z",
+      "primary": "EVM",
+      "name": null,
+      "via": "api",
+      "claim_sha256": null
+    },
+    "add_wallet": {
+      "action": "add_wallet",
+      "passport_id": "sato:agt:xgfbgxth2qkg",
+      "wallet": "EVM",
+      "wallets": [
+        "SOL"
+      ],
+      "issued_at": "2026-10-21T18:00:00.000Z"
+    },
+    "prove_wallet": {
+      "action": "prove_wallet",
+      "passport_id": "sato:agt:xgfbgxth2qkg",
+      "wallet": "EVM",
+      "wallets": [
+        "EVM"
+      ],
+      "issued_at": "2026-10-21T18:00:00.000Z"
+    },
+    "remove_wallet": {
+      "action": "remove_wallet",
+      "passport_id": "sato:agt:xgfbgxth2qkg",
+      "wallet": "EVM",
+      "wallets": [
+        "SOL"
+      ],
+      "issued_at": "2026-10-21T18:00:00.000Z"
+    },
+    "set_primary": {
+      "action": "set_primary",
+      "passport_id": "sato:agt:xgfbgxth2qkg",
+      "wallet": "EVM",
+      "wallets": [
+        "EVM"
+      ],
+      "issued_at": "2026-10-21T18:00:00.000Z"
+    },
+    "update_profile": {
+      "action": "update_profile",
+      "passport_id": "sato:agt:xgfbgxth2qkg",
+      "wallet": "EVM",
+      "wallets": [
+        "EVM"
+      ],
+      "issued_at": "2026-10-21T18:00:00.000Z",
+      "patch_sha256": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+    },
+    "issue_claim": {
+      "action": "issue_claim",
+      "passport_id": "sato:agt:xgfbgxth2qkg",
+      "wallet": "EVM",
+      "wallets": [
+        "EVM"
+      ],
+      "issued_at": "2026-10-21T18:00:00.000Z",
+      "claim_sha256": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
+    },
+    "unlink_owner": {
+      "action": "unlink_owner",
+      "passport_id": "sato:agt:xgfbgxth2qkg",
+      "wallet": "EVM",
+      "wallets": [
+        "EVM"
+      ],
+      "issued_at": "2026-10-21T18:00:00.000Z"
+    }
+  },
+  "golden": {
+    "join": {
+      "sha256": "678c696ed909bfa94616b888feddc371e0c5dbc741d865df0123f0e327dac343",
+      "evm_signature": "0x3e491ed5524ad28df481968da46c7956cd5c8ccc708b88482d29ab5e483d18646a88d826e8c0c473f1bf67e9e6d6ef173db76b06e2ab6a63056903a38229ee421b"
+    },
+    "add_wallet": {
+      "sha256": "6dfec9543d931b8b99ee4aef4c92822020b35533f30b70452e8ae11bef9cbcfe",
+      "evm_signature": "0x1baab693e990a22517b3b347c39225bad76391a360b75fde132301d627635765307faa17720137c269f1a600239d574958c4778b009a0a8d1742f43978fe9c421b"
+    },
+    "prove_wallet": {
+      "sha256": "1b8a6b581efbb1ea089e85b5ce0d996cd965d87dd64e57e94f481686a09f0843",
+      "evm_signature": "0x4391cc88ed42be8314676b938c7235947d3b13326a31c7dba510980ca79241d64785c4b8c64dba31ac01300d42e11ecf93b5fdadcaab85d839d057079d804b1e1c"
+    },
+    "remove_wallet": {
+      "sha256": "898299658559dcae3602258b87408f39033336d12b552434da0d2f32b4369678",
+      "evm_signature": "0x60a653a2a51309f2b379203ad5d16376445966a359e3a5c5674635da2d30b6065bcae3b15599c13acf15d5618731407d63d2740575103215a78551762f8bfbfa1b"
+    },
+    "set_primary": {
+      "sha256": "d2465bce85d3604fe8494fe661572e1b939c3b3fde332e959bfc191a33b39801",
+      "evm_signature": "0x860012bcd613322dcfe8dc3055b9d0ee17ccc229164082d72de7875b8e9b1d443dcbe0d2b0f6c318cdf742b929d13d2fa4ccf8e7be95f1fd91b16249342ef4591b"
+    },
+    "update_profile": {
+      "sha256": "7d284ed26b00cf6868817b38032b433e09db2440022c70cf2f887846620f749c",
+      "evm_signature": "0x84e907772bbe03cdcfef83dc99482c9df19897c9e3011d2ca69f0e60f010e6f95031ebc5495a66ae01b05acec158976951ed2518314a0bf83d6ba2a668bf80821c"
+    },
+    "issue_claim": {
+      "sha256": "202a1dca395d077ed7d8d27a8ee5dc3e83e756e407e94df60616431340eac845",
+      "evm_signature": "0xfc7ffa5ffbc7d346931c62601cfc5f538d5b0676fbfe2faf0b6143d0995f5da023528d2ba7da5dff546b89672c5bb91143b8a75d9d7ddc1b3cff4a3465d887031c"
+    },
+    "unlink_owner": {
+      "sha256": "e574193617b93110e9b2b78a0808519743537e2bfc7d3384df5551ee7c95f1ca",
+      "evm_signature": "0xbc0592a43cbbaf9e767ad74eced8ffcbf068dd554186e92560f6fe36e0e1d26020283f50190a2f05fb83f4c9a56b47797dc99248cc8be5946df68c65a0a62df41b"
+    }
+  },
+  "solana_join_signature": "4GCE3xPyfETynWzqy1MddGwA2pXwJBdrWoGws7V9XFHYGc68hsEdPvyKoDkKJPqcrNFY5fx2H73o9xa44XBZhZcS"
+}

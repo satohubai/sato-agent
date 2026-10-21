@@ -214,11 +214,17 @@ test("CLI: a Solana-only agent gets a plain explanation for gift cards", () => {
   assert.match(r.stderr, /available through the Sato Base Bot/);
 });
 
-test("only the Bitrefill sign-in and the referral name request (v0.3.2) sign a message anywhere in the kit", () => {
+test("only the Bitrefill sign-in, the referral name request (v0.3.2) and the one ERC-8004 typed message of `passport set-wallet` sign a message anywhere in the kit", () => {
   const src = fileURLToPath(new URL("../src/", import.meta.url));
   const files = readdirSync(src, { recursive: true }).filter((f) => f.endsWith(".js"));
   const signing = files.filter((f) => /signMessage\(|signTypedData\(/.test(readFileSync(join(src, f), "utf8"))).sort();
-  assert.deepEqual(signing, ["bitrefill.js", "referral-names.js"]);
+  assert.deepEqual(signing, ["base.js", "bitrefill.js", "referral-names.js"]);
+  // base.js signs exactly one typed message: the registry's AgentWalletSet for this wallet (src/passport-onchain.js builds it), never a text.
+  const baseSrc = readFileSync(join(src, "base.js"), "utf8");
+  assert.doesNotMatch(baseSrc, /signMessage\(/);
+  assert.deepEqual([...baseSrc.matchAll(/signTypedData\(([^;]*)\);/g)].map((m) => m[1]), ["agentWalletTypedData({ chain, agentId: id, newWallet: wallet, owner: wallet, deadline })"]);
+  // The Sato Passport join (src/passport-join.js) signs only through the referral file's makeSigner: no signing call of its own.
+  assert.doesNotMatch(readFileSync(join(src, "passport-join.js"), "utf8"), /signMessage\(|signTypedData\(|privateKeyToAccount|createPrivateKey/);
   // the referral file signs only the fixed referral message, never text passed in from outside the file
   const names = readFileSync(join(src, "referral-names.js"), "utf8");
   assert.doesNotMatch(names, /signTypedData\(/);

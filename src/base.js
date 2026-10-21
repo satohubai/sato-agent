@@ -8,6 +8,7 @@
 // wait fails, the spend stays counted and the command says "do not retry"
 // (Pending): the node may have accepted it.
 
+import { randomUUID } from "node:crypto";
 import {
   createPublicClient,
   createWalletClient,
@@ -23,8 +24,9 @@ import { DEFAULT_EVM_CHAIN, defaultStable, evmChain, explorerTx, lockName, stabl
 import { chainTransport, sendAttempts } from "./rpc.js";
 import { CHAINS_USAGE, allowedChains, loadPolicy } from "./policy.js";
 import { entries, record, release, reserve } from "./ledger.js";
-import { Pending, Rejected } from "./errors.js";
+import { Pending, PlainError, Rejected } from "./errors.js";
 import { passportUrl, resolveForRegister, savePassport, withPassportService } from "./passport.js";
+import { AGENT_WALLET_DEADLINE_S, PASSPORT_METADATA_KEY, agentWalletTypedData, builderCodeFromEnv, passportMetadata, registryPassportAbi, setAgentWalletData, withBuilderSuffix } from "./passport-onchain.js";
 import { withLock } from "./store.js";
 import { evmAccount, loadWallet } from "./wallet.js";
 
@@ -38,6 +40,8 @@ export const identityRegistryAbi = [
   { type: "function", name: "setAgentURI", stateMutability: "nonpayable", inputs: [{ name: "agentId", type: "uint256" }, { name: "newURI", type: "string" }], outputs: [] },
   { type: "function", name: "ownerOf", stateMutability: "view", inputs: [{ name: "tokenId", type: "uint256" }], outputs: [{ name: "", type: "address" }] },
   { type: "event", name: "Registered", inputs: [{ name: "agentId", type: "uint256", indexed: true }, { name: "agentURI", type: "string", indexed: false }, { name: "owner", type: "address", indexed: true }] },
+  // register(string, (string,bytes)[]), getAgentWallet, getMetadata, setAgentWallet: the Sato Passport tag and the payment wallet (src/passport-onchain.js).
+  ...registryPassportAbi,
 ];
 
 const explorer = (chain, hash) => explorerTx(chain, hash);
@@ -281,6 +285,12 @@ export async function registerAgent({ name, description, image, services = [], x
   const keepPassport = () => {
     if (pp.save) savePassport(pp.passport); // only once every check below has passed, and before anything is signed, so a --resume keeps it
   };
+  // The registry's metadata entry ("satohub.passport", the id) goes with the registration itself, so only a fresh registration (step one) can
+  // carry it; a --resume writes the file only. The Base Builder Code (SATO_BUILDER_CODE, Base only) goes on every registry transaction sent
+  // here. Both are checked now, before anything is read from a chain or signed: a bad env value stops the command.
+  const passportMeta = pp.passport ? passportMetadata(pp.passport) : null;
+  const builderCode = chain === DEFAULT_EVM_CHAIN ? builderCodeFromEnv() : null;
+  const sfx = (data) => withBuilderSuffix(chain, data);
   const ch = evmChain(chain);
   const registry = ch.erc8004Registry;
   const registryId = `${ch.caip2}:${registry}`;
@@ -303,11 +313,15 @@ export async function registerAgent({ name, description, image, services = [], x
     if (prior.done.length && !again) throw new Error(`this wallet already registered agent id ${prior.done.join(", ")}; add --again to register another`);
     if (prior.pending.length && !again) throw new Error(`a registration was sent but never confirmed (${prior.pending.map((h) => explorer(chain, h)).join(", ")}); check it, then use --resume <agent id> or --again`);
     const first = registrationUri({ name, description, image, services, x402Support, chain, passport: pp.passport });
-    await c.pub.simulateContract({ account: c.account, address: registry, abi: identityRegistryAbi, functionName: "register", args: [first] });
+    const registerArgs = passportMeta ? [first, passportMeta] : [first];
+    const registerData = sfx(encodeFunctionData({ abi: identityRegistryAbi, functionName: "register", args: registerArgs }));
+    // With a Builder Code the simulation runs on the exact calldata that will be signed (the suffix included).
+    if (builderCode) await c.pub.call({ account: c.account, to: registry, data: registerData });
+    else await c.pub.simulateContract({ account: c.account, address: registry, abi: identityRegistryAbi, functionName: "register", args: registerArgs });
     keepPassport();
     r1 = await signAndSend(
       c,
-      { to: registry, data: encodeFunctionData({ abi: identityRegistryAbi, functionName: "register", args: [first] }) },
+      { to: registry, data: registerData },
       (hash) => record({ kind: "register_sent", status: "signed", chain, usd: 0, tx: hash }),
       { counted: false, chain },
     );
@@ -321,7 +335,7 @@ export async function registerAgent({ name, description, image, services = [], x
   }
 
   const full = registrationUri({ agentId, name, description, image, services, x402Support, chain, passport: pp.passport });
-  const data = encodeFunctionData({ abi: identityRegistryAbi, functionName: "setAgentURI", args: [agentId, full] });
+  const data = sfx(encodeFunctionData({ abi: identityRegistryAbi, functionName: "setAgentURI", args: [agentId, full] }));
   // Right after step one, a load-balanced public RPC can answer from a node that has not seen the
   // new agent yet, so the check and the gas estimate revert (seen live 2026-10-09; a --resume a
   // minute later worked). Step two then takes the next nonce, and a revert BEFORE anything is
@@ -357,8 +371,77 @@ export async function registerAgent({ name, description, image, services = [], x
       }
       record({ kind: "register", status: "registered", chain, usd: 0, agent_id: agentId.toString(), ...(tx ? { tx } : {}) });
     }
-    return { agent_id: agentId.toString(), registry: registryId, tx: r2.transactionHash, explorer: explorer(chain, r2.transactionHash), ...(pp.passport ? { passport: pp.passport, passport_url: passportUrl(pp.passport) } : {}), ...(pp.skippedSaved ? { passport_skipped: pp.skippedSaved } : {}) };
+    return {
+      agent_id: agentId.toString(),
+      registry: registryId,
+      tx: r2.transactionHash,
+      explorer: explorer(chain, r2.transactionHash),
+      ...(pp.passport ? { passport: pp.passport, passport_url: passportUrl(pp.passport) } : {}),
+      ...(pp.skippedSaved ? { passport_skipped: pp.skippedSaved } : {}),
+      // What this call wrote besides the file: the registry tag (a fresh registration only) and the Base Builder Code.
+      ...(passportMeta && resume === undefined ? { passport_metadata: PASSPORT_METADATA_KEY } : {}),
+      ...(builderCode ? { builder_code: builderCode } : {}),
+    };
   } catch (err) {
     throw new Error(`registered as agent ${agentId}, but writing its registration file failed (${err.shortMessage || err.message}). Finish with: sato-agent register --resume ${agentId} --name ... --description ...${pp.another && pp.passport ? ` --passport ${pp.passport}` : ""}`);
   }
+}
+
+/**
+ * Point an ERC-8004 agent's payment wallet at THIS bot's own wallet: setAgentWallet(agentId, wallet, deadline, signature). The registry
+ * empties an agent's wallet whenever the agent is transferred, so after Sato Hub hands a sponsored registration to the bot's wallet, the
+ * agent has no payment wallet until its new owner sets one. The bot is both the owner and the new wallet here, so one key signs the EIP-712
+ * message AgentWalletSet and sends the transaction (gas only, not counted against the USD limits).
+ *
+ * Read-only checks first, and nothing signed until they pass: the agent is this wallet's (ownerOf), its payment wallet is not already this
+ * wallet (then nothing is sent), and the wallet holds some of the chain's coin for gas. Then `deps.authorize()` (the owner's approval, when
+ * the owner chose "ask"; it throws to stop), then the signature, a simulation of the exact calldata, and the transaction.
+ * `dryRun` stops after the checks. deps: authorize, deadline (seconds, for the tests), env.
+ * Returns { already: true, ... } when nothing needed doing, { dry_run: true, ... } for a dry run, else { tx, explorer, ... }.
+ */
+export async function setAgentWallet({ agentId, chain = DEFAULT_EVM_CHAIN, dryRun = false }, c = clients(undefined, chain), deps = {}) {
+  if (!/^\d+$/.test(String(agentId))) throw new PlainError("--agent-id takes the ERC-8004 agent id (a whole number)");
+  const env = deps.env ?? process.env;
+  if (chain === DEFAULT_EVM_CHAIN) builderCodeFromEnv(env); // a bad SATO_BUILDER_CODE stops it now, before anything is read or signed
+  const ch = evmChain(chain);
+  const registry = ch.erc8004Registry;
+  const policy = loadPolicy();
+  if (policy && !Array.isArray(policy.chains)) throw new Error("choose which chain(s) this agent works on first: `sato-agent policy set --chains <" + CHAINS_USAGE + ">`");
+  if (policy && !allowedChains(policy).includes(chain)) throw new PlainError(`this agent is set to work on ${allowedChains(policy).join(" and ")} only; the ERC-8004 registry meant here is on ${ch.label}. Nothing was signed.`);
+  const id = BigInt(agentId);
+  const wallet = c.account.address;
+  const owner = await c.pub.readContract({ address: registry, abi: identityRegistryAbi, functionName: "ownerOf", args: [id] });
+  if (String(owner).toLowerCase() !== wallet.toLowerCase()) {
+    throw new PlainError(`agent ${id} on ${ch.label} belongs to ${owner}, not this wallet (${wallet}); nothing was signed. Only the wallet that owns an agent can set its payment wallet: wait until Sato Hub has handed it over.`);
+  }
+  const current = await c.pub.readContract({ address: registry, abi: identityRegistryAbi, functionName: "getAgentWallet", args: [id] });
+  const base = { agent_id: id.toString(), wallet, chain, registry: `${ch.caip2}:${registry}` };
+  if (String(current).toLowerCase() === wallet.toLowerCase()) return { ...base, already: true };
+  const gas = await c.pub.getBalance({ address: wallet });
+  if (gas === 0n) {
+    throw new PlainError(`this wallet holds no ${ch.native.symbol} on ${ch.label}, so it cannot pay the gas for this. Send a little ${ch.native.symbol} to ${wallet} and run it again; nothing was signed.`);
+  }
+  if (dryRun) return { ...base, dry_run: true, current_wallet: /^0x0{40}$/i.test(String(current)) ? null : current };
+  await deps.authorize?.();
+
+  // The deadline is read from the chain's own clock (4 minutes ahead; the registry allows 5), so a skewed clock on this computer cannot make it expire.
+  let nowS;
+  try {
+    nowS = (await c.pub.getBlock()).timestamp;
+  } catch {
+    nowS = BigInt(Math.floor(Date.now() / 1000));
+  }
+  const deadline = deps.deadline !== undefined ? BigInt(deps.deadline) : BigInt(nowS) + BigInt(AGENT_WALLET_DEADLINE_S);
+  const signature = await c.account.signTypedData(agentWalletTypedData({ chain, agentId: id, newWallet: wallet, owner: wallet, deadline }));
+  const data = setAgentWalletData({ chain, agentId: id, newWallet: wallet, deadline, signature }, env);
+  try {
+    await c.pub.call({ account: c.account, to: registry, data });
+  } catch (err) {
+    throw new PlainError(`the registry would refuse this (${err.shortMessage || err.message}); nothing was sent.`);
+  }
+  const ledgerId = randomUUID();
+  const receipt = await signAndSend(c, { to: registry, data }, (hash) => record({ id: ledgerId, kind: "set_agent_wallet", status: "signed", chain, usd: 0, agent_id: id.toString(), tx: hash }), { counted: false, chain });
+  if (receipt.status !== "success") throw new Error(`setAgentWallet reverted: ${explorer(chain, receipt.transactionHash)}`);
+  record({ id: ledgerId, kind: "set_agent_wallet", status: "confirmed", tx: receipt.transactionHash });
+  return { ...base, tx: receipt.transactionHash, explorer: explorer(chain, receipt.transactionHash) };
 }

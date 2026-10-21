@@ -16,7 +16,7 @@ import { VALUE_KINDS, actions, read, record, recordCheckEvent, spentLast24h } fr
 import { inspect, integrityRefusals, repair } from "../src/integrity.js";
 import { purchaseChain, purchaseGate } from "../src/purchase.js";
 import { SHIP_FIELDS, clearShipTo, isReferralName, parseReferrerInput, referrer as savedReferrer, scrubAddress, setReferrer, setShipTo, settingsFromJson, shipTo, shortReferrer, shipToLines, shipToStatus } from "../src/settings.js";
-import { resolvePassport, savedPassport } from "../src/passport.js";
+import { passportResultLines, resolveForRegister, resolvePassport, savedPassport } from "../src/passport.js";
 import { reportSettlement, settlementLine } from "../src/swap/referral.js";
 import { REFERRAL_SHARE_PERCENT, createReferralName, declineOffer, lookupReferralName, ownReferral, referralShow, setReferralPayout, shareTextLines, shareTexts, swapOffer, takeOffer } from "../src/referral-names.js";
 import { readFileSync } from "node:fs";
@@ -192,7 +192,8 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
                                          when the owner chose more than one). --passport adds a services entry to the registration
                                          file that links it to this agent's Sato Passport (satohub.ai/passport/<id>): the agent's own
                                          declaration, not checked here and not a verification. It is saved on this computer, so a
-                                         later --resume keeps it; --passport none drops it
+                                         later --resume keeps it; --passport none drops it. Another agent (--again) never takes
+                                         the saved one: it gets a passport only from its own --passport
   check "<install command>" [--cluster mainnet-beta|devnet] [--skip-check]
                                          Solana build receipts for the npm packages in an install command (read
                                          from the chain, no call to Sato Hub), then what the install does with
@@ -827,18 +828,14 @@ async function main(command = cmd, args = positionals.slice(1)) {
         return { name: s.slice(0, i).trim(), endpoint: s.slice(i + 1).trim() };
       });
       // --passport: a Sato Passport id, checked before anything else (a bad id is a usage error: no approval code is made for it and
-      // nothing is built or sent). Without the flag the one saved on this computer is used. Nothing is looked up at Sato Hub.
-      let passportGiven; // what registerAgent is told: undefined = use the saved one, null = none, else the id
-      let passport; // the id this registration file will carry, or null
+      // nothing is built or sent). Nothing is looked up at Sato Hub.
+      let passportGiven; // what registerAgent is told: undefined = nothing given, null = none, else the id
       if (flags.passport !== undefined) {
         try {
           passportGiven = resolvePassport(flags.passport).passport;
         } catch (err) {
           throw new UsageError(err.message);
         }
-        passport = passportGiven;
-      } else {
-        passport = savedPassport();
       }
       // Registration spends gas only, so it is not limit-gated, but "ask before
       // every payment" covers it too.
@@ -853,6 +850,10 @@ async function main(command = cmd, args = positionals.slice(1)) {
       // It signs with the key and spends gas: a freeze or a pause stops it like any spend.
       const frozen = integrityRefusals();
       if (frozen.length) throw new Refused(frozen);
+      // The id this registration file will carry: the one given, else the one saved on this computer, except for ANOTHER agent from the same
+      // wallet (--again, or finishing one with --resume), which only ever gets an id given on this command (src/passport.js).
+      const pp = resolveForRegister(passportGiven, { again: Boolean(flags.again), resume: flags.resume, laterAgent: baseChain.isLaterAgent(flags.resume, baseChain.registeredIds(regChain).done) });
+      const passport = pp.passport;
       if (loadPolicy()?.approval === "ask") {
         const intent = { cmd: "register", ...(regChain === DEFAULT_EVM_CHAIN ? {} : { chain: regChain }), name: flags.name ?? null, description: flags.description ?? null, image: flags.image ?? null, services, x402_support: Boolean(flags["x402-support"]), ...(passport ? { passport } : {}), again: Boolean(flags.again), resume: flags.resume ?? null };
         if (!flags.approve) throw new NeedsApproval(intent, await requestApproval(intent));
@@ -869,9 +870,10 @@ async function main(command = cmd, args = positionals.slice(1)) {
         resume: flags.resume,
         chain: regChain,
       });
-      // Only when the file carries a passport link. It says what the entry is (the agent's own declaration) and nothing more.
-      const passportNote = r.passport ? `\n  Registration file links to Sato Passport ${r.passport}: ${r.passport_url} (this agent's own declaration, not checked by the kit; saved here so --resume keeps it).` : "";
-      return out(`Registered as ERC-8004 agent ${r.agent_id} on ${labelOf(regChain)} (${r.registry}), registration file stored onchain.\n  ${r.explorer}${passportNote}`, r);
+      // Only when the file carries a passport link (what the entry is: the agent's own declaration), and one line when a saved passport was
+      // left out because this is another agent from the same wallet.
+      const passportLines = passportResultLines(r, { save: pp.save }).map((l) => `\n  ${l}`).join("");
+      return out(`Registered as ERC-8004 agent ${r.agent_id} on ${labelOf(regChain)} (${r.registry}), registration file stored onchain.\n  ${r.explorer}${passportLines}`, r);
     }
     case "check": {
       const command = rest.join(" ");

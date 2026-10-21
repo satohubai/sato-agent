@@ -135,14 +135,14 @@ Add `--json` to any command for machine-readable output.
 
 ### The Sato Passport link in `register`
 
-`register --passport sato:agt:abcdefghjkmn` adds one entry to the `services` list of the agent's ERC-8004 registration file: `{"name":"SatoPassport","endpoint":"https://satohub.ai/passport/abcdefghjkmn","version":"1"}`. It **links this agent's ERC-8004 registration to its Sato Passport**, so a service that reads the registration (an ERC-8004 explorer, for one) can follow the entry to the passport page.
+`register --passport sato:agt:exmpexmpexmp` adds one entry to the `services` list of the agent's ERC-8004 registration file: `{"name":"SatoPassport","endpoint":"https://satohub.ai/passport/exmpexmpexmp","version":"1"}`. It **links this agent's ERC-8004 registration to its Sato Passport**, so a service that reads the registration (an ERC-8004 explorer, for one) can follow the entry to the passport page.
 
 - It is the agent's own declaration, written into its own registration file. The kit does not look the passport up and does not check it against Sato Hub: `register` makes no call to Sato Hub for it. The entry is a link; it does not say the agent is verified, safe or trusted.
 - The id must be `sato:agt:` and 12 characters from `abcdefghjkmnpqrstuvwxyz23456789` (lower case). Anything else is refused as a usage error (exit 2) before an approval code is made or anything is sent.
 - It is saved in `settings.json` the first time it is given, so a later `register --resume` (the way to rewrite the registration file) keeps it without being told again. A new `--passport` replaces the saved one; `--passport none` drops it. `settings show` prints the saved id. The id is saved only once the other checks of that `register` call have passed, and before anything is signed.
 - If a `--service SatoPassport=...` is also given, the kit's entry replaces it, so there is never a duplicate. With no passport the registration file is exactly what it was before this option.
 - In approval mode the passport is part of what the owner approves: a code given for one passport does not work for another.
-- A saved passport goes into every registration file this kit writes (one kit, one agent). To register a different agent from the same wallet with `--again`, pass its own `--passport`, or `--passport none`.
+- A passport is one agent's. `register --again` (another agent from the same wallet) does **not** take the saved one: its file carries a SatoPassport entry only if `--passport sato:agt:...` is passed on that command, and that id is used for that file alone (it is not saved, and the saved one is not changed). When a saved passport is left out this way, `register` prints one line saying so. The same holds for finishing such a second agent with `--resume`: the saved passport goes only to the wallet's first agent on that chain (and to an agent the ledger does not know), so pass the second agent's own `--passport` on its `--resume`. The error that asks you to run `--resume` names it.
 
 ### Build receipts in `check`
 

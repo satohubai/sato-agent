@@ -24,7 +24,7 @@ import { chainTransport, sendAttempts } from "./rpc.js";
 import { CHAINS_USAGE, allowedChains, loadPolicy } from "./policy.js";
 import { entries, record, release, reserve } from "./ledger.js";
 import { Pending, Rejected } from "./errors.js";
-import { passportUrl, resolvePassport, savePassport, withPassportService } from "./passport.js";
+import { passportUrl, resolveForRegister, savePassport, withPassportService } from "./passport.js";
 import { withLock } from "./store.js";
 import { evmAccount, loadWallet } from "./wallet.js";
 
@@ -255,6 +255,13 @@ export function registeredIds(chain = DEFAULT_EVM_CHAIN) {
 }
 
 /**
+ * True when `resume` names an agent this wallet registered on the chain AFTER its first one (a `--again` registration being finished):
+ * not the agent a saved Sato Passport belongs to. `done` is `registeredIds(chain).done`, oldest first. An id the ledger does not know is
+ * not "later": a resume of it behaves as it always did.
+ */
+export const isLaterAgent = (resume, done) => /^\d+$/.test(String(resume)) && done.indexOf(BigInt(resume).toString()) > 0;
+
+/**
  * Register this agent in the ERC-8004 IdentityRegistry on an EVM chain. Two transactions:
  * register (the id is only known after it), then setAgentURI with the full
  * registration file naming that id. Gas only, not counted against the USD limits.
@@ -267,9 +274,12 @@ export async function registerAgent({ name, description, image, services = [], x
   if (!name || !description) throw new Error("--name and --description are required");
   // The Sato Passport link (see src/passport.js): checked first, so a bad id stops here with nothing read from a chain or sent. `passport`
   // undefined = the one saved on this computer, an id = that one (saved below), null = none from now on. No call to Sato Hub is made.
-  const pp = resolvePassport(passport);
+  // Another agent from the same wallet (`again`, or a --resume of one registered after the first) never takes the saved one: a passport
+  // belongs to one agent. Only an id given on that command is used, for that file alone, and nothing saved is changed.
+  const prior = registeredIds(chain);
+  const pp = resolveForRegister(passport, { again, resume, laterAgent: isLaterAgent(resume, prior.done) });
   const keepPassport = () => {
-    if (pp.explicit) savePassport(pp.passport); // only once every check below has passed, and before anything is signed, so a --resume keeps it
+    if (pp.save) savePassport(pp.passport); // only once every check below has passed, and before anything is signed, so a --resume keeps it
   };
   const ch = evmChain(chain);
   const registry = ch.erc8004Registry;
@@ -279,7 +289,6 @@ export async function registerAgent({ name, description, image, services = [], x
   if (policy && !allowedChains(policy).includes(chain)) throw new Error(`this agent is set to work on ${allowedChains(policy).join(" and ")} only; ERC-8004 registration is on ${ch.label}`);
   let agentId;
   let r1; // step one's receipt (a fresh registration only)
-  const prior = registeredIds(chain);
   if (resume !== undefined) {
     if (!/^\d+$/.test(String(resume))) throw new Error("--resume takes the agent id");
     agentId = BigInt(resume);
@@ -348,8 +357,8 @@ export async function registerAgent({ name, description, image, services = [], x
       }
       record({ kind: "register", status: "registered", chain, usd: 0, agent_id: agentId.toString(), ...(tx ? { tx } : {}) });
     }
-    return { agent_id: agentId.toString(), registry: registryId, tx: r2.transactionHash, explorer: explorer(chain, r2.transactionHash), ...(pp.passport ? { passport: pp.passport, passport_url: passportUrl(pp.passport) } : {}) };
+    return { agent_id: agentId.toString(), registry: registryId, tx: r2.transactionHash, explorer: explorer(chain, r2.transactionHash), ...(pp.passport ? { passport: pp.passport, passport_url: passportUrl(pp.passport) } : {}), ...(pp.skippedSaved ? { passport_skipped: pp.skippedSaved } : {}) };
   } catch (err) {
-    throw new Error(`registered as agent ${agentId}, but writing its registration file failed (${err.shortMessage || err.message}). Finish with: sato-agent register --resume ${agentId} --name ... --description ...`);
+    throw new Error(`registered as agent ${agentId}, but writing its registration file failed (${err.shortMessage || err.message}). Finish with: sato-agent register --resume ${agentId} --name ... --description ...${pp.another && pp.passport ? ` --passport ${pp.passport}` : ""}`);
   }
 }

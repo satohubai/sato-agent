@@ -39,7 +39,7 @@ export const PASSPORT_SERVICE_VERSION = "1";
 export function parsePassportId(raw) {
   const v = typeof raw === "string" ? raw.trim() : "";
   if (!PASSPORT_ID_RE.test(v)) {
-    throw new Error(`--passport must be a Sato Passport id like sato:agt:abcdefghjkmn (sato:agt: and 12 lower-case characters), or none (got "${clean(typeof raw === "string" ? raw : String(raw), 40)}")`);
+    throw new Error(`--passport must be a Sato Passport id like sato:agt:exmpexmpexmp (sato:agt: and 12 lower-case characters), or none (got "${clean(typeof raw === "string" ? raw : String(raw), 40)}")`);
   }
   return v;
 }
@@ -77,6 +77,40 @@ export function resolvePassport(input) {
   if (input === undefined) return { passport: savedPassport(), explicit: false };
   if (input === null || (typeof input === "string" && /^(none|off|clear)$/i.test(input.trim()))) return { passport: null, explicit: true };
   return { passport: parsePassportId(input), explicit: true };
+}
+
+/**
+ * What one `register` call writes. Same as `resolvePassport`, except for ANOTHER agent from the same wallet: a `--again` registration (not a
+ * `--resume`, which is the same agent), or a `--resume` of an agent registered after the wallet's first one on that chain (`laterAgent`,
+ * which is such a `--again` registration being finished). The saved passport belongs to the first agent, so it is NOT applied to the
+ * other one, and a passport is used only when it is given on this very command. A passport given for another agent is for that one
+ * file: it is never saved, and the saved one is never replaced or dropped by it.
+ *   passport     the id the registration file carries, or null
+ *   save         true when this call should write `passport` into settings.json (never for another agent)
+ *   skippedSaved the saved id that was left out because this is another agent, else null (the caller says so, in one line)
+ *   another      true when this is another agent
+ */
+export function resolveForRegister(input, { again = false, resume, laterAgent = false } = {}) {
+  const r = resolvePassport(input);
+  const another = (again && resume === undefined) || laterAgent;
+  if (!another) return { passport: r.passport, save: r.explicit, skippedSaved: null, another: false };
+  if (input === undefined) return { passport: null, save: false, skippedSaved: savedPassport(), another: true };
+  return { passport: r.passport, save: false, skippedSaved: null, another: true };
+}
+
+/** The one line printed when the saved passport is left out because this is another agent. */
+export const skippedPassportNote = (id) =>
+  `The saved Sato Passport link (${id}) was not added to this registration file: this is another agent from the same wallet (--again), and a passport belongs to one agent. Add --passport <this agent's own id> to give it one.`;
+
+/**
+ * The lines `register` prints under its result about the passport: the link, when the file carries one (it says what the entry is, the agent's
+ * own declaration, and nothing more), and the skipped note, when a saved passport was left out. `save` is whether this call saved the id.
+ */
+export function passportResultLines(r, { save = false } = {}) {
+  const lines = [];
+  if (r.passport) lines.push(`Registration file links to Sato Passport ${r.passport}: ${r.passport_url} (this agent's own declaration, not checked by the kit; ${save ? "saved here so --resume keeps it" : "for this registration file only, not saved"}).`);
+  if (r.passport_skipped) lines.push(skippedPassportNote(r.passport_skipped));
+  return lines;
 }
 
 /**

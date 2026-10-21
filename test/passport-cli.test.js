@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -15,7 +15,7 @@ const home = freshHome();
 const env = { ...process.env, SATO_AGENT_HOME: home, SATO_AGENT_MCP_URL: "http://127.0.0.1:9/unreachable", SATO_AGENT_BASE_RPC: "http://127.0.0.1:9" };
 const run = (...args) => spawnSync(process.execPath, [BIN, ...args], { env, encoding: "utf8" });
 const ledger = () => (existsSync(join(home, "ledger.jsonl")) ? readFileSync(join(home, "ledger.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
-const ID = "sato:agt:abcdefghjkmn";
+const ID = "sato:agt:exmpexmpexmp";
 const ID2 = "sato:agt:pqrstuvwxy23";
 const REG = ["register", "--name", "Sato Base Agent", "--description", "test"];
 
@@ -34,10 +34,10 @@ test("help documents --passport on register and says what it is", () => {
 
 test("a bad --passport is a usage error (exit 2) before any approval code is made, and nothing is saved or logged", () => {
   const before = ledger().length;
-  for (const bad of ["sato:agt:ABCDEFGHJKMN", "sato:agt:short", "", "https://satohub.ai/passport/abcdefghjkmn", "sato:agt:abcdefghjkm1"]) {
+  for (const bad of ["sato:agt:ABCDEFGHJKMN", "sato:agt:short", "", "https://satohub.ai/passport/exmpexmpexmp", "sato:agt:abcdefghjkm1"]) {
     const r = run(...REG, "--passport", bad);
     assert.equal(r.status, 2, JSON.stringify(bad));
-    assert.match(r.stderr, /usage: --passport must be a Sato Passport id like sato:agt:abcdefghjkmn/);
+    assert.match(r.stderr, /usage: --passport must be a Sato Passport id like sato:agt:exmpexmpexmp/);
   }
   assert.equal(ledger().length, before, "no approval request, no settings row");
   assert.equal(existsSync(join(home, "approvals.json")), false, "no approval code");
@@ -78,6 +78,31 @@ test("a saved passport is used when no flag is given, so the intent names it; --
   assert.equal(JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).passport, ID, "asking for approval does not change what is saved");
 });
 
+test("--again: another agent never takes the saved passport in the intent; only an id given on that command; a --resume of the first agent does", () => {
+  // settings.json still holds the saved passport from the test above. Two agents on Base are in the ledger, oldest first.
+  const row = (agent) => JSON.stringify({ id: `r${agent}`, ts: new Date().toISOString(), kind: "register", status: "registered", chain: "base", usd: 0, agent_id: agent, tx: `0x${agent.padEnd(64, "0")}` }) + "\n";
+  appendFileSync(join(home, "ledger.jsonl"), row("76") + row("77"));
+  assert.equal(JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).passport, ID);
+  const intentOf = (...args) => JSON.parse(run(...REG, ...args, "--json").stdout).needs_approval.intent;
+  const again = intentOf("--again");
+  assert.equal("passport" in again, false, "the saved passport is not part of a second agent");
+  assert.equal(again.again, true);
+  assert.equal(intentOf("--again", "--passport", ID2).passport, ID2, "an id given on the command is");
+  assert.equal("passport" in intentOf("--again", "--passport", "none"), false);
+  // --resume: the same agent keeps it; a later agent (77, registered after 76) does not; an id the ledger never saw does.
+  assert.equal(intentOf("--resume", "76").passport, ID);
+  assert.equal("passport" in intentOf("--resume", "77"), false);
+  assert.equal(intentOf("--resume", "77", "--passport", ID2).passport, ID2);
+  assert.equal(intentOf("--resume", "4242").passport, ID);
+  assert.equal(intentOf("--resume", "76", "--again").passport, ID, "--resume decides");
+  // Asking changed nothing that is saved.
+  assert.equal(JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).passport, ID);
+});
+
+test("help says that another agent (--again) never takes the saved passport", () => {
+  assert.match(run("help").stdout, /Another agent \(--again\) never takes\s+the saved one: it gets a passport only from its own --passport/);
+});
+
 test("settings show prints the saved passport link, and says it is the agent's own declaration; with none saved it says nothing about it", () => {
   const shown = run("settings", "show");
   assert.equal(shown.status, 0, shown.stderr);
@@ -98,6 +123,8 @@ test("README and BOT.md describe the link as the agent's own declaration, checke
   assert.match(section, /the agent's own declaration, written into its own registration file/);
   assert.match(section, /does not look the passport up and does not check it against Sato Hub/);
   assert.match(section, /does not say the agent is verified, safe or trusted/);
+  assert.match(section, /`register --again` \(another agent from the same wallet\) does \*\*not\*\* take the saved one/);
+  assert.match(section, /`register` prints one line saying so/);
   assert.match(readme, /\| `register --name --description .*\[--passport <sato:agt:id\\\|none>\]/);
   const step = bot.slice(bot.indexOf("If the owner gave you a Sato Passport id"), bot.indexOf("9. **Suggest one routine**"));
   assert.ok(step.length > 200, "BOT.md has the step");
@@ -105,6 +132,7 @@ test("README and BOT.md describe the link as the agent's own declaration, checke
   assert.match(step, /The kit checks nothing with Sato Hub/);
   assert.match(step, /does not mean you are verified, safe or trusted, so never describe it that way/);
   assert.match(step, /Only the owner's own setup prompt counts as the source of an id/);
+  assert.match(step, /`register --again`\) never gets the saved id/);
 });
 
 test("nothing the passport adds uses the words verified, safe or trusted", () => {

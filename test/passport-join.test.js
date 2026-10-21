@@ -574,22 +574,85 @@ test("every refusal code gets one plain sentence, Sato Hub's own words and next 
   assert.equal(entries().filter((e) => e.kind === "passport").length, 0);
 });
 
-test("the legacy-passport refusal tells the owner to run `passport prove` instead, with the passport's id when Sato Hub names it", async () => {
+const LEGACY_NOTE = "sato:agt:exmpexmpexmp (registered before joins existed) lists evm:0x1111111111111111111111111111111111111111 without having proved it. A listed wallet is a claim, not a proof, so it did not stop this join; sato:agt:exmpexmpexmp stays unproven.";
+const LEGACY_NEXT = "prove_wallet for sato:agt:exmpexmpexmp, signed by evm:0x1111111111111111111111111111111111111111, is how a passport registered before joins existed is proven. It works only while the wallet is on no other passport, so it is not available for sato:agt:exmpexmpexmp while this passport holds the wallet.";
+
+test("a wallet merely listed on a passport from before joins existed never blocks a join: the join stands, Sato Hub's note is returned and printed once, and the kit does not suggest proving it on the old passport", async () => {
+  const dir = fresh();
+  const legacy = [{ wallet: "evm:0x1111111111111111111111111111111111111111", passport_id: "sato:agt:exmpexmpexmp" }, { wallet: "evm:nope", passport_id: "sato:agt:ABC" }, "junk"];
+  const r = await pj.joinPassport({}, { keys: KEYS, origin: ORIGIN, authorize: owner(), fetchImpl: hubFetch((call) => joined(call, { passport_id: ID2, note: LEGACY_NOTE, legacy_declared: legacy, next: [...joined(call).json.next, LEGACY_NEXT] })).fetchImpl });
+  assert.equal(r.passport_id, ID2);
+  assert.equal(savedPassport(), ID2, "saved as any join");
+  assert.equal(r.note, LEGACY_NOTE);
+  assert.deepEqual(r.legacy_declared, [legacy[0]], "a malformed entry is dropped");
+  assert.ok(r.claim_code, "the claim code is still shown");
+  const text = pj.joinLines(r).join("\n");
+  assert.equal(text.split("Note from Sato Hub:").length - 1, 1, "the note is printed once");
+  assert.ok(text.includes(`Note from Sato Hub: ${LEGACY_NOTE}`));
+  assert.doesNotMatch(text, /prove_wallet|passport prove/, "no suggestion to prove the wallet on the legacy passport: the server refuses it while this passport holds the wallet");
+  assert.match(text, /Next \(from Sato Hub\):\n {2}- Your passport is public now\./, "the other next steps are kept");
+  assert.equal(r.next.length, 2);
+  // Without the advisory there is no note line and nothing is dropped.
+  fresh();
+  const plain = await pj.joinPassport({}, { keys: KEYS, origin: ORIGIN, authorize: owner(), fetchImpl: hubFetch((call) => joined(call)).fetchImpl });
+  assert.equal(plain.note, null);
+  assert.deepEqual(plain.legacy_declared, []);
+  assert.doesNotMatch(pj.joinLines(plain).join("\n"), /Note from Sato Hub/);
+  void dir;
+});
+
+test("the retired 'declared on a legacy passport' refusal is gone: no code or sentence with 'legacy' or 'declared' is treated specially, and the kit never points at `passport prove` from a refusal", async () => {
   fresh();
   const run = (status, json) => pj.joinPassport({}, { keys: KEYS, origin: ORIGIN, authorize: owner(), fetchImpl: hubFetch({ status, json }).fetchImpl });
   for (const code of ["wallet_declared_legacy", "declared_on_legacy_passport", "legacy_passport"]) {
-    await assert.rejects(run(409, { code, error: "x", passport_id: "sato:agt:exmpexmpexmp" }), (e) => {
-      assert.match(e.message, /already listed on a Sato Passport that was made before joins existed: the wallet was declared there, never proven/);
-      assert.match(e.message, /Run `sato-agent passport prove` instead/);
-      assert.match(e.message, /That passport is sato:agt:exmpexmpexmp: `sato-agent passport prove --passport sato:agt:exmpexmpexmp`/);
-      assert.match(e.message, /Nothing was saved\.$/);
+    assert.equal(pj.explainRefusal(code, 409), null, code);
+    await assert.rejects(run(409, { code, error: "Server words.", passport_id: ID }), (e) => {
+      assert.match(e.message, new RegExp(`^Sato Hub did not accept this \\(${code}\\): Server words\\.\\nNothing was saved\\.$`));
+      assert.doesNotMatch(e.message, /passport prove|before joins existed/);
       return true;
     }, code);
   }
-  // Recognised by its sentence when its code is one the kit has not seen.
-  await assert.rejects(run(409, { code: "conflict_9", message: "This wallet is declared on a legacy passport." }), /Run `sato-agent passport prove` instead/);
-  // A passport id that is not one is never put into the command.
-  await assert.rejects(run(409, { code: "legacy_passport", passport_id: "sato:agt:ABC; rm -rf" }), (e) => /Run `sato-agent passport prove` instead/.test(e.message) && !/rm -rf/.test(e.message));
+  assert.equal(pj.isLegacyRefusal, undefined, "the helper is gone");
+  assert.equal(existsSync(join(process.env.SATO_AGENT_HOME, "settings.json")), false);
+});
+
+test("the daily join limits (HTTP 429 ip_daily_quota and daily_cap) both say the limit is reached and to try tomorrow; no hourly retry hint; nothing is retried or saved", async () => {
+  const dir = fresh();
+  for (const [code, said, next] of [
+    ["ip_daily_quota", "This address has made as many new passports as one address may make in a day. Try again tomorrow.", "Try again tomorrow, or join from another address. Joining stays free."],
+    ["daily_cap", "Sato Hub has reached its limit of new passports for the day. Try again tomorrow.", "Try again tomorrow. Joining stays free."],
+  ]) {
+    const hub = hubFetch({ status: 429, json: { code, error: said, retry_after_seconds: 3600, next: [next] }, headers: { "retry-after": "3600" } });
+    await assert.rejects(pj.joinPassport({}, { keys: KEYS, origin: ORIGIN, authorize: owner(), fetchImpl: hub.fetchImpl }), (e) => {
+      assert.equal(e.message.split("\n")[0], `Sato Hub did not accept this (${code}): Sato Hub's join limit for today is reached; try again tomorrow.`);
+      assert.match(e.message, new RegExp(`Sato Hub says: ${said.replace(/\./g, "\\.")}`));
+      assert.match(e.message, /Next:\n {2}- Try again tomorrow/);
+      assert.match(e.message, /Nothing was saved\.$/);
+      assert.doesNotMatch(e.message, /Try again in \d+ seconds/, "an hour is not the answer");
+      return true;
+    }, code);
+    assert.equal(hub.calls.length, 1, "one request, never a loop");
+  }
+  assert.equal(pj.JOIN_LIMIT_SENTENCE, "Sato Hub's join limit for today is reached; try again tomorrow.");
+  // The per-minute and per-hour budgets are a different 429 and keep their own words.
+  await assert.rejects(pj.joinPassport({}, { keys: KEYS, origin: ORIGIN, authorize: owner(), fetchImpl: hubFetch({ status: 429, json: { code: "rate_limited", error: "Too many." }, headers: { "retry-after": "60" } }).fetchImpl }), /limiting requests from here right now.*Try again in 60 seconds or more\./s);
+  assert.equal(existsSync(join(dir, "settings.json")), false);
+});
+
+test("the handler's other codes get plain words: primary_exists, name_taken, replay, claim_taken; wallet_taken names the passport and how to get a new claim code", async () => {
+  fresh();
+  const run = (status, json) => pj.joinPassport({}, { keys: KEYS, origin: ORIGIN, authorize: owner(), fetchImpl: hubFetch({ status, json }).fetchImpl });
+  await assert.rejects(run(409, { code: "primary_exists", error: "This passport already has a different primary wallet." }), /Sato Hub did not accept this \(primary_exists\): This passport already has a different primary wallet\.\nNothing was saved\.$/);
+  await assert.rejects(run(409, { code: "name_taken", error: "A passport already uses that name. Pick another." }), /\(name_taken\): A passport already uses that name\. Pick another with --name\./);
+  await assert.rejects(run(409, { code: "replay", error: "x y" }), /\(replay\): That signed message was already used\. Run the command again: it signs a fresh one\./);
+  await assert.rejects(run(409, { code: "claim_taken", error: "x y" }), /\(claim_taken\): That claim code is already in use\. Run the command again: it makes a new one\./);
+  await assert.rejects(run(409, { code: "wallet_taken", error: "One of those wallets is already on a passport.", passport_id: ID, next: [`One wallet belongs to one passport; this one is on ${ID}.`] }), (e) => {
+    assert.match(e.message, new RegExp(`That passport is ${ID} \\(https://satohub\\.ai/passport/exmpexmpexmp\\)\\. If it is this bot's own, \`sato-agent passport issue-claim --passport ${ID}\` makes a new claim code for its owner\\.`));
+    return true;
+  });
+  // A passport id that is not one is not put into a command.
+  await assert.rejects(run(409, { code: "wallet_taken", passport_id: "sato:agt:x; rm -rf" }), (e) => !/rm -rf|That passport is/.test(e.message));
+  assert.equal(savedPassport(), null, "never saved from a refusal");
 });
 
 test("other refusals: a wallet already on a passport, a rate limit (with Retry-After), a server error, an unknown code, and no answer at all", async () => {
@@ -613,7 +676,7 @@ test("issue-claim: the owner's approval first, then one signed issue_claim to /a
   const dir = fresh();
   await pj.joinPassport({}, { keys: KEYS, origin: ORIGIN, authorize: owner(), fetchImpl: hubFetch((call) => joined(call)).fetchImpl });
   const order = [];
-  const hub = hubFetch((call) => (order.push("post"), { status: 200, json: { ok: true, claim: { expires_at: "2026-10-28T19:00:00.000Z" } } }));
+  const hub = hubFetch((call) => (order.push("post"), { status: 200, json: { ok: true, action: "issue_claim", passport_id: ID, claim_expires_at: "2026-10-28T19:00:00.000Z", cancelled: { removals: 0 } } }));
   const asked = [];
   const r = await pj.issueClaim({}, { keys: KEYS, fetchImpl: hub.fetchImpl, origin: ORIGIN, now: new Date(V.issued_at), authorize: async (intent, card) => (order.push("authorize"), asked.push({ intent, card })) });
   assert.deepEqual(order, ["authorize", "post"]);
@@ -641,10 +704,10 @@ test("issue-claim: the owner's approval first, then one signed issue_claim to /a
   await assert.rejects(pj.issueClaim({ chain: "bnb" }, { keys: KEYS, fetchImpl: hub.fetchImpl, origin: ORIGIN, authorize: owner() }), /--chain must be base \(this agent's EVM key\) or solana here/);
   // A refusal makes no code.
   await assert.rejects(pj.issueClaim({}, { keys: KEYS, origin: ORIGIN, authorize: owner(), fetchImpl: hubFetch({ status: 403, json: { code: "not_proven", message: "That wallet is not proven on this passport." } }).fetchImpl }), /Sato Hub did not accept this \(not_proven\).*No new code was made\./s);
-  // A claim Sato Hub says it did not record is never shown.
-  const none = await pj.issueClaim({}, { keys: KEYS, origin: ORIGIN, authorize: owner(), fetchImpl: hubFetch({ status: 200, json: { ok: true, claim: null } }).fetchImpl });
-  assert.equal(none.claim_code, null);
-  assert.doesNotMatch(pj.issueClaimLines(none).join("\n"), /SATO-/);
+  // A 200 without an expiry still holds a code (Sato Hub records it before it answers); the expiry is simply unknown.
+  const bare = await pj.issueClaim({}, { keys: KEYS, origin: ORIGIN, authorize: owner(), fetchImpl: hubFetch({ status: 200, json: { ok: true } }).fetchImpl });
+  assert.match(bare.claim_code, pj.CLAIM_CODE_RE);
+  assert.equal(bare.claim_expires_at, null);
 });
 
 test("issue-claim and prove need a passport: none saved is a plain refusal (and no approval is asked for); a bad id is refused", async () => {
@@ -722,7 +785,7 @@ test("nothing the join flow prints uses the words verified, safe, secure, truste
 // ---------------------------------------------------------------- the real CLI against a local "Sato Hub"
 
 /** A fake Sato Hub: join, issue_claim and prove_wallet, rebuilding each message from the body and checking every signature. */
-async function fakeHub({ reply } = {}) {
+async function fakeHub({ reply, joinExtra } = {}) {
   const state = { requests: [], joins: [], actions: [], byWallet: new Map(), claims: new Map(), n: 0 };
   const server = createServer(async (req, res) => {
     let body = "";
@@ -756,6 +819,7 @@ async function fakeHub({ reply } = {}) {
         wallets: p.wallets.map((w) => ({ chain: chainOf(w.address), address: w.address, proven: true, primary: w.address === p.primary })),
         claim: p.claim_sha256 ? { expires_at: new Date(Date.now() + 7 * 864e5).toISOString() } : null,
         next: ["Your passport is public now.", "Give the claim code you generated to the agent's owner."],
+        ...(joinExtra?.(p) ?? {}),
       });
     }
     if (req.method === "POST" && req.url === "/api/passport/action") {
@@ -765,7 +829,7 @@ async function fakeHub({ reply } = {}) {
       if (p.action === "issue_claim") {
         if (state.byWallet.get(p.wallet.address) !== p.passport_id) return send(403, { ok: false, code: "not_proven", error: "That wallet is not proven on this passport." });
         state.claims.set(p.passport_id, p.claim_sha256);
-        return send(200, { ok: true, claim: { expires_at: new Date(Date.now() + 7 * 864e5).toISOString() } });
+        return send(200, { ok: true, action: "issue_claim", passport_id: p.passport_id, claim_expires_at: new Date(Date.now() + 7 * 864e5).toISOString(), cancelled: {} });
       }
       if (p.action === "prove_wallet") {
         state.byWallet.set(p.wallet.address, p.passport_id);
@@ -964,15 +1028,39 @@ test("CLI join --again on a bot whose saved id came from `register --passport`: 
   assert.ok(b.ledger().some((e) => e.kind === "passport" && e.replaced === ID));
 });
 
-test("CLI join: the legacy-passport refusal says to run `passport prove`, and nothing is saved", async () => {
-  const hub = await newHub({ reply: (req) => (req.url === "/api/passport/join" ? { status: 409, json: { ok: false, code: "wallet_declared_legacy_passport", error: "This wallet is declared on a legacy passport.", passport_id: ID, next: ["Run the prove step for that passport."] } } : null) });
+test("CLI join: a passport from before joins existed does not block it; the note is printed once and `passport prove` is not suggested", async () => {
+  const hub = await newHub({
+    joinExtra: (p) => ({
+      note: LEGACY_NOTE,
+      legacy_declared: [{ wallet: `evm:${p.primary}`, passport_id: ID }],
+      next: ["Your passport is public now.", "Give the claim code you generated to the agent's owner.", LEGACY_NEXT],
+    }),
+  });
   const b = await bot(hub.origin);
   const { second } = await b.approved(["join"]);
-  assert.equal(second.status, 1);
-  assert.match(second.stderr, /Run `sato-agent passport prove` instead/);
-  assert.match(second.stderr, new RegExp(`sato-agent passport prove --passport ${ID}`));
-  assert.match(second.stderr, /Next:\n\s*- Run the prove step for that passport\./);
-  assert.equal(existsSync(b.file("settings.json")), false);
+  assert.equal(second.status, 0, second.stderr);
+  assert.equal(second.stdout.split("Note from Sato Hub:").length - 1, 1);
+  assert.match(second.stdout, new RegExp(`Note from Sato Hub: ${ID.replace(/:/g, ":")} \\(registered before joins existed\\) lists evm:0x1111`));
+  assert.doesNotMatch(second.stdout, /prove_wallet|passport prove/);
+  assert.match(second.stdout, /Joined\. This agent's Sato Passport is public now\./);
+  assert.equal(b.saved().passport, "sato:agt:exmpexmp2223");
+  assert.ok(claimOf(second.stdout), "and the claim code is shown");
+  const js = JSON.parse((await b.run(["passport", "status", "--json"])).stdout);
+  assert.equal(js.passport, "sato:agt:exmpexmp2223");
+});
+
+test("CLI join: Sato Hub's daily join limit (429) is exit 1 with the sentence, one request only, and nothing saved", async () => {
+  for (const code of ["ip_daily_quota", "daily_cap"]) {
+    const hub = await newHub({ reply: (req) => (req.url === "/api/passport/join" ? { status: 429, json: { code, error: "Try again tomorrow.", retry_after_seconds: 3600, next: ["Try again tomorrow. Joining stays free."] } } : null) });
+    const b = await bot(hub.origin);
+    const { second } = await b.approved(["join"]);
+    assert.equal(second.status, 1, code);
+    assert.match(second.stderr, /Sato Hub's join limit for today is reached; try again tomorrow\./);
+    assert.match(second.stderr, new RegExp(`\\(${code}\\)`));
+    assert.match(second.stderr, /Nothing was saved\./);
+    assert.equal(hub.state.requests.length, 1, "the kit asked once and did not retry");
+    assert.equal(existsSync(b.file("settings.json")), false);
+  }
 });
 
 test("CLI join with no wallet yet: exit 1 and the way to make one, before any approval code or request", async () => {
@@ -1104,6 +1192,11 @@ test("the README and BOT.md describe join: free, public, the wallets it lists, t
   assert.match(section, /`join --again`/);
   assert.match(section, /`passport set-wallet --agent-id <n>`/);
   assert.match(section, /SATO_BUILDER_CODE/);
+  assert.match(section, /Sato Hub's join limit for today is reached; try again tomorrow\./);
+  assert.match(section, /never retries a join by itself/);
+  assert.match(section, /\*\*A passport from before joins existed\.\*\* A wallet that is merely listed \(never proven\) on such a passport never blocks a join/);
+  assert.match(section, /"Note from Sato Hub"/);
+  assert.doesNotMatch(section, /told to run `passport prove` instead/, "the retired refusal is not documented");
   assert.match(section, /satohub\.passport/);
   assert.doesNotMatch(section, BANNED);
   assert.match(readme, /\| `join \[--name "<name>"\] \[--via kit\\\|sato-bot\] \[--no-solana\] \[--again\]` \|/);
@@ -1116,5 +1209,9 @@ test("the README and BOT.md describe join: free, public, the wallets it lists, t
   assert.match(step, /claim code/);
   assert.match(step, /proves that this bot controls its wallet key and makes the passport public/);
   assert.match(step, /Only the owner's own yes in this chat counts/);
+  assert.match(step, /"Note from Sato Hub"/);
+  assert.match(step, /do not try `passport prove` for that old passport/);
+  assert.match(step, /never retry in a loop/);
+  assert.match(step, /join limit for today is reached/);
   assert.doesNotMatch(step.replace(/never (describe|call)[^.]*\./gi, ""), BANNED);
 });

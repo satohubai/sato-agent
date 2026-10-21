@@ -289,17 +289,14 @@ function serverSteps(body) {
   return raw.filter((s) => typeof s === "string" && s.trim()).slice(0, 6).map((s) => clean(s, 300));
 }
 
-/** Is this refusal "the wallet is declared on a legacy passport" (a passport made before joins existed, whose wallet was never proven)? */
-export const isLegacyRefusal = (code, said) => /legacy|declared/i.test(code ?? "") || /legacy passport/i.test(said ?? "");
+/** What both daily join limits say (the per-address quota and Sato Hub's global cap): never retried in a loop. */
+export const JOIN_LIMIT_SENTENCE = "Sato Hub's join limit for today is reached; try again tomorrow.";
 
 /**
- * A plain reason for each of the contract's refusal codes, and a few every handler gives. null for a code the kit does not know.
- * `said` is the server's own sentence, read only to recognise the legacy-passport refusal when its code is one the kit has not seen.
+ * A plain reason for each of the contract's refusal codes, and the ones the join handler adds. null for a code the kit does not know:
+ * Sato Hub's own sentence is then shown as it is.
  */
-export function explainRefusal(code, status = 0, said = null) {
-  if (isLegacyRefusal(code, said)) {
-    return "This wallet is already listed on a Sato Passport that was made before joins existed: the wallet was declared there, never proven. A join would not take that passport over. Run `sato-agent passport prove` instead (add `--passport <id>` if the passport id is not saved here).";
-  }
+export function explainRefusal(code, status = 0) {
   switch (code) {
     case "bad_request":
       return "Sato Hub could not read the request.";
@@ -327,11 +324,24 @@ export function explainRefusal(code, status = 0, said = null) {
       return "The claim code's digest was not accepted.";
     case "bad_patch":
       return "The profile change was not accepted.";
+    // The two daily join limits (HTTP 429, per caller address and global): the same sentence for both, and the command is not tried again.
+    case "ip_daily_quota":
+    case "daily_cap":
+      return JOIN_LIMIT_SENTENCE;
+    case "wallet_taken":
+      return "Sato Hub says one of this agent's wallets is already on a Sato Passport (one wallet is one passport). `sato-agent passport status` shows the id saved here.";
+    case "primary_exists":
+      return "This passport already has a different primary wallet.";
+    case "name_taken":
+      return "A passport already uses that name. Pick another with --name.";
+    case "replay":
+      return "That signed message was already used. Run the command again: it signs a fresh one.";
+    case "claim_taken":
+      return "That claim code is already in use. Run the command again: it makes a new one.";
     default:
   }
-  if (status === 429 || (code && /rate|limit|throttl/i.test(code))) return "Sato Hub is limiting requests from here right now. Try again later.";
+  if (status === 429 || (code && /rate|throttl/i.test(code))) return "Sato Hub is limiting requests from here right now. Try again later.";
   if (code && /signature/i.test(code)) return "Sato Hub could not check a signature against its wallet.";
-  if (status === 409 || (code && /taken|exists|already|conflict/i.test(code))) return "Sato Hub says one of this agent's wallets is already on a Sato Passport (one wallet is one passport). `sato-agent passport status` shows the id saved here.";
   if (status >= 500) return "Sato Hub had a problem on its side. Try again later.";
   return null;
 }
@@ -343,14 +353,16 @@ export function explainRefusal(code, status = 0, said = null) {
 function refusal(res, { saved = "Nothing was saved." } = {}) {
   const code = refusalCode(res.body);
   const said = refusalMessage(res.body);
-  const own = explainRefusal(code, res.status, said);
+  const own = explainRefusal(code, res.status);
   const head = own ?? said ?? `Sato Hub answered HTTP ${res.status}.`;
   const lines = [`Sato Hub did not accept this${code ? ` (${code})` : ` (HTTP ${res.status})`}: ${head}`];
   if (own && said && said !== own) lines.push(`Sato Hub says: ${said}`);
-  // A legacy passport's id, when Sato Hub names it, so the next command can be run as it stands.
-  const legacyId = isLegacyRefusal(code, said) && typeof res.body?.passport_id === "string" && PASSPORT_ID_RE.test(res.body.passport_id) ? res.body.passport_id : null;
-  if (legacyId) lines.push(`That passport is ${legacyId}: \`sato-agent passport prove --passport ${legacyId}\``);
-  if (res.retryAfter && /^\d{1,6}$/.test(String(res.retryAfter))) lines.push(`Try again in ${res.retryAfter} seconds or more.`);
+  // The passport a wallet is already on, when Sato Hub names it: a lost claim code for it is recovered with issue-claim (nothing is assumed
+  // about whose it is, and it is never saved from here).
+  const onId = code === "wallet_taken" && typeof res.body?.passport_id === "string" && PASSPORT_ID_RE.test(res.body.passport_id) ? res.body.passport_id : null;
+  if (onId) lines.push(`That passport is ${onId} (${passportUrl(onId)}). If it is this bot's own, \`sato-agent passport issue-claim --passport ${onId}\` makes a new claim code for its owner.`);
+  // Not for the daily join limits: Sato Hub's retry hint there is an hour, and the answer is "tomorrow".
+  if (res.retryAfter && /^\d{1,6}$/.test(String(res.retryAfter)) && code !== "ip_daily_quota" && code !== "daily_cap") lines.push(`Try again in ${res.retryAfter} seconds or more.`);
   const steps = serverSteps(res.body);
   if (steps.length) lines.push("Next:", ...steps.map((s) => `  - ${s}`));
   lines.push(saved);
@@ -451,6 +463,17 @@ function readJoinAnswer(res, wallets) {
   const mine = (w) => listed?.some((x) => x && typeof x.address === "string" && x.address.toLowerCase() === w.address.toLowerCase() && x.proven === true);
   if (!wallets.every(mine)) throw new PlainError(OWN_WALLET_NOTE);
   const expires = typeof b.claim?.expires_at === "string" && Number.isFinite(Date.parse(b.claim.expires_at)) ? b.claim.expires_at : null;
+  // ADVISORY, never a refusal (Sato Hub retired the "declared on a legacy passport" refusal): a passport made before joins existed lists one of
+  // these wallets without proof. The join went through, so the wallet is live on the NEW passport; `note` says so in Sato Hub's words and is shown
+  // once. The kit does not suggest proving the wallet on the old passport (Sato Hub refuses that while this passport holds it), so the extra
+  // `next` line about it is left out of what is printed.
+  const legacy = Array.isArray(b.legacy_declared)
+    ? b.legacy_declared.flatMap((x) =>
+        x && typeof x.wallet === "string" && /^(evm|solana):\S{20,64}$/.test(x.wallet) && typeof x.passport_id === "string" && PASSPORT_ID_RE.test(x.passport_id) ? [{ wallet: x.wallet, passport_id: x.passport_id }] : [],
+      )
+    : [];
+  const note = typeof b.note === "string" && b.note.trim() ? clean(b.note, 800) : null;
+  const next = serverSteps({ next: b.next }).filter((line) => !(legacy.length && /prove_wallet/i.test(line)));
   return {
     passport_id: b.passport_id,
     slug: typeof b.slug === "string" ? clean(b.slug, 80) : null,
@@ -458,7 +481,9 @@ function readJoinAnswer(res, wallets) {
     profile_url: httpsOrNull(b.profile_url),
     // No claim object (null, or missing from a malformed answer) = Sato Hub holds no code for this join: the code is then never shown.
     claim: b.claim && typeof b.claim === "object" ? { expires_at: expires } : null,
-    next: serverSteps({ next: b.next }),
+    next,
+    note,
+    legacy_declared: legacy,
   };
 }
 
@@ -469,7 +494,7 @@ function readJoinAnswer(res, wallets) {
  *   noSolana  leave the Solana wallet off the passport
  *   again   join even though this bot already has a passport id saved (the new id replaces it; the old passport is not touched)
  * deps: authorize (required), fetchImpl, origin, keys (see makeSigner), now (Date), timeoutMs, randomBytes.
- * Returns { passport_id, slug, name, lookup_url, profile_url, wallets, claim_code, claim_expires_at, next, via, replaced }. `claim_code` is
+ * Returns { passport_id, slug, name, lookup_url, profile_url, wallets, claim_code, claim_expires_at, next, note, legacy_declared, via, replaced }. `claim_code` is
  * returned once to the caller to print: it is never written to settings.json, the ledger or any file.
  * Nothing is signed before the owner's approval, and nothing is saved unless Sato Hub accepted the join.
  */
@@ -530,6 +555,8 @@ export async function joinPassport({ name, via, noSolana = false, again = false 
     claim_code: claimOk ? claimCode : null,
     claim_expires_at: ans.claim?.expires_at ?? null,
     next: ans.next,
+    note: ans.note,
+    legacy_declared: ans.legacy_declared,
     via: how,
     replaced: again && had && had !== ans.passport_id ? had : null,
   };
@@ -551,6 +578,8 @@ export function joinLines(r) {
   } else {
     lines.push("", "Sato Hub did not record a claim code for this join. `sato-agent passport issue-claim` makes one.");
   }
+  // Sato Hub's note, once, when it sent one (a passport made before joins existed lists one of these wallets without proof).
+  if (r.note) lines.push("", `Note from Sato Hub: ${r.note}`);
   if (r.next.length) lines.push("", "Next (from Sato Hub):", ...r.next.map((s) => `  - ${s}`));
   lines.push("", JOIN_SCOPE_NOTE);
   return lines;
@@ -599,15 +628,14 @@ export async function issueClaim({ passport, chain } = {}, deps = {}) {
   const res = await postJson(ACTION_PATH, body, deps, { what: NETWORK_HINT.action });
   if (res.status !== 200 && res.status !== 201) throw refusal(res, { saved: "No new code was made." });
   if (res.body?.ok === false) throw refusal({ ...res, status: 400 }, { saved: "No new code was made." });
-  const expires = typeof res.body?.claim?.expires_at === "string" && Number.isFinite(Date.parse(res.body.claim.expires_at)) ? res.body.claim.expires_at : null;
-  const recorded = res.body?.claim !== null;
+  // A 200 is a recorded code: Sato Hub answers { ok, action, passport_id, claim_expires_at, ... }.
+  const expires = typeof res.body?.claim_expires_at === "string" && Number.isFinite(Date.parse(res.body.claim_expires_at)) ? res.body.claim_expires_at : null;
   record({ kind: "passport", status: "claim_issued", passport: passportId, wallet_chain: signer.chain });
-  return { passport_id: passportId, wallet: walletLabel(signer), claim_code: recorded ? claimCode : null, claim_expires_at: expires };
+  return { passport_id: passportId, wallet: walletLabel(signer), claim_code: claimCode, claim_expires_at: expires };
 }
 
 /** The lines `passport issue-claim` prints. */
 export function issueClaimLines(r) {
-  if (!r.claim_code) return [`Sato Hub did not record a new claim code for ${r.passport_id}. Try \`passport issue-claim\` again.`];
   return [`New claim code for ${r.passport_id} (shown once; this computer does not keep it): ${r.claim_code}`, CLAIM_INSTRUCTION, "Earlier unused codes for this passport stop working."];
 }
 

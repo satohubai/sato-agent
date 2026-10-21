@@ -212,8 +212,9 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
                                          a new claim code for the passport, signed by this bot's wallet; the earlier unused codes stop
                                          working. Stops with exit 5 and a code, like join
   passport prove [--passport <id>] [--chain base|solana] [--approve <code>]
-                                         for a passport made before joins existed, whose wallet was declared and never proven: this
-                                         bot's wallet signs to prove it. Stops with exit 5 and a code, like join
+                                         for a bot that did not join, with a passport made before joins existed that lists this
+                                         bot's wallet without proof: the wallet signs to prove it (Sato Hub allows it only while
+                                         the wallet is on no other passport). Stops with exit 5 and a code, like join
   passport set-wallet --agent-id <n> [--chain ${CHAIN_REGISTER}] [--dry-run] [--approve <code>]
                                          after Sato Hub hands an ERC-8004 agent to this wallet, point the agent's payment wallet back
                                          at this wallet (the registry clears it when an agent is transferred). Spends this wallet's own

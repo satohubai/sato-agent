@@ -24,6 +24,7 @@ import { chainTransport, sendAttempts } from "./rpc.js";
 import { CHAINS_USAGE, allowedChains, loadPolicy } from "./policy.js";
 import { entries, record, release, reserve } from "./ledger.js";
 import { Pending, Rejected } from "./errors.js";
+import { passportUrl, resolvePassport, savePassport, withPassportService } from "./passport.js";
 import { withLock } from "./store.js";
 import { evmAccount, loadWallet } from "./wallet.js";
 
@@ -220,15 +221,20 @@ export async function dryRunSendStable({ to, amount, chain = DEFAULT_EVM_CHAIN, 
 
 export const dryRunSendUsdc = (args, c) => dryRunSendStable({ symbol: "USDC", ...args }, c ?? clients(undefined, args.chain ?? DEFAULT_EVM_CHAIN));
 
-/** The ERC-8004 registration file, as a data: URI stored fully onchain. */
-export function registrationUri({ agentId, name, description, image = "", services = [], x402Support = false, chain = DEFAULT_EVM_CHAIN }) {
+/**
+ * The ERC-8004 registration file, as a data: URI stored fully onchain.
+ * `passport` (a Sato Passport id, sato:agt:...) adds one entry to `services` that links this registration to that passport:
+ * the agent's own declaration, never checked against Sato Hub here. An invalid id throws before anything is built; with no
+ * passport the file is exactly what it was before the option existed.
+ */
+export function registrationUri({ agentId, name, description, image = "", services = [], x402Support = false, chain = DEFAULT_EVM_CHAIN, passport }) {
   const c = evmChain(chain);
   const card = {
     type: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
     name,
     description,
     image,
-    services,
+    services: withPassportService(services, passport),
     // In ERC-8004 this advertises that the agent ACCEPTS x402 for its services.
     // An agent that only pays must not claim it.
     x402Support: Boolean(x402Support),
@@ -257,8 +263,14 @@ export function registeredIds(chain = DEFAULT_EVM_CHAIN) {
 /** How many times step two of a fresh registration is tried while the RPC catches up (2 s apart; nothing signed is retried). */
 const REGISTER_STEP2_TRIES = 6;
 
-export async function registerAgent({ name, description, image, services = [], x402Support = false, again = false, resume, chain = DEFAULT_EVM_CHAIN }, c = clients(undefined, chain)) {
+export async function registerAgent({ name, description, image, services = [], x402Support = false, passport, again = false, resume, chain = DEFAULT_EVM_CHAIN }, c = clients(undefined, chain)) {
   if (!name || !description) throw new Error("--name and --description are required");
+  // The Sato Passport link (see src/passport.js): checked first, so a bad id stops here with nothing read from a chain or sent. `passport`
+  // undefined = the one saved on this computer, an id = that one (saved below), null = none from now on. No call to Sato Hub is made.
+  const pp = resolvePassport(passport);
+  const keepPassport = () => {
+    if (pp.explicit) savePassport(pp.passport); // only once every check below has passed, and before anything is signed, so a --resume keeps it
+  };
   const ch = evmChain(chain);
   const registry = ch.erc8004Registry;
   const registryId = `${ch.caip2}:${registry}`;
@@ -277,11 +289,13 @@ export async function registerAgent({ name, description, image, services = [], x
     if (String(owner).toLowerCase() !== c.account.address.toLowerCase()) {
       throw new Error(`agent ${agentId} on ${ch.label} belongs to ${owner}, not this wallet (${c.account.address}); nothing was signed`);
     }
+    keepPassport();
   } else {
     if (prior.done.length && !again) throw new Error(`this wallet already registered agent id ${prior.done.join(", ")}; add --again to register another`);
     if (prior.pending.length && !again) throw new Error(`a registration was sent but never confirmed (${prior.pending.map((h) => explorer(chain, h)).join(", ")}); check it, then use --resume <agent id> or --again`);
-    const first = registrationUri({ name, description, image, services, x402Support, chain });
+    const first = registrationUri({ name, description, image, services, x402Support, chain, passport: pp.passport });
     await c.pub.simulateContract({ account: c.account, address: registry, abi: identityRegistryAbi, functionName: "register", args: [first] });
+    keepPassport();
     r1 = await signAndSend(
       c,
       { to: registry, data: encodeFunctionData({ abi: identityRegistryAbi, functionName: "register", args: [first] }) },
@@ -297,7 +311,7 @@ export async function registerAgent({ name, description, image, services = [], x
     record({ kind: "register", status: "registered", chain, usd: 0, agent_id: agentId.toString(), tx: r1.transactionHash });
   }
 
-  const full = registrationUri({ agentId, name, description, image, services, x402Support, chain });
+  const full = registrationUri({ agentId, name, description, image, services, x402Support, chain, passport: pp.passport });
   const data = encodeFunctionData({ abi: identityRegistryAbi, functionName: "setAgentURI", args: [agentId, full] });
   // Right after step one, a load-balanced public RPC can answer from a node that has not seen the
   // new agent yet, so the check and the gas estimate revert (seen live 2026-10-09; a --resume a
@@ -334,7 +348,7 @@ export async function registerAgent({ name, description, image, services = [], x
       }
       record({ kind: "register", status: "registered", chain, usd: 0, agent_id: agentId.toString(), ...(tx ? { tx } : {}) });
     }
-    return { agent_id: agentId.toString(), registry: registryId, tx: r2.transactionHash, explorer: explorer(chain, r2.transactionHash) };
+    return { agent_id: agentId.toString(), registry: registryId, tx: r2.transactionHash, explorer: explorer(chain, r2.transactionHash), ...(pp.passport ? { passport: pp.passport, passport_url: passportUrl(pp.passport) } : {}) };
   } catch (err) {
     throw new Error(`registered as agent ${agentId}, but writing its registration file failed (${err.shortMessage || err.message}). Finish with: sato-agent register --resume ${agentId} --name ... --description ...`);
   }

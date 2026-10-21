@@ -16,6 +16,7 @@ import { VALUE_KINDS, actions, read, record, recordCheckEvent, spentLast24h } fr
 import { inspect, integrityRefusals, repair } from "../src/integrity.js";
 import { purchaseChain, purchaseGate } from "../src/purchase.js";
 import { SHIP_FIELDS, clearShipTo, isReferralName, parseReferrerInput, referrer as savedReferrer, scrubAddress, setReferrer, setShipTo, settingsFromJson, shipTo, shortReferrer, shipToLines, shipToStatus } from "../src/settings.js";
+import { resolvePassport, savedPassport } from "../src/passport.js";
 import { reportSettlement, settlementLine } from "../src/swap/referral.js";
 import { REFERRAL_SHARE_PERCENT, createReferralName, declineOffer, lookupReferralName, ownReferral, referralShow, setReferralPayout, shareTextLines, shareTexts, swapOffer, takeOffer } from "../src/referral-names.js";
 import { readFileSync } from "node:fs";
@@ -186,9 +187,12 @@ const HELP = `sato-agent ${VERSION}: an onchain wallet for an always-on agent, w
                                          and a higher price at pay time is refused. A server that does not
                                          ask for payment is not paid.
   register --name <name> --description <text> [--image <url>] [--service name=endpoint ...]
-           [--x402-support] [--again | --resume <agent id>] [--chain ${CHAIN_REGISTER}]
+           [--x402-support] [--passport <sato:agt:id|none>] [--again | --resume <agent id>] [--chain ${CHAIN_REGISTER}]
                                          register in the ERC-8004 registry on this agent's EVM chain (gas only; --chain is needed
-                                         when the owner chose more than one)
+                                         when the owner chose more than one). --passport adds a services entry to the registration
+                                         file that links it to this agent's Sato Passport (satohub.ai/passport/<id>): the agent's own
+                                         declaration, not checked here and not a verification. It is saved on this computer, so a
+                                         later --resume keeps it; --passport none drops it
   check "<install command>" [--cluster mainnet-beta|devnet] [--skip-check]
                                          Solana build receipts for the npm packages in an install command (read
                                          from the chain, no call to Sato Hub), then what the install does with
@@ -234,6 +238,7 @@ try {
       image: { type: "string" },
       service: { type: "string", multiple: true },
       "x402-support": { type: "boolean" },
+      passport: { type: "string" },
       again: { type: "boolean" },
       resume: { type: "string" },
       "skip-check": { type: "boolean" },
@@ -821,6 +826,20 @@ async function main(command = cmd, args = positionals.slice(1)) {
         if (i <= 0) throw new UsageError(`--service must look like name=endpoint (got "${s}")`);
         return { name: s.slice(0, i).trim(), endpoint: s.slice(i + 1).trim() };
       });
+      // --passport: a Sato Passport id, checked before anything else (a bad id is a usage error: no approval code is made for it and
+      // nothing is built or sent). Without the flag the one saved on this computer is used. Nothing is looked up at Sato Hub.
+      let passportGiven; // what registerAgent is told: undefined = use the saved one, null = none, else the id
+      let passport; // the id this registration file will carry, or null
+      if (flags.passport !== undefined) {
+        try {
+          passportGiven = resolvePassport(flags.passport).passport;
+        } catch (err) {
+          throw new UsageError(err.message);
+        }
+        passport = passportGiven;
+      } else {
+        passport = savedPassport();
+      }
       // Registration spends gas only, so it is not limit-gated, but "ask before
       // every payment" covers it too.
       // The chain: `--chain`, else the owner's one EVM chain that has an ERC-8004 registry (a bot on two says which).
@@ -835,7 +854,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
       const frozen = integrityRefusals();
       if (frozen.length) throw new Refused(frozen);
       if (loadPolicy()?.approval === "ask") {
-        const intent = { cmd: "register", ...(regChain === DEFAULT_EVM_CHAIN ? {} : { chain: regChain }), name: flags.name ?? null, description: flags.description ?? null, image: flags.image ?? null, services, x402_support: Boolean(flags["x402-support"]), again: Boolean(flags.again), resume: flags.resume ?? null };
+        const intent = { cmd: "register", ...(regChain === DEFAULT_EVM_CHAIN ? {} : { chain: regChain }), name: flags.name ?? null, description: flags.description ?? null, image: flags.image ?? null, services, x402_support: Boolean(flags["x402-support"]), ...(passport ? { passport } : {}), again: Boolean(flags.again), resume: flags.resume ?? null };
         if (!flags.approve) throw new NeedsApproval(intent, await requestApproval(intent));
         await consumeApproval(flags.approve, intent);
       }
@@ -845,11 +864,14 @@ async function main(command = cmd, args = positionals.slice(1)) {
         image: flags.image,
         services,
         x402Support: Boolean(flags["x402-support"]),
+        passport: passportGiven,
         again: flags.again,
         resume: flags.resume,
         chain: regChain,
       });
-      return out(`Registered as ERC-8004 agent ${r.agent_id} on ${labelOf(regChain)} (${r.registry}), registration file stored onchain.\n  ${r.explorer}`, r);
+      // Only when the file carries a passport link. It says what the entry is (the agent's own declaration) and nothing more.
+      const passportNote = r.passport ? `\n  Registration file links to Sato Passport ${r.passport}: ${r.passport_url} (this agent's own declaration, not checked by the kit; saved here so --resume keeps it).` : "";
+      return out(`Registered as ERC-8004 agent ${r.agent_id} on ${labelOf(regChain)} (${r.registry}), registration file stored onchain.\n  ${r.explorer}${passportNote}`, r);
     }
     case "check": {
       const command = rest.join(" ");
@@ -1043,7 +1065,10 @@ async function main(command = cmd, args = positionals.slice(1)) {
       const ref = savedReferrer();
       const shipText = s ? `Shipping address (kept on this computer only):\n${shipToLines(s).map((l) => `  ${l}`).join("\n")}` : "No shipping address set. Amazon orders need one: `settings set --stdin` with a JSON object of name, line1, line2, city, state, postalCode, country, email on standard input.";
       const refText = ref ? `Referral ${isReferralName(ref) ? "name" : "address"}: ${ref} (Sato Hub pays it ${REFERRAL_SHARE_PERCENT}% of its swap fee on this agent's swaps, weekly in USDC; \`settings set --referrer none\` removes it)` : "No referral set (`settings set --referrer <name or address>` if someone shared this kit with you).";
-      return out(`${shipText}\n${refText}`, { ship_to: s, referrer: ref });
+      // Only when one is saved (by `register --passport`): the Sato Passport id this agent's registration file links to.
+      const pass = savedPassport();
+      const passText = pass ? `\nSato Passport link: ${pass} (\`register\` adds it to the ERC-8004 registration file as the agent's own declaration; \`register --passport none\` removes it)` : "";
+      return out(`${shipText}\n${refText}${passText}`, { ship_to: s, referrer: ref, ...(pass ? { passport: pass } : {}) });
     }
     case "referral": {
       const sub = rest[0];

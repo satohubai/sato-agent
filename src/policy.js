@@ -217,7 +217,7 @@ function parseTrades(raw) {
 
 const limitText = (v) => (v === null || v === undefined ? "no limit" : `$${v}`);
 const gateText = (p) => (p.check_gate === "no" || p.check_gate === "caution" ? `stop on "${p.check_gate === "caution" ? "caution or no" : "no"}"${p.on_check_unavailable ? ` (if a check can't run: ${p.on_check_unavailable})` : ""}` : "inform only");
-const listText = (l) => (Array.isArray(l) ? l.join(", ") : "any");
+const listText = (l) => (Array.isArray(l) ? (l.length ? l.join(", ") : "none") : "any");
 
 /**
  * The parts of the policy a raise can loosen, with the fields each covers. A change that loosens a part is queued for
@@ -385,6 +385,26 @@ function setPolicyLocked(opts, { now = Date.now() } = {}) {
   });
   // The policy in force when this returns (a raise queued just now is not in it yet).
   return { policy: fold(out, Date.now()), raised: raises.length > 0, raises, queued, first: !cmp };
+}
+
+/**
+ * A policy from before v0.6.0, as the upgrade seals it: nothing allowed now, and each part of the old policy queued for
+ * `effectiveAt` (the end of the upgrade's pause). The owner gets the same limits when the pause ends, and `status` shows each one
+ * as pending until then: no one can hand-write an older folder whose limits come back larger without being seen.
+ */
+export function queuedFromNothing(p, now, effectiveAt) {
+  const raises = raisesBetween(NOTHING_ALLOWED, p);
+  const parts = new Set(raises.map((r) => PARTS.find((x) => x.raise.includes(r))?.key).filter(Boolean));
+  const out = { ...p, schema: p.schema ?? POLICY_SCHEMA };
+  delete out.pending;
+  const pending = {};
+  for (const part of PARTS) {
+    if (!parts.has(part.key)) continue;
+    pending[part.key] = { values: pickFields(p, part.fields), requested_at: iso(now), effective_at: iso(effectiveAt) };
+    Object.assign(out, part.meet ? part.meet(p, NOTHING_ALLOWED) : pickFields(NOTHING_ALLOWED, part.fields));
+  }
+  if (Object.keys(pending).length) out.pending = pending;
+  return out;
 }
 
 /** Cancel every raise still waiting. Raises already in effect stay; tighten them with `policy set`. */

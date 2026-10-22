@@ -299,10 +299,10 @@ const say = (text) => {
 
 function policyText(p) {
   return [
-    `chains:          ${p.chains ? p.chains.join(", ") : "base, solana (not chosen yet: a v0.1 policy)"}`,
+    `chains:          ${p.chains ? p.chains.join(", ") || "none (until a pending change takes effect)" : "base, solana (not chosen yet: a v0.1 policy)"}`,
     `per transaction: ${limitText(p.max_usd_per_tx)}`,
     `per 24 hours:    ${limitText(p.max_usd_per_day)}`,
-    `recipients:      ${p.allow_recipients ? p.allow_recipients.join(", ") : "any"}`,
+    `recipients:      ${p.allow_recipients ? p.allow_recipients.join(", ") || "none (until a pending change takes effect)" : "any"}`,
     `Sato Hub checks: ${p.check_gate && p.check_gate !== "off" ? `stop a spend on "${p.check_gate === "caution" ? "caution or no" : "no"}"${p.on_check_unavailable ? ` · if a check can't run: ${p.on_check_unavailable}` : ""}` : "inform only"}`,
     `approval:        ${p.approval === "ask" ? "ask the owner before every spend" : "act within the limits"}`,
     `purchases:       ${purchasesAsk(p) ? `ask the owner first${p.purchase_approval === "auto" ? " (because approval is ask: purchases buy on their own only when both are auto)" : p.purchase_approval ? "" : " (the default)"}` : "buy within the limits"} (gift cards, checkouts, and links paid through buy)`,
@@ -564,6 +564,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
         );
       }
       if (rest[0] !== undefined && rest[0] !== "show") throw new UsageError("policy show | policy set ... | policy cancel");
+      inspect(); // an older folder is sealed (and its policy queued) by the first read
       const p = loadPolicy({ unverified: true }); // shown as it is; a spend reads it only when it matches its seal
       if (!p) return out("Nothing set yet. Nothing will be spent until `sato-agent policy set` is run.", { policy: null });
       return out([`${policyText(p)}\nset at:          ${p.set_at}`, ...pendingLines(p)].join("\n"), p);
@@ -918,10 +919,10 @@ async function main(command = cmd, args = positionals.slice(1)) {
       return out(card, { addresses: Object.fromEntries(chains.map((c) => [c, addressFor(c, a)])), agent_id: agentId, confirmed_actions: onchain, usdc_moved: roundUsd(spent) });
     }
     case "status": {
+      const seal = inspect(); // first: an older folder is sealed (and its policy queued) by the first read
       const p = loadPolicy({ unverified: true }); // shown even when frozen (the FROZEN line says why)
       const ledger = read();
       const spent = spentLast24h(Date.now(), ledger);
-      const seal = inspect();
       let wallet = null;
       try {
         wallet = walletExists() ? addresses() : null;
@@ -949,7 +950,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
         [
           wallet ? `wallet:          ${wallet.base} (Base, BNB Chain, Arbitrum, Polygon) · Solana ${wallet.solana}${restoredRow ? ` (restored from a backup ${c(restoredRow.ts, 40)})` : ""}` : "wallet:          none here",
           ...seal.problems.map((x) => `⛔ FROZEN (${x.rule}): ${x.message}`),
-          seal.paused ? `⏸ spending paused until ${seal.paused_until} (${untilText(seal.paused_until)}), after a repair or a restore` : null,
+          seal.paused ? `⏸ spending paused until ${seal.paused_until} (${untilText(seal.paused_until)}), after a repair, a restore or the upgrade that sealed this folder` : null,
           ...pendingLines(p),
           p ? policyText(p) : "choices: NOT SET",
           // Only when one is set: an agent with no address says nothing about Amazon (it is off until Sato Hub turns it on).

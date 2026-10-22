@@ -418,8 +418,8 @@ test("upgrade: a policy.json hand-edited before the upgrade to allow more than r
   legacyFolder({ edit: (t) => t.replace('"max_usd_per_day": 20', '"max_usd_per_day": null') });
   assert.deepEqual(frozenRules(), ["policy_tampered"]);
   const r = I.repair();
-  assert.equal(r.paused_until, null);
-  assert.equal(loadPolicy().max_usd_per_day, 20);
+  assert.equal(r.paused_until, null, "the repair itself adds no pause (the upgrade's own pause applies)");
+  assert.equal(loadPolicy().pending.per_day.values.max_usd_per_day, 20, "the recorded limit comes back, queued for the end of the upgrade's pause");
   legacyFolder({ edit: (t) => t.replace('"max_usd_per_day": 20', '"max_usd_per_day": 2') });
   assert.deepEqual(frozenRules(), []);
 });
@@ -773,4 +773,40 @@ test("R2 L-A: a folder wiped and restored from a copy: spending paused, and the 
   const set = setPolicy({ chains: "base", perTx: "none", perDay: "none" });
   assert.equal(set.first, false);
   assert.deepEqual(loadPolicy().chains, []);
+});
+
+// ------------------------------------------------------------------ review round 3
+
+test("R3 M-1: the upgrade keeps nothing in force from an older policy: each part is queued for the end of the pause and shown as pending", () => {
+  legacyFolder();
+  const old = JSON.parse(read("policy.json"));
+  const s = I.inspect(); // sealed at the first read
+  assert.ok(s.paused);
+  const now = loadPolicy();
+  assert.deepEqual(now.chains, [], "nothing allowed during the pause");
+  const parts = Object.keys(now.pending).sort();
+  assert.ok(parts.includes("per_tx") && parts.includes("per_day") && parts.includes("chains"), parts.join(","));
+  for (const e of Object.values(now.pending)) assert.equal(e.effective_at, s.paused_until, "they arrive when the pause ends");
+  const after = loadPolicy({ now: Date.parse(s.paused_until) });
+  assert.equal(after.max_usd_per_day, old.max_usd_per_day);
+  assert.deepEqual(after.chains, old.chains);
+  assert.equal(after.pending, undefined);
+  assert.match(cli(["status"]).stdout, /RAISE PENDING: per 24 hours: \$0 → \$20/);
+  // the older lines no longer count as recorded limits: the upgrade's own line does
+  assert.equal(I.lastRecordedPolicy().pending.per_day.values.max_usd_per_day, 20);
+});
+
+test("R3 M-1: a hand-written older ledger with a loose policy line gets nothing in force without it showing as pending", () => {
+  agent();
+  const loose = { ...loadPolicy(), max_usd_per_tx: null, max_usd_per_day: null, approval: "auto" };
+  fs.rmSync(file("integrity.json"));
+  write("ledger.jsonl", JSON.stringify({ kind: "policy", status: "changed", to: loose }) + "\n");
+  write("policy.json", I.policyFileText(loose));
+  write("wallet.json", read("wallet.json").replace(`"version": ${I.SEALED_WALLET_VERSION}`, '"version": 1'));
+  I.inspect();
+  const p = loadPolicy();
+  assert.equal(p.max_usd_per_day, 0);
+  assert.ok(p.pending.per_day && p.pending.approval, "the loose parts are pending, for the owner to see and cancel");
+  cancelPending();
+  assert.equal(loadPolicy({ now: Date.now() + 2 * DAY }).max_usd_per_day, 0);
 });

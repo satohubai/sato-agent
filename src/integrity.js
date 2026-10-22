@@ -19,7 +19,7 @@
 import fs from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { paths, withLockSync, writePrivate } from "./store.js";
-import { raisesBetween } from "./policy.js";
+import { queuedFromNothing, raisesBetween } from "./policy.js";
 import { PlainError } from "./errors.js";
 
 export const ZERO_HASH = "0".repeat(64);
@@ -104,13 +104,17 @@ const short = (a) => (typeof a === "string" && a.length > 14 ? `${a.slice(0, 6)}
 
 /** The line of the latest repair of a broken ledger: nothing before it is trusted to say what the limits were. */
 export const lastLedgerRepair = (rows) => rows.findLastIndex((r) => r?.kind === "integrity" && r.status === "repaired" && typeof r.prefix_sha256 === "string");
+/** The line that sealed a pre-chain ledger at the upgrade: nothing before it was ever checked. */
+const upgradeLine = (rows) => rows.findLastIndex((r) => r?.kind === "integrity" && r.status === "started");
 
 /**
  * The last policy the ledger recorded (`to` of the last policy line), or null. Lines before the latest repair of a broken
  * ledger do not count: a line planted in a ledger that no longer matched its seal must not come back as "the owner's limits".
  */
 export function lastRecordedPolicy(rows = ledgerLines().rows) {
-  for (let i = rows.length - 1; i > lastLedgerRepair(rows); i--) {
+  // (nor do lines from before the upgrade sealed the folder: once sealed, the upgrade's own policy line says what was kept)
+  const trusted = Math.max(lastLedgerRepair(rows), upgradeLine(rows));
+  for (let i = rows.length - 1; i > trusted; i--) {
     const r = rows[i];
     if (r?.kind === "policy" && r.to && typeof r.to === "object") return r.to;
   }
@@ -330,16 +334,31 @@ function adopt(L) {
     writePrivate(`${paths.policy()}.unrecorded-${stamp(Date.now())}`, readText(paths.policy()));
     fs.rmSync(paths.policy(), { force: true });
   }
-  const policy = legacyPolicyDigest(L);
+  const now = Date.now();
+  const pausedUntil = now + PAUSE_MS;
+  // The old policy (it matches the last recorded change, or is stricter: adopt() runs only then) is not kept in force as it is:
+  // nothing is allowed until the pause ends, and each part of it is queued for that moment, shown as pending in status.
+  const oldText = readText(paths.policy());
+  const newText = oldText === null ? null : policyFileText(queuedFromNothing(JSON.parse(oldText), now, pausedUntil));
+  if (newText !== null) writePrivate(paths.policy(), newText, { atomic: true });
   const w = walletAddresses();
   const wallet = w && w !== UNREADABLE ? { evm: w.evm, solana: w.solana } : null;
   // Sealing a pre-chain ledger is never free: nothing tells a real one from a ledger and seal deleted and rewritten by hand, so
   // spending is paused for 24 hours, once, as after a repair.
-  const row = { id: randomUUID(), ts: new Date().toISOString(), kind: "integrity", status: "started", legacy_lines: L.raw.length, ...(wallet ? { wallet } : {}), paused_until: new Date(Date.now() + PAUSE_MS).toISOString() };
+  const row = { id: randomUUID(), ts: new Date(now).toISOString(), kind: "integrity", status: "started", legacy_lines: L.raw.length, ...(wallet ? { wallet } : {}), paused_until: new Date(pausedUntil).toISOString() };
   // The first chained line carries the hash of every byte before it, so the old lines cannot change afterwards either.
   const text = serialize({ ...row, prev: sha256(L.text) });
-  fs.appendFileSync(paths.ledger(), `${text}\n`, { mode: 0o600 });
-  writeSeal({ wallet, policy_sha256: policy, ledger: { lines: L.raw.length + 1, head: sha256(text) } });
+  let lines = L.raw.length + 1;
+  let head = sha256(text);
+  let body = `${text}\n`;
+  if (newText !== null) {
+    const p = serialize({ id: randomUUID(), ts: new Date(now).toISOString(), kind: "policy", status: "queued_at_upgrade", from: JSON.parse(oldText), to: JSON.parse(newText), prev: head });
+    body += `${p}\n`;
+    lines += 1;
+    head = sha256(p);
+  }
+  fs.appendFileSync(paths.ledger(), body, { mode: 0o600 });
+  writeSeal({ wallet, policy_sha256: newText === null ? null : sha256(newText), ledger: { lines, head } });
   // From now on this folder can never pass for a pre-chain one, even with the seal and the ledger deleted.
   stampWallet();
 }
@@ -495,7 +514,9 @@ export function repair({ now = Date.now() } = {}) {
       // The ledger matches (or is a pre-chain one, sealed by this write): an ordinary line, then the seal's wallet and digest.
       appendRow(row);
       const now2 = readJsonOr(paths.integrity());
-      writeSeal({ ...(now2 && now2 !== UNREADABLE ? strip(now2) : {}), wallet: sealWallet, policy_sha256: policy });
+      // A pre-chain folder was just sealed by that write: the upgrade queued the restored policy and sealed it, so its digest stands.
+      const upgraded = !(integ && integ !== UNREADABLE);
+      writeSeal({ ...(now2 && now2 !== UNREADABLE ? strip(now2) : {}), wallet: sealWallet, ...(upgraded ? {} : { policy_sha256: policy }) });
     }
     stampWallet();
     return { repaired: true, problems: found, actions, paused_until: pausedUntil };

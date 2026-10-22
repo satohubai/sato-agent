@@ -14,7 +14,7 @@ import { getBase58Decoder, getBase58Encoder } from "@solana/kit";
 import { home, paths, readJson, writePrivate } from "./store.js";
 import { isEvm } from "./chains.js";
 import { PlainError } from "./errors.js";
-import { PAUSE_MS, commitWallet, sameWallet, sealedWallet, withLedgerLock } from "./integrity.js";
+import { PAUSE_MS, SEALED_WALLET_VERSION, commitWallet, expectedWallet, inspect, sameWallet, sealedWallet, withLedgerLock } from "./integrity.js";
 
 const b58 = getBase58Decoder(); // bytes -> base58 string
 const fromB58 = getBase58Encoder(); // base58 string -> bytes
@@ -42,16 +42,18 @@ export function walletExists() {
 export function initWallet() {
   return withLedgerLock(() => {
     if (walletExists()) throw new Error(`a wallet already exists at ${paths.wallet()}; it is never replaced`);
-    const sealed = sealedWallet();
+    // The seal, or without one the ledger's own wallet lines: a folder that had a wallet never gets a new one.
+    const sealed = expectedWallet();
     if (sealed) {
       throw new PlainError(
         `This folder's wallet file is missing (it was ${sealed.evm} / ${sealed.solana}). A folder that had a wallet never gets a new one. If the owner kept the backup, \`restore\` puts that wallet back; otherwise use a new NAME (a new launcher and folder).`,
       );
     }
+    assertRecordIntact();
     const evmKey = generatePrivateKey();
     const sol = solanaKeypair();
     const wallet = {
-      version: 1,
+      version: SEALED_WALLET_VERSION,
       created_at: new Date().toISOString(),
       evm: { address: privateKeyToAccount(evmKey).address, private_key: evmKey },
       solana: { address: sol.address, secret_key_b64: sol.secret.toString("base64") },
@@ -61,6 +63,12 @@ export function initWallet() {
     commitWallet(a, { id: randomUUID(), ts: wallet.created_at, kind: "wallet", status: "created", evm: a.evm, solana: a.solana });
     return addresses(wallet);
   });
+}
+
+/** A folder whose spend record no longer matches its seal takes no wallet: the owner asks for `repair` first, or uses a new NAME. */
+function assertRecordIntact() {
+  const broken = inspect().problems.filter((p) => p.rule === "ledger_tampered");
+  if (broken.length) throw new PlainError(`This folder's spend record does not match its seal (${broken[0].observed}), so it takes no wallet now. Show the owner; only the owner can ask for \`repair\` first. Or use a new NAME (a new launcher and folder).`);
 }
 
 export function loadWallet() {
@@ -152,10 +160,11 @@ export function parseBackup(text) {
   if (!pub.equals(sol.subarray(32))) throw new PlainError("The Solana private key does not hold together (its public half is not its own): check it was copied whole.");
   const solanaAddress = b58.decode(pub);
   for (const a of text.match(/\b0x[0-9a-fA-F]{40}\b/g) ?? []) {
-    if (a.toLowerCase() !== evmAddress.toLowerCase()) throw new PlainError(`The backup names the EVM address ${a}, but its key is the key of ${evmAddress}. Check it was copied whole.`);
+    if (a.toLowerCase() !== evmAddress.toLowerCase()) throw new PlainError(`The EVM address in the backup is not the address of its key (${evmAddress}). Check it was copied whole.`);
   }
-  const labelled = /Solana address[^:\n]*:\s*([1-9A-HJ-NP-Za-km-z]{32,44})/i.exec(text);
-  if (labelled && labelled[1] !== solanaAddress) throw new PlainError(`The backup names the Solana address ${labelled[1]}, but its key is the key of ${solanaAddress}. Check it was copied whole.`);
+  // A whole token only (a longer one, such as a key pasted on that line, is not an address), and never echoed back.
+  const labelled = /Solana address[^:\n]*:\s*([1-9A-HJ-NP-Za-km-z]+)/i.exec(text);
+  if (labelled && labelled[1] !== solanaAddress) throw new PlainError(`The Solana address in the backup is not the address of its key (${solanaAddress}). Check it was copied whole.`);
   return { evmKey: `0x${evmKey.slice(2).toLowerCase()}`, evm: evmAddress, solSecret: sol, solana: solanaAddress };
 }
 
@@ -204,14 +213,16 @@ export function restoreWallet(text, { now = Date.now() } = {}) {
       if (sameWallet({ evm: here.evm?.address, solana: here.solana?.address }, a)) return { restored: false, already: true, base: a.evm, solana: a.solana, paused_until: null };
       throw new PlainError(`This folder already holds a different wallet (${here.evm?.address} / ${here.solana?.address}). A restore never replaces a wallet. To bring back ${a.evm} / ${a.solana}, use a new NAME (a new launcher and folder) and restore there.`);
     }
+    const held = expectedWallet();
+    if (held && !sameWallet(held, a)) throw new PlainError(`This folder belonged to another wallet (${held.evm} / ${held.solana}). A folder that had a wallet never takes another one: use a new NAME (a new launcher and folder) and restore there.`);
+    if (!held) assertRecordIntact();
     const sealed = sealedWallet();
-    if (sealed && !sameWallet(sealed, a)) throw new PlainError(`This folder belonged to another wallet (${sealed.evm} / ${sealed.solana}). A folder that had a wallet never takes another one: use a new NAME (a new launcher and folder) and restore there.`);
     const other = otherFolderWith(a);
     if (other) throw new PlainError(`This wallet is already in use on this computer, in ${other}. Two bots must never share a wallet: each would keep its own limits, so together they could spend twice as much. Use that bot, or ask the owner.`);
-    // Only a folder sealed with this very wallet still holds its spend record.
-    const pausedUntil = sealed ? null : new Date(now + PAUSE_MS).toISOString();
+    // Only a folder whose readable seal names this very wallet still holds its spend record.
+    const pausedUntil = sealed && sameWallet(sealed, a) ? null : new Date(now + PAUSE_MS).toISOString();
     const at = new Date(now).toISOString();
-    const wallet = { version: 1, created_at: at, restored: true, evm: { address: a.evm, private_key: k.evmKey }, solana: { address: a.solana, secret_key_b64: k.solSecret.toString("base64") } };
+    const wallet = { version: SEALED_WALLET_VERSION, created_at: at, restored: true, evm: { address: a.evm, private_key: k.evmKey }, solana: { address: a.solana, secret_key_b64: k.solSecret.toString("base64") } };
     writePrivate(paths.wallet(), JSON.stringify(wallet, null, 2) + "\n", { exclusive: true });
     commitWallet(a, { id: randomUUID(), ts: at, kind: "wallet", status: "restored", evm: a.evm, solana: a.solana, ...(pausedUntil ? { paused_until: pausedUntil } : {}) });
     return { restored: true, already: false, base: a.evm, solana: a.solana, paused_until: pausedUntil };

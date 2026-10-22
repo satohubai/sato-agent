@@ -341,7 +341,7 @@ test("a wallet, and no ledger or seal next to it, is frozen (never a fresh insta
   initWallet();
   ["ledger.jsonl", "integrity.json"].forEach((f) => fs.rmSync(file(f)));
   assert.deepEqual(frozenRules(), ["ledger_tampered"]);
-  assert.match(I.inspect().problems[0].message, /the wallet is here, but its spend record and seal are missing/);
+  assert.match(I.inspect().problems[0].message, /the seal file \(integrity\.json\) is missing/, "its wallet file says it was sealed: never a pre-chain folder");
   assert.throws(() => setPolicy({ chains: "base", perTx: "none", perDay: "none" }), Refused, "no limits can be set on it either");
   const r = I.repair();
   assert.ok(r.paused_until);
@@ -386,7 +386,7 @@ function legacyFolder({ edit } = {}) {
   const rows = entries();
   const legacy = rows.filter((r) => r.kind !== "wallet").map((r) => JSON.stringify(r)).join("\n") + "\n";
   for (const f of fs.readdirSync(home)) fs.rmSync(join(home, f), { recursive: true, force: true });
-  write("wallet.json", keep.wallet);
+  write("wallet.json", JSON.stringify({ ...JSON.parse(keep.wallet), version: 1 }, null, 2) + "\n"); // as v0.5.4 wrote it
   write("policy.json", edit ? edit(keep.policy) : keep.policy);
   write("ledger.jsonl", legacy + JSON.stringify({ id: "s1", ts: new Date().toISOString(), kind: "send", status: "submitted", chain: "base", usd: 7, to: DEAD }) + "\n");
   return home;
@@ -514,8 +514,9 @@ test("parseBackup: the four lines, the bare keys, a 64-number array or a wallet.
     [k.solana_private_key, /No EVM private key/],
     [k.evm_private_key, /No Solana private key/],
     [`${k.evm_private_key}\n${k.solana_private_key.slice(0, -1)}2`, /does not hold together|No Solana private key/],
-    [lines.replace(a.evm, "0x" + "1".repeat(40)), /names the EVM address/],
-    [lines.replace(`Solana address: ${a.solana}`, "Solana address: 11111111111111111111111111111111"), /names the Solana address/],
+    [lines.replace(a.evm, "0x" + "1".repeat(40)), /The EVM address in the backup is not the address of its key/],
+    [lines.replace(`Solana address: ${a.solana}`, "Solana address: 11111111111111111111111111111111"), /The Solana address in the backup is not the address of its key/],
+    [lines.replace(`Solana address: ${a.solana}`, `Solana address: ${k.solana_private_key}`), /The Solana address in the backup is not the address of its key/],
   ];
   for (const [text, re] of bad) {
     assert.throws(() => parseBackup(text), (e) => re.test(e.message) && !e.message.includes(k.evm_private_key.slice(2)) && !e.message.includes(k.solana_private_key));
@@ -580,4 +581,82 @@ test("four processes writing at once keep one valid chain", async () => {
   );
   assert.deepEqual(frozenRules(), []);
   assert.equal(entries().filter((e) => e.kind === "check").length, 100);
+});
+
+// ------------------------------------------------------------------ review round 1: the attacks it reproduced
+
+test("R1 C1: deleting the seal and leaving a one-line ledger is not an upgrade: frozen (the wallet file says it was sealed)", async () => {
+  agent();
+  await spend(5);
+  fs.rmSync(file("integrity.json"));
+  write("ledger.jsonl", "{}\n");
+  assert.ok(frozenRules().includes("ledger_tampered"));
+  await assert.rejects(spend(1), (e) => e.refusals?.some((r) => r.rule === "ledger_tampered"));
+  write("policy.json", read("policy.json").replace('"max_usd_per_tx": 5', '"max_usd_per_tx": null'));
+  await assert.rejects(spend(500), (e) => e instanceof Refused);
+});
+
+test("R1 C1: an upgraded folder's wallet is stamped, so the same trick fails after an upgrade too; a legacy policy with a queued raise is refused", async () => {
+  legacyFolder();
+  await spend(1); // the upgrade seals it
+  assert.equal(JSON.parse(read("wallet.json")).version, I.SEALED_WALLET_VERSION);
+  fs.rmSync(file("integrity.json"));
+  write("ledger.jsonl", "{}\n");
+  assert.ok(frozenRules().includes("ledger_tampered"));
+  legacyFolder({ edit: (t) => t.replace('"max_usd_per_day": 20', `"max_usd_per_day": 20,\n  "pending": { "per_day": { "values": { "max_usd_per_day": null }, "effective_at": "2020-01-01T00:00:00.000Z" } }`) });
+  assert.deepEqual(frozenRules(), ["policy_tampered"]);
+});
+
+test("R1 H1: reserve decides on the policy as it is on disk, not only on the caller's copy", async () => {
+  agent();
+  const loose = { ...loadPolicy(), max_usd_per_tx: null, max_usd_per_day: null };
+  await assert.rejects(reserve(loose, { kind: "send", chain: "base", usd: 500, to: DEAD }), (e) => e.refusals?.some((r) => r.rule === "max_usd_per_tx"));
+  assert.equal(spentLast24h().usd, 0, "nothing reserved");
+});
+
+test("R1 H2: with the seal deleted or unreadable, the ledger still names the folder's wallet: init, restore and repair refuse another", () => {
+  const home = agent();
+  const mine = addresses();
+  const other = freshHome();
+  initWallet();
+  const otherText = cli(["backup", "--reveal"], { home: other }).stdout;
+  for (const seal of ["delete", "corrupt"]) {
+    process.env.SATO_AGENT_HOME = home;
+    const keep = read("wallet.json");
+    if (seal === "delete") fs.rmSync(file("integrity.json"));
+    else write("integrity.json", "x");
+    fs.rmSync(file("wallet.json"));
+    assert.throws(() => initWallet(), new RegExp(`it was ${mine.base}`));
+    const r = cli(["restore"], { input: otherText });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /belonged to another wallet/);
+    write("wallet.json", JSON.parse(JSON.stringify(fs.readFileSync(join(other, "wallet.json"), "utf8"))));
+    assert.ok(frozenRules().includes("wallet_tampered"));
+    assert.throws(() => I.repair(), /never accepts a different wallet/);
+    write("wallet.json", keep);
+    I.repair();
+    assert.deepEqual(frozenRules(), []);
+  }
+});
+
+test("R1 M1: with no seal to vouch for it, a loosened policy.json is not kept by repair", () => {
+  agent();
+  fs.rmSync(file("integrity.json"));
+  write("policy.json", read("policy.json").replace('"max_usd_per_day": 20', '"max_usd_per_day": null'));
+  const r = I.repair();
+  assert.ok(r.actions.some((a) => /removed the limits/.test(a)));
+  assert.equal(loadPolicy(), null);
+  assert.ok(r.paused_until);
+});
+
+test("R1 M1: a policy line planted before a repair never comes back as 'the last recorded change'", () => {
+  agent();
+  const loose = { ...loadPolicy(), max_usd_per_tx: null, max_usd_per_day: null };
+  fs.appendFileSync(file("ledger.jsonl"), JSON.stringify({ kind: "policy", status: "changed", to: loose }) + "\n");
+  I.repair();
+  fs.rmSync(file("policy.json"));
+  const r = I.repair();
+  assert.ok(!r.actions.some((a) => /put back/.test(a)), r.actions.join(" | "));
+  assert.equal(loadPolicy(), null);
+  assert.equal(I.lastRecordedPolicy(), null);
 });

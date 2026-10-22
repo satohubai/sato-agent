@@ -14,10 +14,10 @@
 
 import { randomUUID } from "node:crypto";
 import { paths, readLines, withLock } from "./store.js";
-import { evaluate } from "./policy.js";
+import { evaluate, fold } from "./policy.js";
 import { Refused } from "./errors.js";
 import { DEFAULT_EVM_CHAIN, explorerTx, isKnownChain } from "./chains.js";
-import { appendRow, inspect } from "./integrity.js";
+import { appendRow, snapshot, withLedgerLock } from "./integrity.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -32,10 +32,24 @@ export function recordCheckEvent(entry) {
   return record({ kind: "check", ...entry });
 }
 
+const noPrev = (r) => (r && typeof r === "object" && Object.hasOwn(r, "prev") ? (({ prev: _p, ...rest }) => rest)(r) : r);
+
 /** The ledger's rows (without the chain's `prev` field, which only src/integrity.js reads), plus the numbers of unreadable lines. */
 export function read() {
   const { rows, bad } = readLines(paths.ledger());
-  return { rows: rows.map((r) => (r && typeof r === "object" && Object.hasOwn(r, "prev") ? (({ prev: _p, ...rest }) => rest)(r) : r)), bad };
+  return { rows: rows.map(noPrev), bad };
+}
+
+/** read() over the very lines integrity.js checked: rows of the lines that parse, and the 1-based numbers of the others. */
+function rowsOf(s) {
+  const rows = [];
+  const bad = [];
+  s.raw.forEach((l, i) => {
+    if (!l.trim()) return;
+    if (s.rows[i]) rows.push(noPrev(s.rows[i]));
+    else bad.push(i + 1);
+  });
+  return { rows, bad };
 }
 
 export function entries() {
@@ -47,15 +61,21 @@ export function entries() {
  * (a ledger, policy or wallet that does not match its seal) and `paused_until` a pause after a repair or a restore: evaluate()
  * refuses on either.
  */
-export function spentLast24h(now = Date.now(), ledger = read()) {
+export function spentLast24h(now = Date.now(), ledger) {
+  // One read: the totals come from the same lines the seal check looked at (unless the caller hands its own rows).
+  const s = snapshot();
+  return totals(ledger ?? rowsOf(s), now, s);
+}
+
+function totals(ledger, now, s) {
   const failed = new Set(ledger.rows.filter((e) => e.status === "failed").map((e) => e.id));
   const live = ledger.rows.filter((e) => e.status === "submitted" && now - Date.parse(e.ts) < DAY_MS && !failed.has(e.id));
   // Summed in whole micro-dollars (USDC's 6 decimals), so ten $0.001 spends are exactly $0.01.
   const usd = live.reduce((sum, e) => sum + Math.round((Number(e.usd) || 0) * 1e6), 0) / 1e6;
   // Swaps reserved in the window (same rule: a swap that provably never went out drops out).
   const swaps = live.filter((e) => e.kind === "swap").length;
-  const integrity = inspect({ now });
-  return { usd, swaps, unreadable: ledger.bad, frozen: integrity.problems, paused_until: integrity.paused ? integrity.paused_until : null };
+  const paused = s.paused_until !== null && now < Date.parse(s.paused_until);
+  return { usd, swaps, unreadable: ledger.bad, frozen: s.problems, paused_until: paused ? s.paused_until : null };
 }
 
 /**
@@ -63,11 +83,26 @@ export function spentLast24h(now = Date.now(), ledger = read()) {
  * process on this machine. Throws Refused (nothing reserved) when the limits say no.
  */
 export async function reserve(policy, spend) {
-  return withLock(async () => {
-    const refusals = evaluate(policy, spend, spentLast24h());
-    if (refusals.length) throw new Refused(refusals);
-    return record({ status: "submitted", ...spend });
-  });
+  return withLock(async () =>
+    withLedgerLock(() => {
+      // Everything the decision rests on is read once, under the ledger lock, and checked against the seal: the 24-hour total and
+      // the owner's policy.json as it is on disk. The spend must fit BOTH that policy and the one the caller planned with, so a file
+      // swapped between a command's first read and this moment changes nothing.
+      const now = Date.now();
+      const s = snapshot();
+      const spent = totals(rowsOf(s), now, s);
+      let onDisk = null;
+      try {
+        onDisk = s.policyText === null ? null : fold(JSON.parse(s.policyText), now);
+      } catch {
+        throw new Refused([{ rule: "policy_unreadable", limit: null, observed: null, message: "the limits file (policy.json) cannot be read; nothing is spent until the owner looks" }]);
+      }
+      const refusals = [...evaluate(policy, spend, spent)];
+      if (s.policyText !== null || policy) for (const r of evaluate(onDisk, spend, spent)) if (!refusals.some((x) => x.rule === r.rule)) refusals.push(r);
+      if (refusals.length) throw new Refused(refusals);
+      return record({ status: "submitted", ...spend });
+    }),
+  );
 }
 
 /** Kinds that move value: shown in `status`, `history` and `proof`. "order" and "checkout" are purchases; "bridge" moves the agent's own funds to its other chain (it shares the 24-hour limit). */

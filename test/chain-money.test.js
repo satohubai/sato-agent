@@ -6,13 +6,14 @@ import http from "node:http";
 import test, { after } from "node:test";
 import { decodeFunctionData, encodeAbiParameters, encodeEventTopics, erc20Abi, keccak256 } from "viem";
 import { encodePaymentRequiredHeader } from "@x402/core/http";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce } from "./helpers.js";
 import { fakeChain } from "./swap-evm-helpers.js";
 import { siwxInfo } from "./bitrefill-world.js";
 
 freshHome();
 const { initWallet, addresses } = await import("../src/wallet.js");
-const { setPolicy, loadPolicy } = await import("../src/policy.js");
+const { setPolicy: setPolicyAt, loadPolicy } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const { Refused } = await import("../src/errors.js");
 const { entries, explorerFor, actions } = await import("../src/ledger.js");
 const chainsMod = await import("../src/chains.js");

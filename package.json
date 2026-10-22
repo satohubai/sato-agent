@@ -23,10 +23,10 @@
     "node": ">=20.18"
   },
   "scripts": {
-    "test": "node --test test/*.test.js",
-    "test:fork": "SATO_AGENT_FORK=1 node --test test/fork.test.js test/swap-evm-fork.test.js test/price.test.js",
-    "test:fork:chains": "SATO_AGENT_FORK=1 node --test test/chains-fork.test.js",
-    "test:live-read": "SATO_AGENT_LIVE_READ=1 node --test test/swap-solana.test.js"
+    "test": "NODE_OPTIONS=--import=./test/approval-preload.js node --test test/*.test.js",
+    "test:fork": "SATO_AGENT_FORK=1 NODE_OPTIONS=--import=./test/approval-preload.js node --test test/fork.test.js test/swap-evm-fork.test.js test/price.test.js",
+    "test:fork:chains": "SATO_AGENT_FORK=1 NODE_OPTIONS=--import=./test/approval-preload.js node --test test/chains-fork.test.js",
+    "test:live-read": "SATO_AGENT_LIVE_READ=1 NODE_OPTIONS=--import=./test/approval-preload.js node --test test/swap-solana.test.js"
   },
   "repository": {
     "type": "git",

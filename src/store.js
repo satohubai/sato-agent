@@ -5,6 +5,9 @@
 //                 every command that spends refuses.
 //   ledger.jsonl  one line per spend and per limit change. Spend over the last
 //                 24 hours is read from it, so a restart does not reset the limit.
+//                 Each line carries the SHA-256 of the line before it (src/integrity.js).
+//   integrity.json the seal: the wallet's addresses, the SHA-256 of policy.json and
+//                 the ledger's last line. Anything that does not match stops spending.
 //   spend.lock    held while a spend is checked and reserved, so two commands
 //                 running at once cannot both fit under the same limit.
 //
@@ -23,6 +26,7 @@ export const paths = {
   wallet: () => join(home(), "wallet.json"),
   policy: () => join(home(), "policy.json"),
   ledger: () => join(home(), "ledger.jsonl"),
+  integrity: () => join(home(), "integrity.json"),
   lock: (name = "spend") => join(home(), `${name}.lock`),
 };
 
@@ -98,10 +102,10 @@ const alive = (pid) => {
  * removing a fresh lock another process just took: rename it aside atomically,
  * and if what we moved is not what we judged stale, put it back.
  */
-function clearStale(lock) {
+function clearStale(lock, staleMs = STALE_LOCK_MS) {
   let content;
   try {
-    if (Date.now() - fs.statSync(lock).mtimeMs <= STALE_LOCK_MS) return;
+    if (Date.now() - fs.statSync(lock).mtimeMs <= staleMs) return;
     content = fs.readFileSync(lock, "utf8");
   } catch {
     return;
@@ -140,6 +144,43 @@ export async function withLock(fn, { name = "spend", waitMs = 30_000 } = {}) {
   try {
     return await fn();
   } finally {
+    try {
+      fs.unlinkSync(lock);
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+// Locks this process holds through withLockSync: taking one again from inside it just runs (the work in it is synchronous).
+const heldSync = new Set();
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/**
+ * withLock for synchronous work that lasts milliseconds (the ledger and its seal). A lock left by a process that is gone is
+ * cleared after `staleMs`, not two minutes: nothing holds this one for longer than a write.
+ */
+export function withLockSync(fn, { name, waitMs = 30_000, staleMs = 5_000 } = {}) {
+  if (heldSync.has(name)) return fn();
+  ensureHome();
+  const lock = paths.lock(name);
+  const start = Date.now();
+  for (;;) {
+    try {
+      fs.writeFileSync(lock, `${process.pid} ${new Date().toISOString()}\n`, { flag: "wx", mode: 0o600 });
+      break;
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      clearStale(lock, staleMs);
+      if (Date.now() - start > waitMs) throw new Error(`another ${name} write is in progress (lock ${lock}); try again`);
+      pause(10 + Math.random() * 20);
+    }
+  }
+  heldSync.add(name);
+  try {
+    return fn();
+  } finally {
+    heldSync.delete(name);
     try {
       fs.unlinkSync(lock);
     } catch {

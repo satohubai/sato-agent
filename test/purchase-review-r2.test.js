@@ -6,12 +6,13 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce } from "./helpers.js";
 import { CODE, bitrefillWorld } from "./bitrefill-world.js";
 
 const home = freshHome();
 const { initWallet } = await import("../src/wallet.js");
-const { setPolicy } = await import("../src/policy.js");
+const { setPolicy: setPolicyAt } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const B = await import("../src/bitrefill.js");
 
 const BIN = fileURLToPath(new URL("../bin/sato-agent.js", import.meta.url));

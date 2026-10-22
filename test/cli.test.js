@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesTakeEffect } from "./helpers.js";
 
 const BIN = fileURLToPath(new URL("../bin/sato-agent.js", import.meta.url));
 const home = freshHome();
@@ -54,9 +54,11 @@ test("raising a limit prints a warning and is logged", () => {
   assert.equal(run("policy", "set", "--per-tx", "1", "--per-day", "5").status, 1, "the first set needs --chains: no defaults");
   assert.equal(run("policy", "set", "--chains", "base", "--per-tx", "1", "--per-day", "5").status, 0);
   const up = run("policy", "set", "--per-day", "500");
-  assert.match(up.stdout, /RAISED \(max_usd_per_day\)/);
+  assert.match(up.stdout, /RAISE QUEUED, not in effect yet \(max_usd_per_day\)/);
+  assert.match(up.stdout, /per 24 hours: \$5 → \$500: takes effect at /);
+  raisesTakeEffect(); // a day later
   const down = run("policy", "set", "--per-day", "50");
-  assert.doesNotMatch(down.stdout, /RAISED/);
+  assert.doesNotMatch(down.stdout, /RAISE/);
   assert.match(run("status").stdout, /raised/);
 });
 

@@ -5,11 +5,12 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce, raisesTakeEffect } from "./helpers.js";
 
 const home = freshHome();
 const { initWallet } = await import("../src/wallet.js");
-const { setPolicy, loadPolicy, purchasesAsk, raisesBetween } = await import("../src/policy.js");
+const { setPolicy: setPolicyAt, loadPolicy, purchasesAsk, raisesBetween } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const { NeedsApproval, Refused } = await import("../src/errors.js");
 const { purchaseGate, checkLimits, purchaseChain } = await import("../src/purchase.js");
 const { executeOrder } = await import("../src/commerce.js");
@@ -121,8 +122,11 @@ test("CLI: --purchases is shown, flagged as a raise, and status says whether an 
   run("policy", "set", "--purchases", "ask");
   const up = run("policy", "set", "--purchases", "auto");
   assert.equal(up.status, 0);
-  assert.match(up.stdout, /RAISED \(purchases: ask -> auto\)/);
-  assert.match(up.stdout, /purchases: +buy within the limits/);
+  assert.match(up.stdout, /RAISE QUEUED, not in effect yet \(purchases: ask -> auto\)/);
+  assert.match(up.stdout, /purchases: +ask the owner first/, "a raise waits a day: purchases still ask");
+  assert.match(up.stdout, /purchases: ask → auto: takes effect at /);
+  raisesTakeEffect();
+  assert.match(run("policy", "show").stdout, /purchases: +buy within the limits/);
   assert.match(run("policy", "set", "--purchases", "ask").stdout, /purchases: +ask the owner first/);
   assert.equal(run("policy", "set", "--purchases", "maybe").status, 1);
   const st = run("status");

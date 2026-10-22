@@ -8,11 +8,12 @@ import { createServer } from "node:http";
 import test, { after, before } from "node:test";
 import { encodePaymentRequiredHeader, encodePaymentResponseHeader, decodePaymentSignatureHeader } from "@x402/core/http";
 import { verifyTypedData } from "viem";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce } from "./helpers.js";
 
 freshHome();
 const { initWallet } = await import("../src/wallet.js");
-const { setPolicy } = await import("../src/policy.js");
+const { setPolicy: setPolicyAt } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const { Pending, Refused } = await import("../src/errors.js");
 const { pay, MAX_AUTH_WINDOW_S, GIFTCARD_AUTH_WINDOW_S } = await import("../src/x402.js");
 const { spentLast24h, entries } = await import("../src/ledger.js");

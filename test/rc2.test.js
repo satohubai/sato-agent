@@ -9,13 +9,14 @@ import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 import { encodePaymentRequiredHeader } from "@x402/core/http";
 import { generateKeyPairSigner } from "@solana/kit";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce } from "./helpers.js";
 import { bitrefillWorld } from "./bitrefill-world.js";
 import { fakeRpc } from "./purchase-solana-helpers.js";
 
 const home = freshHome();
 const { initWallet, evmAccount } = await import("../src/wallet.js");
-const { setPolicy } = await import("../src/policy.js");
+const { setPolicy: setPolicyAt } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const { Refused } = await import("../src/errors.js");
 const B = await import("../src/bitrefill.js");
 const C = await import("../src/commerce.js");

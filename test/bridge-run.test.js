@@ -2,15 +2,16 @@
 // here), the chain, the simulation and deBridge's status API are all fakes. Nothing signs for real and no network is touched.
 
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { encodeAbiParameters, encodeEventTopics, getAddress } from "viem";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce, writeOldPolicy } from "./helpers.js";
 import { fakeChain, topicAddr, transferLog } from "./swap-evm-helpers.js";
 
 freshHome();
 const { initWallet, addresses } = await import("../src/wallet.js");
-const { setPolicy, bridgesEnabled, isLegacyBridgesOff, loadPolicy } = await import("../src/policy.js");
+const { setPolicy: setPolicyAt, bridgesEnabled, isLegacyBridgesOff, loadPolicy } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const { paths } = await import("../src/store.js");
 const { Refused, NeedsApproval, Pending } = await import("../src/errors.js");
 const { PriceUnavailable } = await import("../src/price.js");
@@ -163,7 +164,7 @@ test("the bridge is a value kind; a new policy carries bridges on explicitly; a 
 test("a policy from before v0.5 keeps bridges off through other edits; turning them on is a raise and the refusal says how", async () => {
   const keep = loadPolicy();
   const { bridges_off: _drop, ...legacy } = keep;
-  writeFileSync(paths.policy(), JSON.stringify(legacy));
+  writeOldPolicy(legacy);
   const other = setPolicy({ perTx: "4000" });
   assert.equal(other.policy.bridges_off, true, "written explicitly, and off");
   assert.equal(other.raised, false);

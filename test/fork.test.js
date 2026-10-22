@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import test, { after, before } from "node:test";
 import { createPublicClient, erc20Abi, http, keccak256, encodeAbiParameters, pad, toHex } from "viem";
 import { base } from "viem/chains";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce } from "./helpers.js";
 
 const enabled = process.env.SATO_AGENT_FORK === "1";
 const PORT = 18545 + Math.floor(Math.random() * 1000);
@@ -17,7 +17,8 @@ const RPC = `http://127.0.0.1:${PORT}`;
 freshHome();
 process.env.SATO_AGENT_BASE_RPC = RPC;
 const { initWallet } = await import("../src/wallet.js");
-const { setPolicy, Refused } = await import("../src/policy.js");
+const { setPolicy: setPolicyAt, Refused } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const { USDC_BASE, IDENTITY_REGISTRY, sendUsdc, dryRunSendUsdc, registerAgent, registrationUri } = await import("../src/base.js");
 
 let anvil;

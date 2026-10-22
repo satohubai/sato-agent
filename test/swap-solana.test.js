@@ -35,11 +35,12 @@ import {
   AccountRole,
 } from "@solana/kit";
 import { TOKEN_PROGRAM_ADDRESS, findAssociatedTokenPda } from "@solana-program/token";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce } from "./helpers.js";
 import { compile, fetchJupiterIdl } from "./fixtures/swap-solana/idl.mjs";
 
 freshHome();
-const { setPolicy } = await import("../src/policy.js");
+const { setPolicy: setPolicyAt } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const { entries, spentLast24h } = await import("../src/ledger.js");
 const { Pending, Refused, Rejected } = await import("../src/errors.js");
 const { USDC_MINT, TOKEN_2022_PROGRAM } = await import("../src/solana.js");

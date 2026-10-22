@@ -7,21 +7,33 @@
 // A limit of `null` means "no limit", chosen explicitly.
 //
 // What these choices are, honestly: they are enforced by this program, on the
-// same computer that holds the key. The agent itself can run `policy set`, edit
-// these files, or write its own code that uses the key. They stop mistakes,
-// loops and an agent that follows its rules; they do not stop a compromised
-// agent. Every change is written to the ledger, and any change that lets the
-// agent do MORE is flagged as a raise. The hard bound is what the owner funds
-// the wallet with.
+// same computer that holds the key. They stop mistakes, loops, bad quotes and an
+// agent that follows its rules. Since v0.6.0 a change that lets the agent do MORE
+// (a raise) waits RAISE_DELAY_MS before it takes effect, is shown as pending in
+// `status` and can be cancelled (`policy cancel`); a change that tightens takes
+// effect at once. The files are sealed (src/integrity.js), so a hand edit freezes
+// spending instead of slipping past the raise log. None of this stops a program
+// that takes full control of this computer: it can read the key and sign without
+// the kit. The hard bound is what the owner funds the wallet with.
 
 import { isAddress as isEvmAddress } from "viem";
 import { isAddress as isSolanaAddress } from "@solana/kit";
-import { paths, readJson, writePrivate } from "./store.js";
-import { entries, recordPolicyChange } from "./ledger.js";
+import { randomUUID } from "node:crypto";
+import { paths, readJson } from "./store.js";
 import { DEFAULT_EVM_CHAIN, chainKeys, chainsWith, evmChainKeys, hasFeature, isEvm, labelList, labelOf, orList, pipeList } from "./chains.js";
 import { Refused } from "./errors.js";
+import { commitPolicy, inspect, lastRecordedPolicy, pauseRefusal, policyFileText } from "./integrity.js";
 
 export { Refused } from "./errors.js";
+
+/**
+ * How long a raise waits before it takes effect: 24 hours. It matches the rolling 24-hour limit, so a raise asked for by
+ * anyone but the owner cannot take effect before the owner's next daily look at the chat or `status`, and before it does,
+ * the agent can spend at most one more day under the limits the owner set. Shorter would land while the owner sleeps;
+ * longer makes a real raise slow without adding a check. There is no way to skip it from this computer: anything the owner
+ * could type to skip it, the agent could type too.
+ */
+export const RAISE_DELAY_MS = 24 * 60 * 60 * 1000;
 
 export const POLICY_SCHEMA = "sato-agent.policy/v2";
 // The chains an owner can choose: every chain in the registry (src/chains.js).
@@ -78,8 +90,28 @@ export function parseAllowlist(list) {
   return [...new Set(list)];
 }
 
-export function loadPolicy() {
-  return readJson(paths.policy());
+/**
+ * The policy in force now: policy.json with every queued raise whose time has come applied. Raises still waiting stay in
+ * `pending` ({ part: { values, requested_at, effective_at } }), for `status` to show.
+ */
+export function loadPolicy({ now = Date.now() } = {}) {
+  return fold(readJson(paths.policy()), now);
+}
+
+/** Apply the queued raises that are due at `now`. An entry whose time cannot be read never takes effect. */
+export function fold(p, now = Date.now()) {
+  if (!p || !p.pending || typeof p.pending !== "object") return p;
+  const out = { ...p };
+  const left = {};
+  for (const [key, e] of Object.entries(p.pending)) {
+    const part = PARTS.find((x) => x.key === key);
+    if (part && e && e.values && typeof e.values === "object" && Date.parse(e.effective_at) <= now) {
+      for (const f of part.fields) if (Object.hasOwn(e.values, f)) out[f] = e.values[f];
+    } else left[key] = e;
+  }
+  if (Object.keys(left).length) out.pending = left;
+  else delete out.pending;
+  return out;
 }
 
 const norm = (a) => (a.startsWith("0x") ? a.toLowerCase() : a);
@@ -102,8 +134,10 @@ export function raisesBetween(prev, next) {
   if (prev.approval === "ask" && next.approval !== "ask") r.push("approval: ask -> auto");
   // Unset means "ask", so unset -> auto is a raise too.
   if (purchasesAsk(prev) && !purchasesAsk(next)) r.push("purchases: ask -> auto");
-  // Unset counts as "refuse" (gateRefusals fails closed), so unset -> allow is a raise too.
-  if ((prev.on_check_unavailable ?? "refuse") === "refuse" && next.on_check_unavailable === "allow") r.push("on_check_unavailable: refuse -> allow");
+  // Unset counts as "refuse" (gateRefusals fails closed), so unset -> allow is a raise too. It only means something while a
+  // gate is on before and after: turning a gate on from "off" never lets the agent do more, whatever it does when a check can't run.
+  const gateOn = (p) => p.check_gate === "no" || p.check_gate === "caution";
+  if (gateOn(prev) && gateOn(next) && (prev.on_check_unavailable ?? "refuse") === "refuse" && next.on_check_unavailable === "allow") r.push("on_check_unavailable: refuse -> allow");
   // Swaps: turning them on, removing or raising a cap all let the agent do more.
   if (swapsEnabled(next) && !swapsEnabled(prev)) r.push("swaps turned on");
   // Bridges (v0.5): turning them on lets the agent do more.
@@ -159,17 +193,84 @@ function parseTrades(raw) {
   return Number(raw);
 }
 
+const limitText = (v) => (v === null || v === undefined ? "no limit" : `$${v}`);
+const gateText = (p) => (p.check_gate === "no" || p.check_gate === "caution" ? `stop on "${p.check_gate === "caution" ? "caution or no" : "no"}"${p.on_check_unavailable ? ` (if a check can't run: ${p.on_check_unavailable})` : ""}` : "inform only");
+const listText = (l) => (Array.isArray(l) ? l.join(", ") : "any");
+
+/**
+ * The parts of the policy a raise can loosen, with the fields each covers. A change that loosens a part is queued for
+ * RAISE_DELAY_MS in `pending`; until then the part keeps its old value (for a list, only what stays on it: removing an address
+ * or a chain is a tightening and applies at once). A change that tightens a part, or sets it again, applies at once and drops
+ * anything queued for that part: the owner's latest word on it wins. `raise` names the raisesBetween() lines that belong to it.
+ */
+export const PARTS = [
+  { key: "per_tx", fields: ["max_usd_per_tx"], opts: ["perTx"], raise: ["max_usd_per_tx"], text: (c, n) => `per transaction: ${limitText(c.max_usd_per_tx)} → ${limitText(n.max_usd_per_tx)}` },
+  { key: "per_day", fields: ["max_usd_per_day"], opts: ["perDay"], raise: ["max_usd_per_day"], text: (c, n) => `per 24 hours: ${limitText(c.max_usd_per_day)} → ${limitText(n.max_usd_per_day)}` },
+  {
+    key: "recipients",
+    fields: ["allow_recipients"],
+    opts: ["allowRecipients"],
+    raise: ["allow_recipients removed", "allow_recipients widened"],
+    meet: (n, c) => ({ allow_recipients: n.allow_recipients === null ? c.allow_recipients : c.allow_recipients.filter((a) => n.allow_recipients.map(norm).includes(norm(a))) }),
+    text: (c, n) => `recipients: ${listText(c.allow_recipients)} → ${listText(n.allow_recipients)}`,
+  },
+  {
+    key: "chains",
+    fields: ["chains"],
+    opts: ["chains"],
+    raise: ["chains widened"],
+    meet: (n, c) => ({ chains: c.chains.filter((x) => (n.chains ?? LEGACY_CHAINS).includes(x)) }),
+    text: (c, n) => `chains: ${listText(c.chains)} → ${listText(n.chains)}`,
+  },
+  { key: "check_gate", fields: ["check_gate", "on_check_unavailable"], opts: ["checkGate", "onCheckUnavailable"], raise: ["check_gate loosened", "on_check_unavailable: refuse -> allow"], text: (c, n) => `Sato Hub checks: ${gateText(c)} → ${gateText(n)}` },
+  { key: "approval", fields: ["approval"], opts: ["approval"], raise: ["approval: ask -> auto"], text: (c, n) => `approval: ${c.approval ?? "auto"} → ${n.approval ?? "auto"}` },
+  { key: "purchases", fields: ["purchase_approval"], opts: ["purchases"], raise: ["purchases: ask -> auto"], text: (c, n) => `purchases: ${c.purchase_approval ?? "ask"} → ${n.purchase_approval ?? "ask"}` },
+  { key: "swaps", fields: ["swaps_off"], opts: ["swaps"], raise: ["swaps turned on"], meet: (_n, c) => ({ swaps_off: !swapsEnabled(c) }), text: () => "swaps: off → on" },
+  { key: "slippage", fields: ["max_slippage_bps"], opts: ["swapSlippageBps"], raise: ["max_slippage_bps"], text: (c, n) => `swap slippage cap: ${c.max_slippage_bps ?? "none"} bps → ${Number.isInteger(n.max_slippage_bps) ? `${n.max_slippage_bps} bps` : "no cap"}` },
+  { key: "trades", fields: ["max_trades_per_day"], opts: ["maxTradesPerDay"], raise: ["max_trades_per_day"], text: (c, n) => `swaps per 24 hours: ${c.max_trades_per_day ?? "no cap"} → ${Number.isInteger(n.max_trades_per_day) ? n.max_trades_per_day : "no cap"}` },
+  { key: "bridges", fields: ["bridges_off"], opts: ["bridges"], raise: ["bridges turned on"], meet: (_n, c) => ({ bridges_off: !bridgesEnabled(c) }), text: () => "bridges: off → on" },
+];
+
+const pickFields = (p, fields) => Object.fromEntries(fields.map((f) => [f, p?.[f] ?? null]));
+const canon = (v) => JSON.stringify(v, (_k, x) => (Array.isArray(x) ? [...x].map((a) => (typeof a === "string" ? norm(a) : a)).sort() : x));
+const iso = (ms) => new Date(ms).toISOString();
+
+/**
+ * Each raise still waiting in `p.pending`, described against the policy in force now:
+ * [{ part, change: "per 24 hours: $10 → $100", requested_at, effective_at }].
+ */
+export function pendingRaises(p) {
+  if (!p?.pending) return [];
+  return Object.entries(p.pending).map(([key, e]) => {
+    const part = PARTS.find((x) => x.key === key);
+    const change = part && e?.values ? part.text(p, { ...p, ...e.values }) : key;
+    return { part: key, change, requested_at: e?.requested_at ?? null, effective_at: e?.effective_at ?? null };
+  });
+}
+
+/** Spending is frozen (src/integrity.js): the owner repairs first; no choice changes until then. */
+function assertNotFrozen() {
+  const { problems } = inspect();
+  if (problems.length) throw new Refused(problems);
+}
+
 /**
  * Set or change the owner's choices. The first time, both limits and the chains
- * are required (no defaults). Later calls may change any one. Returns the new
- * policy and what (if anything) it loosened, which the CLI flags loudly.
+ * are required (no defaults). Later calls may change any one. A change that lets
+ * the agent do more (a raise) is queued for RAISE_DELAY_MS and returned in
+ * `queued`, for the agent to tell the owner; the rest applies at once. Returns the
+ * policy in force, what (if anything) the change loosened, and what was queued.
  */
-export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, approval, onCheckUnavailable, swapSlippageBps, maxTradesPerDay, swaps, purchases, bridges }) {
-  const prev = loadPolicy();
-  // If policy.json is gone (deleted, or never written after a crash) but the
-  // ledger recorded one, compare against that: deleting the file and starting
-  // over must still show up as a raise.
-  const recorded = prev ? null : [...entries()].reverse().find((e) => e.kind === "policy" && e.to)?.to ?? null;
+export function setPolicy(opts, { now = Date.now() } = {}) {
+  const { perTx, perDay, allowRecipients, chains, checkGate, approval, onCheckUnavailable, swapSlippageBps, maxTradesPerDay, swaps, purchases, bridges } = opts;
+  assertNotFrozen();
+  const stored = readJson(paths.policy());
+  // If policy.json is gone (removed by a repair, or never written after a crash) but the
+  // ledger recorded one, compare against that: starting over must still show up as a raise,
+  // and wait like one.
+  const recorded = stored ? null : lastRecordedPolicy();
+  const base = stored ?? recorded;
+  const prev = base ? fold(base, now) : null;
   if (!prev && (perTx === undefined || perDay === undefined)) {
     throw new Error("first time: set both --per-tx and --per-day (a USD amount, or \"none\")");
   }
@@ -178,7 +279,7 @@ export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, a
   const pick = (v, key, fallback = null) => (v === undefined ? (prev?.[key] ?? fallback) : v);
   const next = {
     schema: POLICY_SCHEMA,
-    set_at: new Date().toISOString(),
+    set_at: iso(now),
     max_usd_per_tx: perTx === undefined ? prev.max_usd_per_tx : parseLimit(perTx, "--per-tx"),
     // Rolling 24 hours, not a calendar day.
     max_usd_per_day: perDay === undefined ? prev.max_usd_per_day : parseLimit(perDay, "--per-day"),
@@ -199,7 +300,7 @@ export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, a
   const trades = parseTrades(maxTradesPerDay);
   // Unchanged by a change to something else: a policy that had swaps off (explicitly, or a pre-v0.3 one that never had them on)
   // keeps them off until `--swaps on`. A first policy has them on. The key is always written, so "off" is never implied by absence.
-  const before = prev ?? recorded;
+  const before = prev;
   const off = swapsChoice === "off" || bps === "off" ? true : swapsChoice === "on" ? false : before ? !swapsEnabled(before) : false;
   next.swaps_off = off;
   // Bridges: on for a new policy, off for one written before v0.5 until the owner says so. The key is always written, so "off" is never implied by absence.
@@ -216,11 +317,56 @@ export function setPolicy({ perTx, perDay, allowRecipients, chains, checkGate, a
   if (["no", "caution"].includes(next.check_gate) && !next.on_check_unavailable) {
     throw new Error("with --check-gate on, also choose --on-check-unavailable allow|refuse: what to do when the check can't run (no default)");
   }
-  const raises = raisesBetween(prev ?? recorded, next);
-  if (!prev && recorded) raises.unshift("policy file was missing; compared with the last recorded policy");
-  writePrivate(paths.policy(), JSON.stringify(next, null, 2) + "\n", { atomic: true });
-  recordPolicyChange({ from: prev ?? recorded, to: next, raised: raises.length > 0, raises });
-  return { policy: next, raised: raises.length > 0, raises, first: !prev && !recorded };
+  const raises = raisesBetween(prev, next);
+  // Which parts loosen. "purchases: ask -> auto" with no change to the purchase choice itself is the approval part's doing.
+  const loosened = new Set();
+  for (const r of raises) {
+    const part = PARTS.find((x) => x.raise.includes(r));
+    if (!part) continue;
+    if (part.key === "purchases" && next.purchase_approval === prev.purchase_approval) loosened.add("approval");
+    else loosened.add(part.key);
+  }
+  if (!stored && recorded) raises.unshift("policy file was missing; compared with the last recorded policy");
+  const touched = new Set(PARTS.filter((x) => x.opts.some((o) => opts[o] !== undefined)).map((x) => x.key));
+  if (swapSlippageBps === "off") touched.add("swaps");
+  const pending = { ...(prev?.pending ?? {}) };
+  const out = { ...next };
+  for (const part of PARTS) {
+    if (loosened.has(part.key)) {
+      const values = pickFields(next, part.fields);
+      // Asking again for the same raise keeps its clock; anything else starts a new one.
+      if (!(pending[part.key] && canon(pending[part.key].values) === canon(values))) pending[part.key] = { values, requested_at: iso(now), effective_at: iso(now + RAISE_DELAY_MS) };
+      Object.assign(out, part.meet ? part.meet(next, prev) : pickFields(prev, part.fields));
+    } else if (touched.has(part.key)) delete pending[part.key];
+  }
+  if (Object.keys(pending).length) out.pending = pending;
+  else delete out.pending;
+  const queued = pendingRaises(out).filter((q) => loosened.has(q.part));
+  commitPolicy(policyFileText(out), {
+    id: randomUUID(),
+    ts: iso(now),
+    kind: "policy",
+    status: raises.length ? "raised" : "changed",
+    raises,
+    ...(queued.length ? { queued: queued.map(({ part, change, effective_at }) => ({ part, change, effective_at })) } : {}),
+    from: base,
+    to: out,
+  });
+  // The policy in force when this returns (a raise queued just now is not in it yet).
+  return { policy: fold(out, Date.now()), raised: raises.length > 0, raises, queued, first: !prev };
+}
+
+/** Cancel every raise still waiting. Raises already in effect stay; tighten them with `policy set`. */
+export function cancelPending({ now = Date.now() } = {}) {
+  assertNotFrozen();
+  const stored = readJson(paths.policy());
+  const cur = fold(stored, now);
+  const cancelled = pendingRaises(cur);
+  if (!cancelled.length) return { policy: cur, cancelled };
+  const out = { ...cur };
+  delete out.pending;
+  commitPolicy(policyFileText(out), { id: randomUUID(), ts: iso(now), kind: "policy", status: "cancelled", cancelled: cancelled.map(({ part, change, effective_at }) => ({ part, change, effective_at })), from: stored, to: out });
+  return { policy: out, cancelled };
 }
 
 /** The chains this policy allows (a v1 policy with no `chains` allows both). */
@@ -259,12 +405,17 @@ export function evaluate(policy, spend, spent) {
   const { to, chain, kind, slippage_bps } = spend;
   // A token with no price (a send of an ordinary token) counts $0: the limits cannot measure it, and it is never refused for lacking a price.
   const usd = spend.unpriced === true ? 0 : spend.usd;
+  const s = typeof spent === "number" ? { usd: spent, unreadable: [] } : spent;
+  // An unreadable ledger line, or a ledger, policy or wallet that does not match its seal, stops everything before any other
+  // rule (a deleted policy.json is "tampered", not "not set yet"); so does a pause after a repair or a restore.
+  const stops = [
+    ...(s.unreadable.length ? [{ rule: "ledger_unreadable", limit: null, observed: s.unreadable, message: `the spend ledger has unreadable line(s) ${s.unreadable.join(", ")}; spending is stopped until the owner looks at ${paths.ledger()}` }] : []),
+    ...(s.frozen ?? []),
+  ];
+  if (stops.length) return stops;
+  if (s.paused_until) return [pauseRefusal({ paused_until: s.paused_until }, 0)];
   if (!policy) {
     return [{ rule: "limits_not_set", limit: null, observed: null, message: "no spending limits are set yet: the owner runs `sato-agent policy set --chains <" + CHAINS_USAGE + "> --per-tx <usd|none> --per-day <usd|none>`" }];
-  }
-  const s = typeof spent === "number" ? { usd: spent, unreadable: [] } : spent;
-  if (s.unreadable.length) {
-    return [{ rule: "ledger_unreadable", limit: null, observed: s.unreadable, message: `the spend ledger has unreadable line(s) ${s.unreadable.join(", ")}; spending is stopped until the owner looks at ${paths.ledger()}` }];
   }
   const out = [];
   if (!Array.isArray(policy.chains)) {

@@ -8,24 +8,23 @@
 // transaction reverted. Anything signed whose fate is unclear stays counted.
 //
 // An unreadable line stops all spending until the owner looks: deleting the
-// ledger would reset the limits, so it must never be the easy fix.
+// ledger would reset the limits, so it must never be the easy fix. Since v0.6.0
+// every line is also chained to the one before it and sealed (src/integrity.js):
+// a ledger that is missing, cut short, reordered or edited freezes spending.
 
 import { randomUUID } from "node:crypto";
-import { appendLine, paths, readLines, withLock } from "./store.js";
+import { paths, readLines, withLock } from "./store.js";
 import { evaluate } from "./policy.js";
 import { Refused } from "./errors.js";
 import { DEFAULT_EVM_CHAIN, explorerTx, isKnownChain } from "./chains.js";
+import { appendRow, inspect } from "./integrity.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function record(entry) {
   const line = { id: entry.id ?? randomUUID(), ts: new Date().toISOString(), ...entry };
-  appendLine(paths.ledger(), line);
+  appendRow(line);
   return line;
-}
-
-export function recordPolicyChange({ from, to, raised, raises = [] }) {
-  return record({ kind: "policy", status: raised ? "raised" : "changed", raises, from, to });
 }
 
 /** A Sato Hub check that was skipped or could not run before a spend: the owner sees it in `status`. */
@@ -33,15 +32,21 @@ export function recordCheckEvent(entry) {
   return record({ kind: "check", ...entry });
 }
 
+/** The ledger's rows (without the chain's `prev` field, which only src/integrity.js reads), plus the numbers of unreadable lines. */
 export function read() {
-  return readLines(paths.ledger());
+  const { rows, bad } = readLines(paths.ledger());
+  return { rows: rows.map((r) => (r && typeof r === "object" && Object.hasOwn(r, "prev") ? (({ prev: _p, ...rest }) => rest)(r) : r)), bad };
 }
 
 export function entries() {
   return read().rows;
 }
 
-/** USD reserved in the 24 hours before `now`, minus spends that provably never went out. */
+/**
+ * USD reserved in the 24 hours before `now`, minus spends that provably never went out. `frozen` lists what stops every spend
+ * (a ledger, policy or wallet that does not match its seal) and `paused_until` a pause after a repair or a restore: evaluate()
+ * refuses on either.
+ */
 export function spentLast24h(now = Date.now(), ledger = read()) {
   const failed = new Set(ledger.rows.filter((e) => e.status === "failed").map((e) => e.id));
   const live = ledger.rows.filter((e) => e.status === "submitted" && now - Date.parse(e.ts) < DAY_MS && !failed.has(e.id));
@@ -49,7 +54,8 @@ export function spentLast24h(now = Date.now(), ledger = read()) {
   const usd = live.reduce((sum, e) => sum + Math.round((Number(e.usd) || 0) * 1e6), 0) / 1e6;
   // Swaps reserved in the window (same rule: a swap that provably never went out drops out).
   const swaps = live.filter((e) => e.kind === "swap").length;
-  return { usd, swaps, unreadable: ledger.bad };
+  const integrity = inspect({ now });
+  return { usd, swaps, unreadable: ledger.bad, frozen: integrity.problems, paused_until: integrity.paused ? integrity.paused_until : null };
 }
 
 /**

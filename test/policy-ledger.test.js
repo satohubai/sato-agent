@@ -3,10 +3,11 @@ import { appendFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce } from "./helpers.js";
 
 const home = freshHome();
-const { evaluate, loadPolicy, parseLimit, setPolicy } = await import("../src/policy.js");
+const { evaluate, loadPolicy, parseLimit, setPolicy: setPolicyAt } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const { Refused } = await import("../src/errors.js");
 const { entries, record, release, reserve, spentLast24h } = await import("../src/ledger.js");
 const { paths } = await import("../src/store.js");

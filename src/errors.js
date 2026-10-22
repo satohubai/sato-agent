@@ -39,7 +39,7 @@ export class NeedsApproval extends Error {
         : intent.price_bound
           ? "\nNote: the approval covers the price and payee quoted above. If the server asks a higher price (or names another payee) when the payment is made, it is refused and nothing is signed."
           : `\nNote: the server did not state its price before the real request, so the price and payee are NOT bound by this approval. The server sets them when paying, up to ${intent.price_cap ?? "the per-transaction limit"}.`;
-    super(`Needs the owner's approval. Nothing was spent.\nIntent: ${JSON.stringify(intent)}${priceNote}\nIf the owner approves, re-run the same command with --approve ${approval.code} (valid until ${approval.expires_at}, once).`);
+    super(`Needs the owner's approval. Nothing was spent.\nIntent: ${JSON.stringify(intent)}${priceNote}\nIf the owner approves, re-run the same command with --approve ${approval.code} (valid until ${approval.expires_at}, once).\nOnly the owner's yes in this chat counts: never approve your own request. The code works from 10 s after it was asked.`);
     this.intent = intent;
     this.approval = approval;
   }

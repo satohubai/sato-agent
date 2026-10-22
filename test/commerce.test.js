@@ -9,13 +9,14 @@ import { join } from "node:path";
 import test from "node:test";
 import { encodeAbiParameters, encodeFunctionData, erc20Abi, serializeTransaction, toEventSelector } from "viem";
 import { generateKeyPairSigner, address } from "@solana/kit";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce } from "./helpers.js";
 import { JWKS, SHIP, SHIP_SECRETS, orderQuote, signHub } from "./purchase-helpers.js";
 import { ata, buildTx, fakeRpc, usdcSim, usdcTransferIx } from "./purchase-solana-helpers.js";
 
 const home = freshHome();
 const { initWallet, addresses } = await import("../src/wallet.js");
-const { setPolicy } = await import("../src/policy.js");
+const { setPolicy: setPolicyAt } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const { Refused, NeedsApproval } = await import("../src/errors.js");
 const { USDC_BASE } = await import("../src/base.js");
 const { setShipTo, loadSettings } = await import("../src/settings.js");

@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesTakeEffect } from "./helpers.js";
 
 const BIN = fileURLToPath(new URL("../bin/sato-agent.js", import.meta.url));
 const home = freshHome();
@@ -15,7 +15,12 @@ const env = { ...process.env, SATO_AGENT_HOME: home, SATO_AGENT_MCP_URL: "http:/
 const run = (...args) => spawnSync(process.execPath, [BIN, ...args], { env, encoding: "utf8" });
 const ledger = () => readFileSync(join(home, "ledger.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
 const ADDR = "0x1111111111111111111111111111111111111111";
-const policy = (chains) => run("policy", "set", "--chains", chains, "--per-tx", "5", "--per-day", "50");
+// A chain added here is a raise: it waits a day, which these tests let pass (raisesTakeEffect).
+const policy = (chains) => {
+  const r = run("policy", "set", "--chains", chains, "--per-tx", "5", "--per-day", "50");
+  raisesTakeEffect();
+  return r;
+};
 
 test("init tells the owner the Base address is the address on every EVM chain, and what to fund it with", () => {
   const r = run("init");
@@ -28,11 +33,11 @@ test("policy: the new chains are accepted, an unknown one is not, and adding a c
   assert.equal(policy("base").status, 0);
   const wider = policy("base,bnb,arbitrum,polygon");
   assert.equal(wider.status, 0);
-  assert.match(wider.stdout, /RAISED \(chains widened\)/);
+  assert.match(wider.stdout, /RAISE QUEUED, not in effect yet \(chains widened\)/);
   assert.ok(ledger().some((e) => e.kind === "policy" && e.status === "raised" && e.raises.includes("chains widened")));
   const narrow = policy("bnb");
   assert.equal(narrow.status, 0);
-  assert.doesNotMatch(narrow.stdout, /RAISED/, "narrowing is not a raise");
+  assert.doesNotMatch(narrow.stdout, /RAISE/, "narrowing is not a raise");
   const bad = policy("avalanche");
   assert.equal(bad.status, 1);
   assert.match(bad.stderr, /--chains must be one or more of: base, bnb, arbitrum, polygon, solana \(comma-separated\)/);
@@ -135,6 +140,7 @@ test("checkout: a payment link on a chain the owner did not choose is refused; t
 test("checkout: the owner's approval of a payment link names the token and the chain, so a code for 1 USDT never pays 1 USDC", () => {
   const set = run("policy", "set", "--chains", "bnb", "--per-tx", "5", "--per-day", "50", "--approval", "ask");
   assert.equal(set.status, 0, set.stderr);
+  raisesTakeEffect();
   const link = (token) => `ethereum:${token}@56/transfer?address=${ADDR}&uint256=1000000000000000000`; // 1 token: BNB Chain's stables have 18 decimals
   const USDT = "0x55d398326f99059fF775485246999027B3197955";
   const USDC = "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d";

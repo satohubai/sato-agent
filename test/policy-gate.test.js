@@ -4,10 +4,11 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce } from "./helpers.js";
 
 freshHome();
-const { loadPolicy, setPolicy } = await import("../src/policy.js");
+const { loadPolicy, setPolicy: setPolicyAt } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 
 test("gate off clears the can't-run choice; gate back on needs it chosen again", () => {
   setPolicy({ chains: "base", perTx: "3", perDay: "25", checkGate: "no", onCheckUnavailable: "refuse" });

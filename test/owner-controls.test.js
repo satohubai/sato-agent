@@ -13,10 +13,11 @@ import { join } from "node:path";
 import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 import { encodePaymentRequiredHeader } from "@x402/core/http";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce, raisesTakeEffect } from "./helpers.js";
 
 const home = freshHome();
-const { setPolicy, evaluate, raisesBetween } = await import("../src/policy.js");
+const { setPolicy: setPolicyAt, evaluate, raisesBetween } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const { usdcUnits } = await import("../src/amount.js");
 const { registrationUri } = await import("../src/base.js");
 const { record } = await import("../src/ledger.js");
@@ -225,6 +226,7 @@ test("CLI: approval mode needs the owner's yes for the exact intent, once; --ski
 
 test("CLI: pay in approval mode never stores or prints header values, and says the approval covers the quoted price and payee", async () => {
   await run(["policy", "set", "--check-gate", "off"]);
+  raisesTakeEffect(); // turning the gate off is a raise: it waits a day
   const r = await run(["pay", x402Url, "--header", "Authorization: Bearer sk-SECRET123", "--skip-check"]);
   assert.equal(r.code, 5);
   assert.doesNotMatch(r.stdout + r.stderr, /sk-SECRET123/);
@@ -234,7 +236,8 @@ test("CLI: pay in approval mode never stores or prints header values, and says t
   for (const f of ["ledger.jsonl", "approvals.json"]) assert.doesNotMatch(readFileSync(join(home, f), "utf8"), /sk-SECRET123/, f);
   assert.equal((await run(["pay", webUrl, "--header", "X-Payment: x", "--skip-check"])).code, 2, "payment headers are reserved");
   const back = await run(["policy", "set", "--approval", "auto"]);
-  assert.match(back.stdout, /RAISED \(approval: ask -> auto\)/);
+  assert.match(back.stdout, /RAISE QUEUED, not in effect yet \(approval: ask -> auto\)/);
+  raisesTakeEffect();
 });
 
 test("CLI: pay sends --header values and a JSON content-type for JSON bodies", async () => {
@@ -254,12 +257,22 @@ test("CLI: a Base-only agent refuses `pay --chain solana` before anything is res
   assert.equal(after, before, "nothing reserved");
 });
 
-test("deleting policy.json and starting over is still flagged as a raise", async () => {
+test("deleting policy.json freezes spending (policy_tampered) instead of starting over; repair puts the recorded limits back, and a raise still waits", async () => {
   rmSync(join(home, "policy.json"));
+  const s = await run(["send", "--chain", "base", "--to", DEAD, "--amount", "1"]);
+  assert.equal(s.code, 3);
+  assert.match(s.stderr, /policy_tampered/);
+  const frozen = await run(["policy", "set", "--chains", "base,solana", "--per-tx", "none", "--per-day", "none"]);
+  assert.equal(frozen.code, 3, "no choice changes while frozen: repair first");
+  const fixed = await run(["repair"]);
+  assert.equal(fixed.code, 0);
+  assert.match(fixed.stdout, /put back the limits from the last recorded change/);
+  assert.match(fixed.stdout, /Spending works again/, "the ledger still matches: no pause");
   const r = await run(["policy", "set", "--chains", "base,solana", "--per-tx", "none", "--per-day", "none"]);
   assert.equal(r.code, 0);
-  assert.match(r.stdout, /RAISED \(policy file was missing/);
+  assert.match(r.stdout, /RAISE QUEUED, not in effect yet \(/);
   assert.match(r.stdout, /chains widened/);
+  raisesTakeEffect();
 });
 
 test("status rounds money and lists one row per spend", async () => {

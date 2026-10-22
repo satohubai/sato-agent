@@ -10,7 +10,7 @@ Tell your Bot:
 
 > Read https://github.com/satohubai/sato-agent/blob/main/BOT.md and follow the setup. NAME = bot, CHAIN = several.
 
-That sets up **Sato Bot**: one Bot on every chain you choose. It asks which chains, installs the kit, creates its wallet, asks you for your limits (they cover all its chains together), and asks you to fund it on each chain. You fund it with what you are willing to let it spend. If someone shared this bot with you, tell the Bot their referral name (like `sunny-otter`) when it asks: they get 30% of Sato Hub's swap fee on your agent's swaps, at no cost to you. See "Referral share" below.
+That sets up **Sato Bot**: one Bot on every chain you choose. It asks which chains, installs the kit, creates its wallet, asks you for your limits (they cover all its chains together), and asks you to fund it on each chain. You fund it with what you are willing to let it spend: fund it like a spending account (see "What the limits protect against"). It then offers to show you a backup of the wallet, once: save it outside Grok, in a password manager. If someone shared this bot with you, tell the Bot their referral name (like `sunny-otter`) when it asks: they get 30% of Sato Hub's swap fee on your agent's swaps, at no cost to you. See "Referral share" below.
 
 Prefer one chain per Bot? Use one of the chain Bots instead (for example `NAME = base, CHAIN = base`): one chain and one wallet for each Bot.
 
@@ -61,6 +61,7 @@ sato-agent init                                     # this agent's own wallet
 sato-agent policy set --chains <base|bnb|arbitrum|polygon|solana, or a comma-separated list> --per-tx <owner's amount> --per-day <owner's amount>
 sato-agent policy set --approval ask --check-gate no                   # optional: ask first; let a `no` check stop a spend
 sato-agent balance
+sato-agent backup                                   # explains the backup and prints no key; `backup --reveal` prints the keys once: keep them outside this computer
 sato-agent pay https://some-x402-api.example/data --chain base     # x402, USDC on Base
 sato-agent pay https://some-x402-api.example/data --chain solana   # x402, USDC on Solana
 sato-agent send --chain solana --to <address> --amount 5                # USDC
@@ -78,9 +79,13 @@ sato-agent buy "solana:<recipient>?amount=5&spl-token=EPjFWdd5AufqSSqeM2qN1xzyba
 | Command | What it does |
 |---|---|
 | `init` | Creates the agent's EVM key (one address on Base, BNB Chain, Arbitrum and Polygon) and Solana key in its folder (`~/.sato-agent/`, or `SATO_AGENT_HOME`). Never replaces an existing one. |
+| `backup [--reveal]` | Without `--reveal`, prints an explanation and no key. With `--reveal`, prints once per run the EVM address (the same on Base, BNB Chain, Arbitrum and Polygon), the EVM private key (0x hex: MetaMask "Import account"), the Solana address and the Solana private key (base58 of 64 bytes: Phantom or Solflare "Import private key"), with a warning: anyone who sees the keys can take everything in the wallet; they now also sit in the chat history; save them outside Grok (a password manager) and delete the message if the chat app allows it; never paste them into a website, a form or another bot. Every showing is recorded in the ledger (`kind: wallet`, `status: backup_shown`), and `status` shows "backup: shown N times, last <time>" or "never shown". See "Backup and restore (v0.6)". |
+| `restore` / `init --import` | Puts a wallet back from the owner's backup. The backup is read on **standard input**, never on the command line: `sato-agent restore <<'BACKUP'`, the pasted lines, then `BACKUP`. It accepts the four lines `backup --reveal` printed, or just the two private keys. The same wallet into its own folder (its wallet file was lost): the file is put back and the history carries on. Into a new folder (for example after a Grok Reset wiped `~/.sato-agent`): the wallet comes in and spending is paused for 24 hours (`spending_paused`), because the kit cannot see what the wallet spent before; the owner then sets limits again. A folder that holds or held a different wallet never takes another one (refused: use a new NAME), and a wallet another bot folder on this computer already uses is refused. It never prints a key; it prints the restored addresses. Every restore is in the ledger. |
+| `repair` | Only when the owner asks, after a freeze (see "Freeze and repair (v0.6)"). Keeps every file it finds, puts back the limits from the last recorded change when the ledger still matches, otherwise removes the limits so the owner sets them again, and pauses spending for 24 hours when the spend record could be missing lines. Never accepts a different, missing or unreadable wallet. It prints what was wrong and what it did. |
 | `address` / `balance` | Address and USDC + gas balance for this agent's chain(s) |
 | `policy set --chains <base\|bnb\|arbitrum\|polygon\|solana, or a comma-separated list> --per-tx <usd\|none> --per-day <usd\|none>` | The owner's choices (per day = rolling 24 hours). **There are no defaults:** nothing is spent until chains and both limits are set. |
-| `policy set [--allow <addrs>\|any] [--approval ask\|auto] [--check-gate off\|no\|caution] [--on-check-unavailable allow\|refuse]` | Optional choices: a recipient allowlist; ask the owner before every spend; let a Sato Hub `no` (or `caution`) stop a spend; what to do when the check can't run. **Anything that loosens a choice is logged as a raise.** |
+| `policy set [--allow <addrs>\|any] [--approval ask\|auto] [--check-gate off\|no\|caution] [--on-check-unavailable allow\|refuse]` | Optional choices: a recipient allowlist; ask the owner before every spend; let a Sato Hub `no` (or `caution`) stop a spend; what to do when the check can't run. **Anything that loosens a choice is a raise: it is logged and takes effect 24 hours after it is asked for** (see "Raises wait 24 hours (v0.6)"); anything that tightens takes effect at once. |
+| `policy cancel` | Cancels every raise that is still pending (logged). Raises already in effect stay: tighten them with `policy set`. |
 | `pay <url> [--chain base\|arbitrum\|polygon\|solana] [--method --data --header]` | Pays an x402 resource in USDC on Base, Arbitrum, Polygon or Solana mainnet (not BNB Chain: refused with the reason), after the kit asks the server's price (one unpaid request) and Sato Hub reads its payment terms. Any other token or chain is refused before an approval is asked for. A server that does not ask for payment is not paid. `--dry-run` shows the quoted price, chain and payee. The chain is the owner's: an agent set to one chain pays there (`--chain` may be left out), an agent set to several chains must say `--chain`, and a `--chain` the owner did not choose is refused before anything is reserved. A JSON `--data` gets a JSON content-type |
 | `token <address\|mint\|link> [--chain base\|bnb\|arbitrum\|polygon\|solana]` | A token card: what the token is (read from the chain), its price and liquidity with source and date, and Sato Hub's evidence about it. A bare 0x address is on the agent's own EVM chain (an agent set to several EVM chains must say `--chain`). Links from DexScreener, GeckoTerminal, Birdeye, pump.fun, gmgn, Basescan, BscScan, Arbiscan, Polygonscan, Solscan, jup.ag, Uniswap, Aerodrome, Zora and Clanker are resolved by Sato Hub, then re-read from the chain. |
 | `swap --chain base\|bnb\|arbitrum\|polygon\|solana --from <asset> --to <asset> --amount <n\|all> [--slippage-bps <n>] [--no-referrer] [--dry-run]` | Buy or sell any token, with a main asset of the chain on one side (USDC, ETH or WETH on Base; USDT, USDC, BNB or WBNB on BNB Chain; USDC, USDT, ETH or WETH on Arbitrum; USDC, USDT, POL or WPOL on Polygon; USDC or SOL on Solana). An asset is a symbol for those majors, or a token's address, mint or link. `--amount all` sells a token's whole balance. On once the spending limits are set; `policy set --swaps off` turns it off. See "How swaps are checked" below. |
@@ -92,15 +97,17 @@ sato-agent buy "solana:<recipient>?amount=5&spl-token=EPjFWdd5AufqSSqeM2qN1xzyba
 | `settings set --stdin` / `settings set --ship-name --ship-line1 [--ship-line2] --ship-city --ship-state <XX> --ship-zip --ship-country --ship-email` / `settings show` / `settings set --ship-clear` | The shipping address for Amazon orders, kept only in `settings.json` (mode 600) on this computer. `--stdin` reads it as a JSON object (`name, line1, line2, city, state, postalCode, country, email`) so it never sits in a command line. |
 | `settings set --referrer <name\|address\|none>` | The referral name (like `sunny-otter`) or payout address (Base or Solana) of whoever shared this bot with the owner, or `none` to remove it. A name is checked with Sato Hub before it is saved. Setting or changing it stops with exit 5 and a one-time code (any approval mode) and saves nothing until the owner says yes and the same command is run with `--approve <code>`; `none` needs no approval. `--stdin` also accepts a `referrer` key. See "Referral share" below. `settings show`, `status` and `help` show it. |
 | `referral create --chain base\|bnb\|arbitrum\|polygon\|solana [--payout <address>]` / `referral set-payout <address>` / `referral show` / `referral share-text` / `referral offer --when setup\|swap` / `referral decline` | Share this bot: Sato Hub gives it a referral name, and bots copied from its share are referred by that name. `create` signs one message with the bot's own key on that chain (no payment, no gas); the payout defaults to that wallet's address. `share-text` prints the three texts a share carries. `offer` prints a one-time offer when the bot has no name and has not said no; `decline` records the no. Nothing here posts or sends anything. See "Referral share" below. |
-| `policy set --bridges on\|off` | Turns `bridge` on or off for this agent. A new policy has it on; a policy written before v0.5.0 has it off until this says on. Off to on is logged as a raise. |
-| `policy set --purchases ask\|auto` | Purchases (gift cards, Amazon orders, checkouts, links paid through `buy`) ask the owner first unless BOTH `--purchases` and `--approval` are on auto. Unset means ask; ask → auto is logged as a raise. `pay` and `send` keep following `--approval`. |
+| `policy set --bridges on\|off` | Turns `bridge` on or off for this agent. A new policy has it on; a policy written before v0.5.0 has it off until this says on. Off to on is a raise: logged, and it takes effect 24 hours later. |
+| `policy set --purchases ask\|auto` | Purchases (gift cards, Amazon orders, checkouts, links paid through `buy`) ask the owner first unless BOTH `--purchases` and `--approval` are on auto. Unset means ask; ask → auto is a raise: logged, and it takes effect 24 hours later. `pay` and `send` keep following `--approval`. |
 | `send --chain base\|bnb\|arbitrum\|polygon\|solana --to <addr> --amount <amount\|all> [--asset <symbol\|0xToken\|mint>] [--dry-run]` | Sends anything in the wallet, after Sato Hub checks the recipient. With no `--asset`: the chain's stablecoin (USDC; USDT on BNB Chain), as before. `--asset`: the chain's coin (`ETH`, `BNB`, `POL`, `SOL`), a stablecoin, the wrapped coin, or any ERC-20 by its contract address (any SPL or Token-2022 token by its mint on Solana). **No Sato Hub fee; network gas only.** See "Sending any token" below |
 | `register --name --description [--image] [--service name=endpoint] [--x402-support] [--chain base\|bnb\|arbitrum\|polygon]` | Registers in the ERC-8004 IdentityRegistry (`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`, the same address on every chain) on the agent's EVM chain, with the registration file stored onchain. An agent set to several EVM chains says `--chain` |
 | `check "<install command>" [--cluster mainnet-beta\|devnet] [--skip-check]` | First, Solana build receipts for the npm packages in the command (see below). Then Sato Check: does an install take a key, does the key leave, can it move funds on its own |
 | `recommend "<goal>"` | A stack for a build goal from Sato Hub's index |
-| `status` | Limits, spend in the last 24 hours, limit changes, recent spends |
+| `status` | Limits, spend in the last 24 hours, limit changes, recent spends. Also the wallet line (`wallet: <EVM address> (Base, BNB Chain, Arbitrum, Polygon) · Solana <address>`, with "(restored from a backup <time>)" if so), `⛔ FROZEN (<rule>): ...` or `⏸ spending paused until <time>` when either applies, `⚠ RAISE PENDING` for each raise that waits, "backup: shown N times, last <time>" or "never shown", and the latest 5 approvals used (each as "<time> code <c>, N s after it was asked"), so the owner can spot an approval they never gave. |
 
 Add `--json` to any command for machine-readable output.
+
+**Upgrading to v0.6.0:** nothing changes for a working agent's wallet, limits, chains, history and approvals, with four additions. (1) A change that lets the agent do more now takes effect 24 hours after it was asked for, is announced, shows in `status` and can be cancelled with `policy cancel` (see "Raises wait 24 hours (v0.6)"). (2) The ledger, `policy.json` and the wallet file are sealed: a change made outside the kit freezes spending until the owner asks for `repair` (see "Freeze and repair (v0.6)"). The existing ledger is sealed as it is on the first write after the upgrade, automatically. Two exceptions. An agent that ran `init` but never had limits set (a wallet and no ledger) shows `ledger_tampered` after the upgrade: ask for `repair` once, and spending is then paused for 24 hours (nothing was ever spent from it). A `policy.json` that was edited by hand before the upgrade, to allow more than the last recorded change, shows `policy_tampered`: `repair` puts back the recorded limits. (3) An approval code works from 10 seconds after it was asked for. (4) New commands: `backup`, `restore` (`init --import`), `repair` and `policy cancel`. `help` now ends with a note that the limits stop mistakes, bad quotes and oversized trades, and do not stop someone who takes full control of the computer.
 
 **Upgrading to v0.5.4:** nothing changes for a working agent, with three additions to what the kit checks before it signs. (1) If the owner set `--check-gate`, it now also applies to swaps, on every chain, to the verdict in Sato Hub's signed swap answer (a swap stops on `no` only, under `--check-gate no` and `--check-gate caution` alike; a `caution`, which Sato Hub's swap gate gives on almost every swap, is shown in the swap's output and never stops it; `unknown` or none stops only if the owner chose `--on-check-unavailable refuse`). It used to apply to sends and payments only, although `status` said a check could stop "a spend". (2) A token sale on an EVM chain is now compared with KyberSwap's own public quote, which the kit reads itself: if Sato Hub's quote pays more than 3% less (its fee added back), the sale stops for the owner's approval (exit 5) and says by how much. The kit also pins Sato Hub's signing key id and public key: an answer signed under any other key is refused with a message to upgrade the kit, so after a rotation of that key an older kit stops rather than trusting a new one. (3) Polygon's default RPC list now starts with endpoints that answered every read and simulation in a probe (rpc.sentio.xyz, publicnode, thirdweb); the failover is unchanged.
 
@@ -190,20 +197,35 @@ Exit codes:
 - `0`: done.
 - `1`: error.
 - `2`: usage error.
-- `3`: refused by the limits. Nothing was signed; the message names the rule, the limit and what was observed.
+- `3`: refused by the limits. Nothing was signed; the message names the rule, the limit and what was observed. It also covers a freeze (`ledger_tampered`, `policy_tampered`, `wallet_tampered`, `wallet_missing`: see "Freeze and repair (v0.6)") and `spending_paused` (after a repair or a restore).
 - `4`: signed but not confirmed. It stays counted. **Do not retry**; check the explorer link.
-- `5`: needs the owner's approval (approval mode). Nothing was spent. Re-run the same command with `--approve <code>` after the owner says yes. The code works once, for that exact intent, for 15 minutes. For `pay`, the kit first asks the server its price with one unpaid request; the approval covers the URL, the request and that quoted price and payee. A higher price (or another payee) at pay time is refused (`price_changed`, exit 3) and nothing is signed. That first ask never carries your body or headers: a POST asks with an empty body, a GET with `--header` asks without them, and a PUT, PATCH or DELETE is not asked at all (it could act on the first request). So your data and keys only go out after the Sato Hub check and the approval. If the server does not state its price to that ask, the approval says the price and payee are NOT bound and names the cap, your per-transaction limit; with no per-transaction limit, such a payment is refused (`price_unknown_no_limit`). Header values are never stored or printed (names plus a hash only). `register` also asks in approval mode.
+- `5`: needs the owner's approval (approval mode). Nothing was spent. Re-run the same command with `--approve <code>` after the owner says yes. The code works once, for that exact intent, for 15 minutes, and from 10 seconds after it was asked for: a re-run with the code the kit just printed stops and says why, and nothing is spent. The message ends: "Only the owner's yes in this chat counts: never approve your own request. The code works from 10 s after it was asked." See "Approvals in ask mode (v0.6)". For `pay`, the kit first asks the server its price with one unpaid request; the approval covers the URL, the request and that quoted price and payee. A higher price (or another payee) at pay time is refused (`price_changed`, exit 3) and nothing is signed. That first ask never carries your body or headers: a POST asks with an empty body, a GET with `--header` asks without them, and a PUT, PATCH or DELETE is not asked at all (it could act on the first request). So your data and keys only go out after the Sato Hub check and the approval. If the server does not state its price to that ask, the approval says the price and payee are NOT bound and names the cap, your per-transaction limit; with no per-transaction limit, such a payment is refused (`price_unknown_no_limit`). Header values are never stored or printed (names plus a hash only). `register` also asks in approval mode.
 
 Dependencies are locked by `npm-shrinkwrap.json` (every transitive version), and none has an install script. They are pinned exactly and never updated on their own: a fix in a dependency (viem, @solana/kit, the @x402 packages) reaches this kit in a new release of it, after it has been tested here, not before.
 
-Every limit change is written to the ledger and shown in `status`. `pay` frames the response body as untrusted content.
+Every limit change is written to the ledger and shown in `status`; a raise is shown as pending there until it takes effect. `pay` frames the response body as untrusted content.
+
+## What the limits protect against
+
+**They protect against:**
+- Mistakes: a wrong amount, a loop, a trade that is too large.
+- Bad quotes and oversized trades: the USD limits on every spend, and the checks in "How swaps are checked".
+- A raise nobody asked for. Anything that lets the agent do more waits 24 hours, is announced to the owner, shows in `status` and can be cancelled (`policy cancel`).
+- A deleted, cut-short or edited ledger, a `policy.json` changed outside `policy set`, and a swapped or missing wallet file: spending is frozen until the owner asks for `repair`.
+- In `ask` mode, the agent's own mistakes: it stops and waits for the owner's yes before it spends.
+
+**They do not protect against** someone who takes full control of the computer the agent runs on. Such a program can read the key from `wallet.json` and sign without this kit, or recompute the ledger's hashes (they use no secret, because any key would sit on the same computer) and rewrite a record that looks consistent. A hijacked agent is the same case: ask mode is a check against mistakes and an agent that follows its rules, not a barrier against a hijacked one, because there is no channel in a Grok chat that only the owner can use. Everything the owner types and everything the kit prints passes through the agent. An approval the owner gives outside the chat (on a satohub.ai page while signed in, checked by the kit with Sato Hub) is planned, not built.
+
+**Fund it like a spending account:** only what you are willing to lose. The hard bound is what you fund the wallet with. Use a wallet dedicated to the agent, never your main wallet.
+
+Next (planned, not built): a MetaMask signer option, and a policy-enforced signer or smart account.
 
 ## How the limits work, and what they don't do
 
 **What they do**
 - The owner picks a per-transaction limit and a limit per rolling 24 hours, in USD (or "none"). There are no defaults.
 - Every spend is checked and reserved under a lock before anything is signed, so two commands running at once can't both squeeze under the same limit.
-- Spend is read from the ledger, so a restart doesn't reset it. If the ledger is unreadable, spending stops.
+- Spend is read from the ledger, so a restart doesn't reset it. If the ledger is unreadable, missing, cut short, reordered or edited, spending is frozen until the owner asks for `repair` (see "Freeze and repair (v0.6)").
 - x402 payments are checked twice: only a payment option inside the limits can be chosen, and the limits are checked again just before signing.
 - Payment authorizations must expire within 5 minutes. The one exception is a gift-card invoice from Bitrefill, whose price and payee are bound before anything is signed: up to 30 minutes, because Bitrefill asks for that.
 - A signed payment always counts, even if the server rejects it, because the server could still settle it.
@@ -215,6 +237,64 @@ Every limit change is written to the ledger and shown in `status`. `pay` frames 
 - If the outcome is unclear, the spend stays counted, and the command exits with code 4: **do not retry**.
 - Solana sends to token accounts or other non-wallet addresses are refused.
 
+**What they don't do**
+- The limits are enforced by this program, on the same computer that holds the key. **The agent itself can ask to loosen any choice** with `policy set`: raise a limit, add a recipient or chain, loosen the check gate, or switch "ask" to "auto". Since v0.6.0 that is queued for 24 hours, announced and shown in `status`, and the owner can cancel it. It is not blocked: if nobody cancels it, it takes effect. In approval mode the agent could also type the approval code itself, although a code works only from 10 seconds after it was asked for.
+- A program with full control of the computer can read the key from `wallet.json` and sign without this kit, or write its own code that uses the key. Editing the ledger, `policy.json` or the wallet file by hand freezes spending, but a program that recomputes every hash in the ledger can rewrite a record that looks consistent.
+- So the limits stop mistakes, runaway loops, and an agent that follows its rules. They don't stop a compromised agent, or a prompt injection it obeys.
+- **The hard bound is what you fund the wallet with.** Fund it like a spending account. Use a wallet dedicated to the agent, never your main wallet, and fund it with what you're willing to lose.
+- On Grok Bot, every Bot in your account shares one computer, so every one of your Bots can read the key file.
+
+## Raises wait 24 hours (v0.6)
+
+A change that lets the agent do more is queued and takes effect 24 hours after it was asked for. Until then the current limits apply.
+
+- **What counts as a raise.** Raising either limit or setting it to `none`; adding a chain; approval `ask` to `auto`; purchases `ask` to `auto`; turning swaps or bridges on; loosening or turning off the check gate (which is what makes `--skip-check` usable); `--on-check-unavailable` `refuse` to `allow`; widening or removing the recipient allowlist; raising or removing the slippage or trades-per-day cap.
+- **What takes effect at once.** Tightening: a lower limit, removing a chain or a recipient, `auto` to `ask`, swaps or bridges off. A command that does both applies its tightening parts at once and queues its loosening parts. The first `policy set` (no limits yet) takes effect at once.
+- **A later `policy set` on the same part replaces the queued change.** Asking again for the same value keeps its clock.
+- **It is announced.** When a raise is queued, `policy set` prints `⚠ RAISE QUEUED, not in effect yet (...)`, each change with the time it takes effect, and a line `Tell the owner now, in these words: "<announcement>"`. The announcement says what was requested, when it takes effect, and "If you did not ask for this, say 'cancel the raise' and I will run policy cancel." BOT.md has the agent relay it word for word, at once. With `--json` it is `announce`, and the changes are `queued`.
+- **It is shown.** `status`, `policy show` and every spend command print `⚠ RAISE PENDING: <change>. It takes effect at <time> (in X h Y min)...` while one waits. The ledger still records a raise as "raised", now with the time it takes effect.
+- **`policy cancel`** cancels every pending raise (logged). Raises already in effect stay: tighten them with `policy set`.
+- **There is no way to skip the wait.** No `--now`: anything the owner could type to skip it, the agent could type too.
+- **Why 24 hours.** It matches the rolling 24-hour limit, so a raise nobody asked for cannot take effect before the owner's next daily look, and until then the agent can spend at most one more day under the owner's limits.
+
+## Backup and restore (v0.6)
+
+```
+sato-agent backup                  # an explanation; prints no key
+sato-agent backup --reveal         # prints the keys, once per run, and records the showing
+sato-agent restore <<'BACKUP'      # the backup comes on standard input, never on the command line
+<the lines you saved>
+BACKUP
+```
+
+- **`backup --reveal`** prints the EVM address (the same on Base, BNB Chain, Arbitrum and Polygon), the EVM private key (0x hex: MetaMask "Import account"), the Solana address and the Solana private key (base58 of 64 bytes: Phantom or Solflare "Import private key"), then a warning: anyone who sees the keys can take everything; they now also sit in the chat history; save them outside Grok (a password manager) and delete the message if the chat app allows it; never paste them into a website, a form or another bot.
+- **Every showing is recorded** in the ledger (`kind: wallet`, `status: backup_shown`), and `status` shows "backup: shown N times, last <time>" or "never shown". BOT.md has the agent offer a backup once, right after funding, and show it again only if the owner asks.
+- **`restore`** (also `init --import`) accepts the four lines `backup --reveal` printed, or just the two private keys.
+  - The same wallet into its own folder (its wallet file was lost): the file is put back and the history carries on.
+  - Into a new folder (for example after a Grok Reset wiped `~/.sato-agent`): the wallet comes in and spending is paused for 24 hours (rule `spending_paused`), because the kit cannot see what the wallet spent before. The owner then sets limits again.
+  - A folder that holds or held a different wallet never takes another one: it is refused, so use a new NAME. A wallet that another bot folder on this computer already uses is refused too.
+  - It never prints a key. It prints the restored addresses, and the bot tells the owner "I restored your wallet <addresses> from your backup". Those must be the addresses the owner funded. Every restore is in the ledger.
+
+## Freeze and repair (v0.6)
+
+`ledger.jsonl` is hash-chained: each line carries the SHA-256 of the line before. A seal file, `integrity.json`, holds the wallet's two addresses, the SHA-256 of `policy.json` and the ledger's head.
+
+- **A freeze.** If the ledger is missing, cut short, reordered or edited, if `policy.json` was changed outside `policy set`, or if the wallet file is a different wallet, missing or unreadable, every spend (and `register`, and every limit change) is refused with a plain message and exit 3. The rules are `ledger_tampered`, `policy_tampered`, `wallet_tampered` (a different wallet, or one that cannot be read) and `wallet_missing`. `status` shows `⛔ FROZEN (<rule>): ...`.
+- **Deleting files never unlocks spending.** A wallet with no seal next to it is frozen, never treated as a new install. A Grok Reset that brought back an older copy of the computer can also cause a freeze: that is a legitimate cause, not an accusation.
+- **`sato-agent repair`**, only when the owner asks, in chat, after the bot showed them the refusal:
+  - keeps every file it finds (a changed `policy.json` is kept as `policy.json.tampered-<time>`; the ledger is never deleted or rewritten);
+  - puts back the limits from the last recorded change when the ledger still matches, and spending works again at once; otherwise it removes the limits, so the owner sets them again (a raise still waits 24 hours);
+  - when the spend record could be missing lines (a ledger problem), pauses spending for 24 hours from the repair (`spending_paused`), so a repair never resets the 24-hour total; `status` shows `⏸ spending paused until <time>`;
+  - never accepts a different, missing or unreadable wallet: the owner's backup (`restore`) or a new NAME fixes that;
+  - prints what was wrong and what it did, and the bot tells the owner exactly that.
+- **Honest scope.** The hash chain has no secret: any key would sit on the same computer. A program with full control of the computer can recompute every hash and rewrite a consistent record. The freeze catches the cheap attacks: deleting or shortening the ledger (which used to reset the 24-hour total), editing `policy.json` by hand (which used to skip the raise log), a swapped wallet file, and a line added by hand.
+
+## Approvals in ask mode (v0.6)
+
+An approval code works only from 10 seconds after it was asked for. A re-run with the code the kit just printed stops and says why, and nothing is spent. The code is still single-use, for the same intent, for 15 minutes. Every use is recorded in the ledger with how many seconds after the request it came, and `status` lists the latest 5 (each as "<time> code <c>, N s after it was asked"), so the owner can spot an approval they never gave.
+
+This is friction, not a barrier. There is no channel in a Grok chat that only the owner can use: everything the owner types and everything the kit prints passes through the agent. Ask mode guards against mistakes and an agent that follows its rules, not against a hijacked agent. An approval given outside the chat is planned, not built.
+
 ## Sending any token
 
 `send` moves anything in the wallet, not only the stablecoin. **A send is a plain transfer: No Sato Hub fee; network gas only.**
@@ -224,13 +304,6 @@ Every limit change is written to the ledger and shown in `status`. `pay` frames 
 - **USD limits.** Stablecoins count 1:1, decimals-aware: the chain's own, and the extra ones the registry pins (src/chains.js: USDbC, DAI, USDS, USDT on Base; USDC.e, DAI, USDS on Arbitrum; USDC.e and DAI on Polygon; BUSD, FDUSD, DAI, USD1 on BNB Chain; USDT and PYUSD on Solana), each by its address or mint and refused as a stablecoin if its decimals differ from the pin. The chain's coin and its wrapped form count at the Chainlink price; with no price the kit does not send them. **A wrapped BTC (WBTC, cbBTC) and any other token has no price here: it counts $0 against the USD limits, is never refused for lacking one, and is recorded with `usd: null` and `unpriced: true`.** No venue is asked for a quote. It follows the owner's normal approval mode: `ask` stops with exit code 5, `auto` goes. The chain, the recipient allowlist and the Sato Hub recipient check apply to every asset.
 - **Checks before signing.** The transfer is simulated before anything is signed: `eth_simulateV1` on EVM chains; on Solana `simulateTransaction` runs an unsigned copy (no signature, `sigVerify` off), and the transaction is signed only afterwards, with a fresh blockhash, once the limits, the owner's approval and the reservation have passed. A plan or a dry run never hands a signature to an RPC. A transfer that would revert is refused, and so is a token whose `transfer` answers `false`. On EVM chains the recipient's balance is read before and after in the simulation: a token that takes a fee on transfer is shown (the recipient receives less than is sent, and by how much), and the approval binds that figure. On Solana the recipient's associated token account is created only if it is missing; its rent (about 0.002 SOL) is shown, paid by the agent, and not counted against the USD limits. A mint whose new accounts start frozen is refused when the recipient's account would have to be created. A Token-2022 transfer fee is worked out for the amount (and the instruction names it, so the transfer fails if the fee changes); a transfer hook or a permanent delegate is shown. Hooks that need more than their validation account are refused by the simulation, not sent.
 - **Ledger.** Each send records the chain, the asset (symbol and short address, with the full address or mint in `asset_address`), the amount, the USD figure (or null), the transaction and its explorer link; `status`, `history` and `proof` show it (`no price` for an unpriced token). The hash is recorded before the broadcast, with the same exit codes, and a send is never retried.
-
-**What they don't do**
-- The limits are enforced by this program, on the same computer that holds the key. **The agent itself can loosen any choice** with `policy set`: raise a limit, add a recipient or chain, loosen the check gate, or switch "ask" to "auto". In approval mode it could also type the approval code itself. Every loosening is logged and flagged in `status`, but it isn't blocked.
-- The agent can also edit these files, or write its own code that uses the key.
-- So the limits stop mistakes, runaway loops, and an agent that follows its rules. They don't stop a compromised agent, or a prompt injection it obeys.
-- **The hard bound is what you fund the wallet with.** Use a wallet dedicated to the agent, never your main wallet, and fund it with what you're willing to let it spend.
-- On Grok Bot, every Bot in your account shares one computer, so every one of your Bots can read the key file.
 
 ## Bridge (v0.5)
 
@@ -332,8 +405,8 @@ A purchase is a spend: it counts against the same per-transaction and 24-hour US
 
 ## Files, network and privacy
 
-- `wallet.json` (mode 600): the keys. Never printed, never sent anywhere.
-- `policy.json`: the owner's choices. `ledger.jsonl`: every spend, limit change, skipped check and approval. `approvals.json`: pending approval codes.
+- `wallet.json` (mode 600): the keys. Printed only by `backup --reveal`, never sent anywhere.
+- `policy.json`: the owner's choices, with any raise that is waiting. `ledger.jsonl`: every spend, limit change, skipped check, approval, backup shown and restore, hash-chained (each line carries the SHA-256 of the line before). `integrity.json`: the seal: the wallet's two addresses, the SHA-256 of `policy.json` and the ledger's head (see "Freeze and repair (v0.6)"). `policy.json.tampered-<time>`: a `policy.json` that was changed outside `policy set`, kept by `repair`. `approvals.json`: pending approval codes.
 - `settings.json` (mode 600): the shipping address for Amazon orders, the referral name or address if one is set, and this bot's own referral name, payout address, signing chain and offer state. `bitrefill-session.json` (mode 600): Bitrefill's sign-in token and its expiry. `giftcards/` (mode 700, files 600): delivered gift card codes. `local-hmac.key` (mode 600): a random key made once, used to bind a top-up's number into an approval without writing it down.
 - They live in `~/.sato-agent/` by default. With the Grok Bot launchers from BOT.md, each Bot's files live in `~/.sato-agent/<NAME>/`.
 - `SATO_AGENT_HOME` gives each agent its own folder. Two Bots on one computer should each use their own, so they get separate wallets and limits.
@@ -359,10 +432,13 @@ They are dated evidence lines (when a project last shipped, whether an endpoint 
 
 ```sh
 npm test                                     # offline: limits, ledger, CLI, x402 handshake, Solana signing
-SATO_AGENT_FORK=1 node --test test/fork.test.js   # real Base contracts on a local anvil fork
-SATO_AGENT_FORK=1 node --test test/chains-fork.test.js   # BNB Chain, Arbitrum and Polygon on anvil forks (FORK_CHAINS=bnb,arbitrum,polygon; FORK_RPC_<CHAIN> to choose the upstream)
+NODE_OPTIONS=--import=./test/approval-preload.js node --test test/<file>   # one test file: it needs the same preload
+SATO_AGENT_FORK=1 NODE_OPTIONS=--import=./test/approval-preload.js node --test test/fork.test.js   # real Base contracts on a local anvil fork
+SATO_AGENT_FORK=1 NODE_OPTIONS=--import=./test/approval-preload.js node --test test/chains-fork.test.js   # BNB Chain, Arbitrum and Polygon on anvil forks (FORK_CHAINS=bnb,arbitrum,polygon; FORK_RPC_<CHAIN> to choose the upstream)
 node test/fixtures/swap-evm/record-chain.mjs <bnb|arbitrum|polygon>   # re-record a chain's KyberSwap fixtures (read-only)
 ```
+
+`npm test` sets `NODE_OPTIONS=--import=./test/approval-preload.js`, which turns off the 10-second approval wait so a test can use the code a command just printed. Running a single test file needs the same `NODE_OPTIONS`, as in the lines above.
 
 ## License
 

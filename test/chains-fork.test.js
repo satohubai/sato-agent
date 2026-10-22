@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import test, { after } from "node:test";
 import { createPublicClient, decodeFunctionData, encodeAbiParameters, erc20Abi, http, keccak256, pad, toHex } from "viem";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce } from "./helpers.js";
 import { passes, satoResponseFrom } from "./swap-evm-helpers.js";
 
 const enabled = process.env.SATO_AGENT_FORK === "1";
@@ -31,7 +31,8 @@ const base = 100 + Math.floor(Math.random() * 400);
 for (const k of WANTED) process.env[evmChain(k).rpcEnv] = `http://127.0.0.1:${PORTS[k] + base}`;
 
 const { initWallet } = await import("../src/wallet.js");
-const { setPolicy } = await import("../src/policy.js");
+const { setPolicy: setPolicyAt } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const { Refused } = await import("../src/errors.js");
 const { actions, spentLast24h } = await import("../src/ledger.js");
 const baseMod = await import("../src/base.js");

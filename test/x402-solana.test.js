@@ -31,11 +31,12 @@ import {
 import { TOKEN_PROGRAM_ADDRESS, findAssociatedTokenPda, getTransferCheckedInstruction } from "@solana-program/token";
 import { encodePaymentRequiredHeader, encodePaymentResponseHeader, decodePaymentSignatureHeader } from "@x402/core/http";
 import { SOLANA_MAINNET_CAIP2, USDC_MAINNET_ADDRESS } from "@x402/svm";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce } from "./helpers.js";
 
 const home = freshHome();
 const { initWallet, solanaSecret } = await import("../src/wallet.js");
-const { setPolicy } = await import("../src/policy.js");
+const { setPolicy: setPolicyAt } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const { Pending, Refused } = await import("../src/errors.js");
 const { pay, MAX_AUTH_WINDOW_S, BASE_NETWORK } = await import("../src/x402.js");
 const { inspectSignedTransaction, SOLANA_NETWORK, USDC_MINT, MAX_BLOCKHASH_LIFETIME_BLOCKS } = await import("../src/x402-solana.js");

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesTakeEffect } from "./helpers.js";
 
 const BIN = fileURLToPath(new URL("../bin/sato-agent.js", import.meta.url));
 const home = freshHome();
@@ -57,8 +57,10 @@ test("policy set --bridges off stops bridges (exit 3, nothing asked); turning th
   assert.equal(r.status, 3);
   assert.match(r.stderr, /bridges_not_enabled/);
   const on = run("policy", "set", "--bridges", "on");
-  assert.match(on.stdout, /RAISED \(bridges turned on\)/);
-  assert.match(on.stdout, /bridges: {9}on/);
+  assert.match(on.stdout, /RAISE QUEUED, not in effect yet \(bridges turned on\)/);
+  assert.match(on.stdout, /bridges: {9}off/, "a raise waits a day");
+  raisesTakeEffect();
+  assert.match(run("policy", "show").stdout, /bridges: {9}on/);
   assert.equal(run("policy", "set", "--bridges", "maybe").status, 1);
 });
 

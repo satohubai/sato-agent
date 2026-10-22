@@ -10,10 +10,15 @@
 // SAME command with `--approve <code>`. The code is single-use, expires after
 // APPROVAL_TTL_MS, and only matches the identical intent.
 //
-// Honest scope, as with the limits: the agent can type the code itself. This
-// stops mistakes and an agent that follows its rules (it cannot spend without
-// first surfacing the exact intent), not a compromised agent. Every approval
-// request and use is in the ledger.
+// Honest scope, as with the limits: the agent can type the code itself. There is
+// no channel in a Grok chat that only the owner can use: everything the owner
+// types and everything the kit prints passes through the agent. This stops
+// mistakes and an agent that follows its rules (it cannot spend without first
+// surfacing the exact intent), not a hijacked agent. Two frictions make a
+// self-approval slower and easier to see, not impossible: a code works only from
+// APPROVAL_MIN_WAIT_MS after it was asked for (a reflex re-run with the code the
+// kit just printed stops and says why), and every use is in the ledger with how
+// long after the request it came, which `status` shows the owner.
 
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -21,6 +26,10 @@ import { home, readJson, withLock, writePrivate } from "./store.js";
 import { record } from "./ledger.js";
 
 export const APPROVAL_TTL_MS = 15 * 60 * 1000;
+/** A code works only from this long after it was asked for. The owner's reply takes longer than this; a reflex re-run does not. */
+export const APPROVAL_MIN_WAIT_MS = 10_000;
+/** The wait in force (the test suite's preload sets it to 0; anything in this process could, which is why it is friction only). */
+export const approvalTiming = { minWaitMs: APPROVAL_MIN_WAIT_MS };
 const file = () => join(home(), "approvals.json");
 
 /** Stable JSON: the same intent always serializes the same way. */
@@ -68,13 +77,17 @@ export async function consumeApproval(code, intent, { verify } = {}) {
       if (a.used) throw new Error(`approval ${code} was already used`);
       if (Date.now() > a.expires_at) throw new Error(`approval ${code} expired; ask the owner again`);
       if (a.intent !== canonical(intent)) throw new Error(`approval ${code} was given for a different intent; ask the owner again for this one`);
+      const age = Date.now() - a.created_at;
+      if (age < approvalTiming.minWaitMs) {
+        throw new Error(`approval ${code} was asked for ${Math.max(0, Math.floor(age / 1000))} s ago. Nothing was spent. Show the owner the intent and wait for their yes in this chat; a code works from ${Math.ceil(approvalTiming.minWaitMs / 1000)} s after it was asked. Never approve your own request.`);
+      }
       if (a.bound) {
         if (typeof verify !== "function") throw new Error(`approval ${code} carries a limit this command does not check; ask the owner again`);
         verify(a.bound);
       }
       a.used = true;
       writePrivate(file(), JSON.stringify(prune(all), null, 2) + "\n", { atomic: true });
-      record({ kind: "approval", status: "used", code });
+      record({ kind: "approval", status: "used", code, after_s: Math.round(age / 1000) });
     },
     { name: "approvals" },
   );

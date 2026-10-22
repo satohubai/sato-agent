@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { keccak256 } from "viem";
 import { address as solAddress, getBase64Encoder, getTransactionDecoder } from "@solana/kit";
 import { TOKEN_PROGRAM_ADDRESS, findAssociatedTokenPda } from "@solana-program/token";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesTakeEffect } from "./helpers.js";
 
 const BIN = fileURLToPath(new URL("../bin/sato-agent.js", import.meta.url));
 const home = freshHome();
@@ -213,6 +213,7 @@ test("without --skip-check the Sato Hub recipient check runs before anything els
   assert.match(asked.stdout, /Sato Hub check .*\nPreflight address: go[\s\S]*Send 7 PEPE 0x6982…1933 on base/, "the check text comes first, then the plan");
   // the gate off again for the rest
   assert.equal((await run("policy", "set", "--check-gate", "off")).status, 0);
+  raisesTakeEffect(); // a raise waits a day; these tests let it pass
 });
 
 // ------------------------------------------------------------------ priced assets by address, and a native all in ask mode
@@ -233,6 +234,7 @@ test("a stablecoin by its ADDRESS is priced 1:1; the native placeholder address 
 test("a native --amount all in ask mode: the code covers 'all' and at most the units shown; gas that rose still works, gas that fell is refused and the code is kept", async () => {
   const args = ["send", "--chain", "base", "--to", TO, "--amount", "all", "--asset", "ETH", "--skip-check"];
   assert.equal((await run("policy", "set", "--per-tx", "none", "--per-day", "none")).status, 0);
+  raisesTakeEffect(); // a raise waits a day; these tests let it pass
   baseFee = 1_000_000_000n;
   const asked = await run(...args);
   assert.equal(asked.status, 5, asked.stderr);
@@ -260,6 +262,7 @@ test("a native --amount all in ask mode: the code covers 'all' and at most the u
 
 test("Solana in ask mode: the plan simulates an unsigned copy, exit 5 shows the card, and only the approved run signs and broadcasts", async () => {
   assert.equal((await run("policy", "set", "--chains", "base,solana")).status, 0);
+  raisesTakeEffect(); // a raise waits a day; these tests let it pass
   const me = JSON.parse((await run("init", "--json")).stdout).solana;
   const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
   const [pubkey] = await findAssociatedTokenPda({ owner: solAddress(me), mint: solAddress(USDC_MINT), tokenProgram: TOKEN_PROGRAM_ADDRESS });
@@ -306,6 +309,7 @@ test("the v0.4.0 Solana USDC dry run (no --asset) sends the node an unsigned tra
 
 test("auto mode: a token with NO price still stops for the owner's yes (exit 5); a priced stablecoin does not (owner ruling 2026-10-15)", async () => {
   assert.equal((await run("policy", "set", "--approval", "auto")).status, 0);
+  raisesTakeEffect(); // a raise waits a day; these tests let it pass
   const before = sent.length;
   const asked = await run("send", "--chain", "base", "--to", TO, "--amount", "10", "--asset", PEPE, "--skip-check");
   assert.equal(asked.status, 5, asked.stderr);

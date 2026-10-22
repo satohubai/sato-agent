@@ -7,11 +7,12 @@ import test from "node:test";
 import { generateKeyPairSync } from "node:crypto";
 import { address, generateKeyPairSigner, getBase64Encoder, getCompiledTransactionMessageDecoder, getTransactionDecoder } from "@solana/kit";
 import { TOKEN_PROGRAM_ADDRESS, findAssociatedTokenPda } from "@solana-program/token";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce } from "./helpers.js";
 
 freshHome();
 const { initWallet, addresses, solanaSecret } = await import("../src/wallet.js");
-const { setPolicy } = await import("../src/policy.js");
+const { setPolicy: setPolicyAt } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const { Pending, Refused } = await import("../src/errors.js");
 const { actions, entries, spentLast24h } = await import("../src/ledger.js");
 const { PriceUnavailable } = await import("../src/price.js");

@@ -11,12 +11,13 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { verifyMessage } from "viem";
 import { parseSiweMessage } from "viem/siwe";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce } from "./helpers.js";
 import { CODE, INVOICE, PAY_TO, PIN, TOKEN, bitrefillWorld, siwxInfo } from "./bitrefill-world.js";
 
 const home = freshHome();
 const { initWallet, addresses } = await import("../src/wallet.js");
-const { setPolicy } = await import("../src/policy.js");
+const { setPolicy: setPolicyAt } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const { Refused, NeedsApproval } = await import("../src/errors.js");
 const B = await import("../src/bitrefill.js");
 const { entries, spentLast24h } = await import("../src/ledger.js");

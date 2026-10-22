@@ -8,13 +8,14 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce } from "./helpers.js";
 import { SENDER, fakeChain, load, passes, recordedSimulation, satoResponse, topicAddr, transferLog } from "./swap-evm-helpers.js";
 
 freshHome();
 const evm = await import("../src/swap/evm.js");
 const { Refused } = await import("../src/errors.js");
-const { setPolicy } = await import("../src/policy.js");
+const { setPolicy: setPolicyAt } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const { actions } = await import("../src/ledger.js");
 const { decodeFunctionData, encodeFunctionData, erc20Abi, toEventSelector } = await import("viem");
 

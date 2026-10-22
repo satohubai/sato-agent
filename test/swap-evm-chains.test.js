@@ -9,7 +9,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce } from "./helpers.js";
 import { SENDER, fakeChain, load, passes, satoResponseFrom, topicAddr, transferLog } from "./swap-evm-helpers.js";
 
 freshHome();
@@ -17,7 +17,8 @@ const evm = await import("../src/swap/evm.js");
 const chainsMod = await import("../src/chains.js");
 const { Pending, Refused, Rejected } = await import("../src/errors.js");
 const baseMod = await import("../src/base.js");
-const { setPolicy } = await import("../src/policy.js");
+const { setPolicy: setPolicyAt } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const { actions, entries } = await import("../src/ledger.js");
 const { decodeFunctionData, encodeFunctionData } = await import("viem");
 const { evmChain, majorTokens } = chainsMod;

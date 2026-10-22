@@ -6,12 +6,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { AccountRole, address, generateKeyPairSigner, getBase64Encoder, getTransactionDecoder } from "@solana/kit";
 import { TOKEN_PROGRAM_ADDRESS } from "@solana-program/token";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce } from "./helpers.js";
 import { buildTx, fakeRpc, usdcSim, usdcTransferIx, ata } from "./purchase-solana-helpers.js";
 
 freshHome();
 const { initWallet, addresses } = await import("../src/wallet.js");
-const { setPolicy } = await import("../src/policy.js");
+const { setPolicy: setPolicyAt } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const { Refused } = await import("../src/errors.js");
 const { USDC_MINT } = await import("../src/solana.js");
 const { USDC_BASE } = await import("../src/base.js");

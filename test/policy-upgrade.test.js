@@ -5,20 +5,18 @@
 // policy with caps stays on. From v0.3 setPolicy always writes an explicit `swaps_off` boolean.
 
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce, writeOldPolicy } from "./helpers.js";
 
 const home = freshHome();
-const { evaluate, isLegacySwapsOff, loadPolicy, raisesBetween, setPolicy, swapsEnabled } = await import("../src/policy.js");
+const { evaluate, isLegacySwapsOff, loadPolicy, raisesBetween, setPolicy: setPolicyAt, swapsEnabled } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 
 const file = join(home, "policy.json");
 const base = { schema: "sato-agent.policy/v2", set_at: "2026-10-01T00:00:00Z", max_usd_per_tx: 100, max_usd_per_day: 300, allow_recipients: null, chains: ["base", "solana"], check_gate: "off", approval: "auto", on_check_unavailable: null };
-const put = (p) => {
-  mkdirSync(home, { recursive: true, mode: 0o700 });
-  writeFileSync(file, JSON.stringify(p, null, 2));
-};
+const put = (p) => writeOldPolicy(JSON.stringify(p, null, 2));
 const swapRules = (p) => evaluate(p, { usd: 10, chain: "base", kind: "swap", slippage_bps: 50 }, { usd: 0, swaps: 0, unreadable: [] }).map((r) => r.rule);
 
 test("a v0.2 policy that had swaps off (no key, no caps) reads as OFF, and stays off through any other change", () => {

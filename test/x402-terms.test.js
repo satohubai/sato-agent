@@ -12,11 +12,12 @@ import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 import { generateKeyPairSigner } from "@solana/kit";
 import { encodePaymentRequiredHeader, encodePaymentResponseHeader } from "@x402/core/http";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce } from "./helpers.js";
 
 const home = freshHome();
 const { initWallet } = await import("../src/wallet.js");
-const { setPolicy } = await import("../src/policy.js");
+const { setPolicy: setPolicyAt } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const { Refused } = await import("../src/errors.js");
 const { pay, quoteX402 } = await import("../src/x402.js");
 const { entries } = await import("../src/ledger.js");

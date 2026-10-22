@@ -6,11 +6,12 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { freshHome } from "./helpers.js";
+import { freshHome, raisesInForce } from "./helpers.js";
 
 freshHome();
 const { initWallet } = await import("../src/wallet.js");
-const { setPolicy } = await import("../src/policy.js");
+const { setPolicy: setPolicyAt } = await import("../src/policy.js");
+const setPolicy = raisesInForce(setPolicyAt); // raises take effect at once here; the 24-hour wait is tested in test/hardening.test.js
 const { Refused } = await import("../src/errors.js");
 const { WSOL_MINT } = await import("../src/swap/solana.js");
 const { USDC_MINT } = await import("../src/solana.js");

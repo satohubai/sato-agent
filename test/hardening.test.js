@@ -810,3 +810,40 @@ test("R3 M-1: a hand-written older ledger with a loose policy line gets nothing 
   cancelPending();
   assert.equal(loadPolicy({ now: Date.now() + 2 * DAY }).max_usd_per_day, 0);
 });
+
+// ------------------------------------------------------------------ review round 4
+
+/** An older folder dressed up by hand: no seal, a wallet file in the old format, one recorded policy line and a matching file. */
+function handMadeOlderFolder(to) {
+  agent();
+  fs.rmSync(file("integrity.json"));
+  write("wallet.json", read("wallet.json").replace(`"version": ${I.SEALED_WALLET_VERSION}`, '"version": 1'));
+  write("ledger.jsonl", JSON.stringify({ kind: "policy", status: "changed", to }) + "\n");
+  write("policy.json", I.policyFileText(to));
+}
+
+test("R4: a policy with its limits missing reads as 'no limit', so the upgrade queues them (shown as pending), never lets them through unseen", () => {
+  handMadeOlderFolder({ chains: ["base"], allow_recipients: null, check_gate: "off", approval: "auto", swaps_off: false, bridges_off: false });
+  const s = I.inspect();
+  const p = loadPolicy();
+  assert.ok(p.pending.per_tx && p.pending.per_day, Object.keys(p.pending).join(","));
+  assert.equal(p.pending.per_day.values.max_usd_per_day, null);
+  assert.deepEqual(rules(evaluate(loadPolicy({ now: Date.parse(s.paused_until) - 1 }), { usd: 5000, chain: "base", to: DEAD }, 0)).sort(), ["allow_recipients", "chain_not_allowed", "max_usd_per_day", "max_usd_per_tx"].sort(), "nothing allowed during the pause");
+  assert.match(cli(["status"]).stdout, /RAISE PENDING: per 24 hours: \$0 → no limit/);
+});
+
+test("R4: a limit or list of a shape the kit never writes fails closed: frozen before an upgrade, refused (policy_invalid) by evaluate", () => {
+  handMadeOlderFolder({ chains: ["base"], max_usd_per_tx: "5000", max_usd_per_day: "x", allow_recipients: null });
+  assert.deepEqual(frozenRules(), ["policy_tampered"]);
+  for (const bad of [{ max_usd_per_tx: "5" }, { max_usd_per_day: Number.NaN }, { max_usd_per_day: -1 }, { allow_recipients: "any" }, { chains: "base" }, { approval: "yes" }, { max_trades_per_day: 1.5 }]) {
+    const pol = { chains: ["base"], max_usd_per_tx: 5, max_usd_per_day: 20, allow_recipients: null, ...bad };
+    assert.deepEqual(rules(evaluate(pol, { usd: 1, chain: "base" }, 0)), ["policy_invalid"], JSON.stringify(bad));
+  }
+});
+
+test("R4: an older policy with no allowlist key is read as 'any recipient' (no crash on the first read)", () => {
+  handMadeOlderFolder({ chains: ["base"], max_usd_per_tx: 5, max_usd_per_day: 20, check_gate: "off", approval: "auto", swaps_off: false, bridges_off: false });
+  const s = I.inspect();
+  assert.ok(s.paused);
+  assert.equal(loadPolicy().pending.recipients.values.allow_recipients, null);
+});

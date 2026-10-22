@@ -19,7 +19,7 @@
 import fs from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { paths, withLockSync, writePrivate } from "./store.js";
-import { queuedFromNothing, raisesBetween } from "./policy.js";
+import { policyShapeProblems, queuedFromNothing, raisesBetween } from "./policy.js";
 import { PlainError } from "./errors.js";
 
 export const ZERO_HASH = "0".repeat(64);
@@ -180,6 +180,8 @@ function legacyPolicyDigest(L) {
   const text = readText(paths.policy());
   const to = lastRecordedPolicy(L.rows);
   if (!to) return text === null ? null : sha256(text);
+  // A recorded policy of a shape the kit never writes was not written by the kit: nothing can match it.
+  if (policyShapeProblems(to).length) return sha256(`malformed recorded policy ${text}`);
   const expected = policyFileText(to);
   if (text === null) return sha256(expected); // deleted before the upgrade: it shows as missing
   if (text === expected) return sha256(text);
@@ -190,7 +192,7 @@ function legacyPolicyDigest(L) {
     return sha256(expected);
   }
   // No version before v0.6.0 wrote a queued raise: one in a pre-chain file was put there by hand.
-  if (!file || typeof file !== "object" || Object.hasOwn(file, "pending")) return sha256(expected);
+  if (!file || typeof file !== "object" || Object.hasOwn(file, "pending") || policyShapeProblems(file).length) return sha256(expected);
   // Edited by hand before the upgrade: only an edit that allows MORE than the last recorded change is held against it.
   return raisesBetween(to, file).length ? sha256(expected) : sha256(text);
 }

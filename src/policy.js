@@ -140,9 +140,45 @@ const norm = (a) => (a.startsWith("0x") ? a.toLowerCase() : a);
 const higher = (next, prev) => (prev === null ? false : next === null ? true : next > prev);
 const looser = (order, next, prev) => order.indexOf(next ?? order[0]) < order.indexOf(prev ?? order[0]);
 
+const isLimit = (v) => v === null || (typeof v === "number" && Number.isFinite(v) && v >= 0);
+const isCount = (v) => v === undefined || v === null || (Number.isInteger(v) && v >= 0);
+const oneOf = (v, allowed) => v === undefined || v === null || allowed.includes(v);
+const stringList = (v) => Array.isArray(v) && v.every((x) => typeof x === "string");
+
+/**
+ * A policy with a missing limit or allowlist reads it as `null` ("no limit", "any recipient"), the way evaluate() acts on it, so a
+ * missing key is seen as the raise it is, never as "unchanged".
+ */
+export function normalizePolicy(p) {
+  if (!p || typeof p !== "object") return p;
+  return { ...p, max_usd_per_tx: p.max_usd_per_tx ?? null, max_usd_per_day: p.max_usd_per_day ?? null, allow_recipients: p.allow_recipients ?? null };
+}
+
+/** The fields of a policy that are not of a shape the kit writes (a string for a limit, a list that is not a list...). Empty = fine. */
+export function policyShapeProblems(p) {
+  if (!p || typeof p !== "object" || Array.isArray(p)) return ["policy"];
+  const n = normalizePolicy(p);
+  const bad = [];
+  if (!isLimit(n.max_usd_per_tx)) bad.push("max_usd_per_tx");
+  if (!isLimit(n.max_usd_per_day)) bad.push("max_usd_per_day");
+  if (!(n.allow_recipients === null || stringList(n.allow_recipients))) bad.push("allow_recipients");
+  if (!(n.chains === undefined || n.chains === null || stringList(n.chains))) bad.push("chains");
+  if (!isCount(n.max_slippage_bps)) bad.push("max_slippage_bps");
+  if (!isCount(n.max_trades_per_day)) bad.push("max_trades_per_day");
+  if (!oneOf(n.check_gate, CHECK_GATES)) bad.push("check_gate");
+  if (!oneOf(n.approval, APPROVAL_MODES)) bad.push("approval");
+  if (!oneOf(n.on_check_unavailable, UNAVAILABLE_MODES)) bad.push("on_check_unavailable");
+  if (!oneOf(n.purchase_approval, PURCHASE_MODES)) bad.push("purchase_approval");
+  for (const k of ["swaps_off", "bridges_off"]) if (!(n[k] === undefined || typeof n[k] === "boolean")) bad.push(k);
+  if (!(n.pending === undefined || (n.pending && typeof n.pending === "object" && !Array.isArray(n.pending)))) bad.push("pending");
+  return bad;
+}
+
 /** Every way a change can let the agent do MORE than before. Empty = not a raise. */
 export function raisesBetween(prev, next) {
   if (!prev) return [];
+  prev = normalizePolicy(prev);
+  next = normalizePolicy(next);
   const r = [];
   if (higher(next.max_usd_per_tx, prev.max_usd_per_tx)) r.push("max_usd_per_tx");
   if (higher(next.max_usd_per_day, prev.max_usd_per_day)) r.push("max_usd_per_day");
@@ -393,6 +429,7 @@ function setPolicyLocked(opts, { now = Date.now() } = {}) {
  * as pending until then: no one can hand-write an older folder whose limits come back larger without being seen.
  */
 export function queuedFromNothing(p, now, effectiveAt) {
+  p = normalizePolicy(p);
   const raises = raisesBetween(NOTHING_ALLOWED, p);
   const parts = new Set(raises.map((r) => PARTS.find((x) => x.raise.includes(r))?.key).filter(Boolean));
   const out = { ...p, schema: p.schema ?? POLICY_SCHEMA };
@@ -471,6 +508,9 @@ export function evaluate(policy, spend, spent) {
   if (!policy) {
     return [{ rule: "limits_not_set", limit: null, observed: null, message: "no spending limits are set yet: the owner runs `sato-agent policy set --chains <" + CHAINS_USAGE + "> --per-tx <usd|none> --per-day <usd|none>`" }];
   }
+  // A field of a shape the kit never writes (a limit as text, a list that is not a list) is refused, never read as "no limit".
+  const malformed = policyShapeProblems(policy);
+  if (malformed.length) return [{ rule: "policy_invalid", limit: null, observed: malformed, message: `the limits file has fields the kit never writes (${malformed.join(", ")}); nothing is spent until the owner asks for \`sato-agent repair\`` }];
   const out = [];
   if (!Array.isArray(policy.chains)) {
     // A v0.1.0 policy never chose its chains. No default: choose before spending.

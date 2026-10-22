@@ -616,25 +616,52 @@ test("the retired 'declared on a legacy passport' refusal is gone: no code or se
   assert.equal(existsSync(join(process.env.SATO_AGENT_HOME, "settings.json")), false);
 });
 
-test("the daily join limits (HTTP 429 ip_daily_quota and daily_cap) both say the limit is reached and to try tomorrow; no hourly retry hint; nothing is retried or saved", async () => {
+test("the join limits (HTTP 429): ip_quota says when this address may try again, in minutes rounded up; daily_cap says tomorrow; neither is retried or saved", async () => {
   const dir = fresh();
-  for (const [code, said, next] of [
-    ["ip_daily_quota", "This address has made as many new passports as one address may make in a day. Try again tomorrow.", "Try again tomorrow, or join from another address. Joining stays free."],
-    ["daily_cap", "Sato Hub has reached its limit of new passports for the day. Try again tomorrow.", "Try again tomorrow. Joining stays free."],
-  ]) {
-    const hub = hubFetch({ status: 429, json: { code, error: said, retry_after_seconds: 3600, next: [next] }, headers: { "retry-after": "3600" } });
-    await assert.rejects(pj.joinPassport({}, { keys: KEYS, origin: ORIGIN, authorize: owner(), fetchImpl: hub.fetchImpl }), (e) => {
-      assert.equal(e.message.split("\n")[0], `Sato Hub did not accept this (${code}): Sato Hub's join limit for today is reached; try again tomorrow.`);
-      assert.match(e.message, new RegExp(`Sato Hub says: ${said.replace(/\./g, "\\.")}`));
-      assert.match(e.message, /Next:\n {2}- Try again tomorrow/);
-      assert.match(e.message, /Nothing was saved\.$/);
-      assert.doesNotMatch(e.message, /Try again in \d+ seconds/, "an hour is not the answer");
-      return true;
-    }, code);
+  const refused = async (json, headers) => {
+    const hub = hubFetch({ status: 429, json, headers });
+    let message;
+    await assert.rejects(pj.joinPassport({}, { keys: KEYS, origin: ORIGIN, authorize: owner(), fetchImpl: hub.fetchImpl }), (e) => ((message = e.message), e instanceof PlainError));
     assert.equal(hub.calls.length, 1, "one request, never a loop");
+    assert.match(message, /Nothing was saved\.$/);
+    assert.doesNotMatch(message, /Try again in \d+ seconds/, "no seconds hint: the sentence already says when");
+    assert.doesNotMatch(message, BANNED);
+    return message;
+  };
+  const said = "This address has made as many new passports as one address may make in an hour. Try again later.";
+  const first = (m) => m.split("\n")[0];
+  const ask = (n) => `Sato Hub's join limit for this address is reached; try again in about ${n}`;
+  // N from retry_after_seconds in the body, rounded up to whole minutes.
+  const m1 = await refused({ code: "ip_quota", error: said, retry_after_seconds: 1260, next: ["Try again in 21 minute(s), or join from another address. Joining stays free."] }, { "retry-after": "1260" });
+  assert.equal(first(m1), `Sato Hub did not accept this (ip_quota): ${ask("21 minutes.")}`);
+  assert.match(m1, new RegExp(`Sato Hub says: ${said.replace(/\./g, "\\.")}`));
+  assert.match(m1, /Next:\n {2}- Try again in 21 minute\(s\), or join from another address\. Joining stays free\.\nNothing was saved\.$/);
+  // Rounded up: a second over a minute is two, one second is one minute (singular), a whole number of minutes is itself.
+  assert.match(first(await refused({ code: "ip_quota", error: said, retry_after_seconds: 61 })), new RegExp(`${ask("2 minutes.")}$`));
+  assert.match(first(await refused({ code: "ip_quota", error: said, retry_after_seconds: 1 })), new RegExp(`${ask("1 minute.")}$`));
+  assert.match(first(await refused({ code: "ip_quota", error: said, retry_after_seconds: 600 })), new RegExp(`${ask("10 minutes.")}$`));
+  // From the Retry-After header when the body has no number; the body wins when both are there.
+  assert.match(first(await refused({ code: "ip_quota", error: said }, { "retry-after": "301" })), new RegExp(`${ask("6 minutes.")}$`));
+  assert.match(first(await refused({ code: "ip_quota", error: said, retry_after_seconds: 120 }, { "retry-after": "3000" })), new RegExp(`${ask("2 minutes.")}$`));
+  // Clamped to the hour; nothing readable names the whole hour (the longest it can be).
+  assert.match(first(await refused({ code: "ip_quota", error: said, retry_after_seconds: 99999 })), new RegExp(`${ask("60 minutes.")}$`));
+  assert.match(first(await refused({ code: "ip_quota", error: said }, { "retry-after": "3600" })), new RegExp(`${ask("60 minutes.")}$`));
+  for (const bad of [{ retry_after_seconds: 0 }, { retry_after_seconds: -5 }, { retry_after_seconds: "soon" }, { retry_after_seconds: 1.5 }, {}]) {
+    assert.match(first(await refused({ code: "ip_quota", error: said, ...bad })), new RegExp(`${ask("60 minutes.")}$`), JSON.stringify(bad));
   }
+  // The name this quota had before it went hourly is still understood: with a wait it reads the same; with none it was the daily one.
+  assert.match(first(await refused({ code: "ip_daily_quota", error: said, retry_after_seconds: 1800 })), new RegExp(`\\(ip_daily_quota\\): ${ask("30 minutes.")}$`));
+  assert.equal(first(await refused({ code: "ip_daily_quota", error: said })), "Sato Hub did not accept this (ip_daily_quota): Sato Hub's join limit for today is reached; try again tomorrow.");
+  // The global daily cap keeps "tomorrow", whatever hint comes with it.
+  const cap = await refused({ code: "daily_cap", error: "Sato Hub has reached its limit of new passports for the day. Try again tomorrow.", retry_after_seconds: 3600, next: ["Try again tomorrow. Joining stays free."] }, { "retry-after": "3600" });
+  assert.equal(first(cap), "Sato Hub did not accept this (daily_cap): Sato Hub's join limit for today is reached; try again tomorrow.");
+  assert.match(cap, /Next:\n {2}- Try again tomorrow\. Joining stays free\./);
   assert.equal(pj.JOIN_LIMIT_SENTENCE, "Sato Hub's join limit for today is reached; try again tomorrow.");
-  // The per-minute and per-hour budgets are a different 429 and keep their own words.
+  assert.equal(pj.ipQuotaSentence(1260), "Sato Hub's join limit for this address is reached; try again in about 21 minutes.");
+  assert.equal(pj.retryAfterSeconds({ retry_after_seconds: 7200 }, null), 3600);
+  assert.equal(pj.retryAfterSeconds({}, "90"), 90);
+  assert.equal(pj.retryAfterSeconds({}, null), null);
+  // The per-minute and per-hour budgets are a different 429 and keep their own words and their Retry-After line.
   await assert.rejects(pj.joinPassport({}, { keys: KEYS, origin: ORIGIN, authorize: owner(), fetchImpl: hubFetch({ status: 429, json: { code: "rate_limited", error: "Too many." }, headers: { "retry-after": "60" } }).fetchImpl }), /limiting requests from here right now.*Try again in 60 seconds or more\./s);
   assert.equal(existsSync(join(dir, "settings.json")), false);
 });
@@ -1049,13 +1076,16 @@ test("CLI join: a passport from before joins existed does not block it; the note
   assert.equal(js.passport, "sato:agt:exmpexmp2223");
 });
 
-test("CLI join: Sato Hub's daily join limit (429) is exit 1 with the sentence, one request only, and nothing saved", async () => {
-  for (const code of ["ip_daily_quota", "daily_cap"]) {
-    const hub = await newHub({ reply: (req) => (req.url === "/api/passport/join" ? { status: 429, json: { code, error: "Try again tomorrow.", retry_after_seconds: 3600, next: ["Try again tomorrow. Joining stays free."] } } : null) });
+test("CLI join: Sato Hub's join limits (429) are exit 1 with the sentence, one request only, and nothing saved", async () => {
+  for (const [code, json, sentence] of [
+    ["ip_quota", { retry_after_seconds: 1260, next: ["Try again in 21 minute(s), or join from another address. Joining stays free."] }, /Sato Hub's join limit for this address is reached; try again in about 21 minutes\./],
+    ["daily_cap", { retry_after_seconds: 3600, next: ["Try again tomorrow. Joining stays free."] }, /Sato Hub's join limit for today is reached; try again tomorrow\./],
+  ]) {
+    const hub = await newHub({ reply: (req) => (req.url === "/api/passport/join" ? { status: 429, json: { code, error: "Try again later.", ...json } } : null) });
     const b = await bot(hub.origin);
     const { second } = await b.approved(["join"]);
     assert.equal(second.status, 1, code);
-    assert.match(second.stderr, /Sato Hub's join limit for today is reached; try again tomorrow\./);
+    assert.match(second.stderr, sentence);
     assert.match(second.stderr, new RegExp(`\\(${code}\\)`));
     assert.match(second.stderr, /Nothing was saved\./);
     assert.equal(hub.state.requests.length, 1, "the kit asked once and did not retry");
@@ -1192,6 +1222,7 @@ test("the README and BOT.md describe join: free, public, the wallets it lists, t
   assert.match(section, /`join --again`/);
   assert.match(section, /`passport set-wallet --agent-id <n>`/);
   assert.match(section, /SATO_BUILDER_CODE/);
+  assert.match(section, /Sato Hub's join limit for this address is reached; try again in about N minutes\./);
   assert.match(section, /Sato Hub's join limit for today is reached; try again tomorrow\./);
   assert.match(section, /never retries a join by itself/);
   assert.match(section, /\*\*A passport from before joins existed\.\*\* A wallet that is merely listed \(never proven\) on such a passport never blocks a join/);
@@ -1212,6 +1243,7 @@ test("the README and BOT.md describe join: free, public, the wallets it lists, t
   assert.match(step, /"Note from Sato Hub"/);
   assert.match(step, /do not try `passport prove` for that old passport/);
   assert.match(step, /never retry in a loop/);
+  assert.match(step, /join limit for this address is reached/);
   assert.match(step, /join limit for today is reached/);
   assert.doesNotMatch(step.replace(/never (describe|call)[^.]*\./gi, ""), BANNED);
 });

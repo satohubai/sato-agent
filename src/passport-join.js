@@ -289,14 +289,38 @@ function serverSteps(body) {
   return raw.filter((s) => typeof s === "string" && s.trim()).slice(0, 6).map((s) => clean(s, 300));
 }
 
-/** What both daily join limits say (the per-address quota and Sato Hub's global cap): never retried in a loop. */
+/** What the global daily join cap says (`daily_cap`, HTTP 429): never retried in a loop. */
 export const JOIN_LIMIT_SENTENCE = "Sato Hub's join limit for today is reached; try again tomorrow.";
+
+/** The longest Sato Hub asks an address to wait: its per-address join quota is per rolling hour. */
+export const IP_QUOTA_MAX_SECONDS = 3600;
+
+/**
+ * Seconds to wait from a per-address quota refusal: `retry_after_seconds` in the body, else the `Retry-After` header, as a whole number of
+ * seconds from 1, clamped to the hour; null when neither is readable.
+ */
+export function retryAfterSeconds(body, header) {
+  for (const v of [body?.retry_after_seconds, header]) {
+    const n = typeof v === "number" ? v : typeof v === "string" && /^\d{1,9}$/.test(v) ? Number(v) : NaN;
+    if (Number.isInteger(n) && n >= 1) return Math.min(n, IP_QUOTA_MAX_SECONDS);
+  }
+  return null;
+}
+
+/**
+ * What the per-address join quota (`ip_quota`, HTTP 429: so many new passports per address per rolling hour) says: when it opens again, in
+ * whole minutes rounded up. With no readable wait the whole hour is named, which is the longest it can be. Never retried in a loop.
+ */
+export function ipQuotaSentence(seconds) {
+  const minutes = Math.ceil((seconds ?? IP_QUOTA_MAX_SECONDS) / 60);
+  return `Sato Hub's join limit for this address is reached; try again in about ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`;
+}
 
 /**
  * A plain reason for each of the contract's refusal codes, and the ones the join handler adds. null for a code the kit does not know:
  * Sato Hub's own sentence is then shown as it is.
  */
-export function explainRefusal(code, status = 0) {
+export function explainRefusal(code, status = 0, { retryAfterS = null } = {}) {
   switch (code) {
     case "bad_request":
       return "Sato Hub could not read the request.";
@@ -324,8 +348,13 @@ export function explainRefusal(code, status = 0) {
       return "The claim code's digest was not accepted.";
     case "bad_patch":
       return "The profile change was not accepted.";
-    // The two daily join limits (HTTP 429, per caller address and global): the same sentence for both, and the command is not tried again.
+    // The two join limits (HTTP 429), and the command is not tried again for either. Per address: so many new passports per rolling hour, and
+    // Sato Hub says when it opens again. Global: a daily cap, tomorrow.
+    case "ip_quota":
+      return ipQuotaSentence(retryAfterS);
+    // The name this quota had before it became hourly: with a wait given it reads as the hourly quota; without one it was the daily one.
     case "ip_daily_quota":
+      return retryAfterS ? ipQuotaSentence(retryAfterS) : JOIN_LIMIT_SENTENCE;
     case "daily_cap":
       return JOIN_LIMIT_SENTENCE;
     case "wallet_taken":
@@ -353,7 +382,7 @@ export function explainRefusal(code, status = 0) {
 function refusal(res, { saved = "Nothing was saved." } = {}) {
   const code = refusalCode(res.body);
   const said = refusalMessage(res.body);
-  const own = explainRefusal(code, res.status);
+  const own = explainRefusal(code, res.status, { retryAfterS: retryAfterSeconds(res.body, res.retryAfter) });
   const head = own ?? said ?? `Sato Hub answered HTTP ${res.status}.`;
   const lines = [`Sato Hub did not accept this${code ? ` (${code})` : ` (HTTP ${res.status})`}: ${head}`];
   if (own && said && said !== own) lines.push(`Sato Hub says: ${said}`);
@@ -361,8 +390,8 @@ function refusal(res, { saved = "Nothing was saved." } = {}) {
   // about whose it is, and it is never saved from here).
   const onId = code === "wallet_taken" && typeof res.body?.passport_id === "string" && PASSPORT_ID_RE.test(res.body.passport_id) ? res.body.passport_id : null;
   if (onId) lines.push(`That passport is ${onId} (${passportUrl(onId)}). If it is this bot's own, \`sato-agent passport issue-claim --passport ${onId}\` makes a new claim code for its owner.`);
-  // Not for the daily join limits: Sato Hub's retry hint there is an hour, and the answer is "tomorrow".
-  if (res.retryAfter && /^\d{1,6}$/.test(String(res.retryAfter)) && code !== "ip_daily_quota" && code !== "daily_cap") lines.push(`Try again in ${res.retryAfter} seconds or more.`);
+  // Not for the join limits: they already say when to try again (minutes for the per-address quota, tomorrow for the daily cap).
+  if (res.retryAfter && /^\d{1,6}$/.test(String(res.retryAfter)) && !["ip_quota", "ip_daily_quota", "daily_cap"].includes(code)) lines.push(`Try again in ${res.retryAfter} seconds or more.`);
   const steps = serverSteps(res.body);
   if (steps.length) lines.push("Next:", ...steps.map((s) => `  - ${s}`));
   lines.push(saved);

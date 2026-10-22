@@ -463,7 +463,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
       // The backup comes on standard input, never on the command line (where a process list or a log could keep it).
       const r = restoreWallet(readFileSync(0, "utf8"));
       if (r.already) return out(`This wallet is already here (Base ${r.base}, Solana ${r.solana}). Nothing changed.`, r);
-      const next = loadPolicy() ? "" : `Next: the owner's limits: \`sato-agent policy set --chains <${CHAIN_SET}> --per-tx <usd|none> --per-day <usd|none>\`.\n`;
+      const next = loadPolicy({ unverified: true }) ? "" : `Next: the owner's limits: \`sato-agent policy set --chains <${CHAIN_SET}> --per-tx <usd|none> --per-day <usd|none>\`.\n`;
       return out(
         `Restored this agent's wallet from the owner's backup.\n  Base:   ${r.base}\n  Solana: ${r.solana}\n${r.paused_until ? `Spending is paused until ${r.paused_until} (24 hours): the kit cannot see what this wallet spent before it came to this folder.\n` : ""}${next}Tell the owner: "I restored your wallet ${r.base} / ${r.solana} from your backup${r.paused_until ? `; I can't spend until ${r.paused_until}` : ""}." These must be the addresses the owner funded.`,
         r,
@@ -488,13 +488,13 @@ async function main(command = cmd, args = positionals.slice(1)) {
     }
     case "address": {
       const a = addresses();
-      const chains = allowedChains(loadPolicy());
+      const chains = allowedChains(loadPolicy({ unverified: true }));
       const shown = Object.fromEntries(chains.map((c) => [c, addressFor(c, a)]));
       return out(chains.map((c) => `${`${labelOf(c)}:`.padEnd(7)} ${addressFor(c, a)}`).join("\n"), shown);
     }
     case "balance": {
       const a = addresses();
-      const chains = allowedChains(loadPolicy());
+      const chains = allowedChains(loadPolicy({ unverified: true }));
       // Read in parallel, kept in the owner's chain order (not the order the answers come back in), so the JSON never shuffles.
       const res = Object.fromEntries(
         await Promise.all(
@@ -564,7 +564,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
         );
       }
       if (rest[0] !== undefined && rest[0] !== "show") throw new UsageError("policy show | policy set ... | policy cancel");
-      const p = loadPolicy();
+      const p = loadPolicy({ unverified: true }); // shown as it is; a spend reads it only when it matches its seal
       if (!p) return out("Nothing set yet. Nothing will be spent until `sato-agent policy set` is run.", { policy: null });
       return out([`${policyText(p)}\nset at:          ${p.set_at}`, ...pendingLines(p)].join("\n"), p);
     }
@@ -896,7 +896,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
     case "proof": {
       // A card the owner can post: everything on it links to the chain, so anyone can check it.
       const a = addresses();
-      const chains = allowedChains(loadPolicy());
+      const chains = allowedChains(loadPolicy({ unverified: true }));
       const list = actions();
       const onchain = list.filter((x) => x.explorer && ["confirmed", "registered", "filled"].includes(x.status));
       const agentRow = [...list].reverse().find((x) => x.kind === "register" && x.agent_id);
@@ -918,7 +918,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
       return out(card, { addresses: Object.fromEntries(chains.map((c) => [c, addressFor(c, a)])), agent_id: agentId, confirmed_actions: onchain, usdc_moved: roundUsd(spent) });
     }
     case "status": {
-      const p = loadPolicy();
+      const p = loadPolicy({ unverified: true }); // shown even when frozen (the FROZEN line says why)
       const ledger = read();
       const spent = spentLast24h(Date.now(), ledger);
       const seal = inspect();

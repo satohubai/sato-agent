@@ -22,7 +22,7 @@ import { randomUUID } from "node:crypto";
 import { paths, readJson } from "./store.js";
 import { DEFAULT_EVM_CHAIN, chainKeys, chainsWith, evmChainKeys, hasFeature, isEvm, labelList, labelOf, orList, pipeList } from "./chains.js";
 import { Refused } from "./errors.js";
-import { commitPolicy, inspect, lastRecordedPolicy, pauseRefusal, policyFileText } from "./integrity.js";
+import { commitPolicy, folderHasHistory, lastRecordedPolicy, pauseRefusal, policyFileText, snapshot, withLedgerLock } from "./integrity.js";
 
 export { Refused } from "./errors.js";
 
@@ -94,9 +94,31 @@ export function parseAllowlist(list) {
  * The policy in force now: policy.json with every queued raise whose time has come applied. Raises still waiting stay in
  * `pending` ({ part: { values, requested_at, effective_at } }), for `status` to show.
  */
-export function loadPolicy({ now = Date.now() } = {}) {
-  return fold(readJson(paths.policy()), now);
+export function loadPolicy({ now = Date.now(), unverified = false } = {}) {
+  // For display only (status, policy show, address): the file as it is, even when it no longer matches its seal.
+  if (unverified) return fold(readJson(paths.policy()), now);
+  // Everything that decides a spend reads policy.json once, under the ledger lock, and only if it matches its seal: a file
+  // swapped in for a moment (approval: auto, the gate off) is refused, never acted on.
+  const s = snapshot();
+  const bad = s.problems.filter((p) => p.rule === "policy_tampered");
+  if (bad.length) throw new Refused(bad);
+  return s.policyText === null ? null : fold(parsePolicyText(s.policyText), now);
 }
+
+function parsePolicyText(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Refused([{ rule: "policy_unreadable", limit: null, observed: null, message: "the limits file (policy.json) cannot be read; nothing is spent until the owner looks" }]);
+  }
+}
+
+/**
+ * What a folder with no limits but a history starts from: nothing allowed. The first `policy set` there (after a repair that
+ * removed the limits, a restore, or the upgrade that sealed the folder) is compared with it, so every part of it waits 24 hours
+ * like any raise, instead of taking effect at once as in a brand-new folder.
+ */
+const NOTHING_ALLOWED = Object.freeze({ max_usd_per_tx: 0, max_usd_per_day: 0, allow_recipients: [], chains: [], check_gate: "caution", on_check_unavailable: "refuse", approval: "ask", purchase_approval: "ask", swaps_off: true, bridges_off: true, max_slippage_bps: 1, max_trades_per_day: 0 });
 
 /** Apply the queued raises that are due at `now`. An entry whose time cannot be read never takes effect. */
 export function fold(p, now = Date.now()) {
@@ -248,10 +270,11 @@ export function pendingRaises(p) {
   });
 }
 
-/** Spending is frozen (src/integrity.js): the owner repairs first; no choice changes until then. */
-function assertNotFrozen() {
-  const { problems } = inspect();
-  if (problems.length) throw new Refused(problems);
+/** The policy file as verified, under the ledger lock: refused while anything is frozen (the owner repairs first). */
+function verifiedStored() {
+  const s = snapshot();
+  if (s.problems.length) throw new Refused(s.problems);
+  return { stored: s.policyText === null ? null : parsePolicyText(s.policyText), rows: s.rows };
 }
 
 /**
@@ -261,16 +284,23 @@ function assertNotFrozen() {
  * `queued`, for the agent to tell the owner; the rest applies at once. Returns the
  * policy in force, what (if anything) the change loosened, and what was queued.
  */
-export function setPolicy(opts, { now = Date.now() } = {}) {
+export function setPolicy(opts, o = {}) {
+  // One step under the ledger lock: the policy it starts from is the one it verified, and nothing changes underneath it.
+  return withLedgerLock(() => setPolicyLocked(opts, o));
+}
+
+function setPolicyLocked(opts, { now = Date.now() } = {}) {
   const { perTx, perDay, allowRecipients, chains, checkGate, approval, onCheckUnavailable, swapSlippageBps, maxTradesPerDay, swaps, purchases, bridges } = opts;
-  assertNotFrozen();
-  const stored = readJson(paths.policy());
+  const { stored, rows } = verifiedStored();
   // If policy.json is gone (removed by a repair, or never written after a crash) but the
   // ledger recorded one, compare against that: starting over must still show up as a raise,
-  // and wait like one.
-  const recorded = stored ? null : lastRecordedPolicy();
+  // and wait like one. With none recorded, a folder with a history starts from "nothing allowed".
+  const recorded = stored ? null : lastRecordedPolicy(rows);
   const base = stored ?? recorded;
   const prev = base ? fold(base, now) : null;
+  // What the change is measured against: the policy in force, or "nothing allowed" in a folder with no limits but a history.
+  const fromNothing = !prev && folderHasHistory(rows);
+  const cmp = prev ?? (fromNothing ? NOTHING_ALLOWED : null);
   if (!prev && (perTx === undefined || perDay === undefined)) {
     throw new Error("first time: set both --per-tx and --per-day (a USD amount, or \"none\")");
   }
@@ -317,16 +347,17 @@ export function setPolicy(opts, { now = Date.now() } = {}) {
   if (["no", "caution"].includes(next.check_gate) && !next.on_check_unavailable) {
     throw new Error("with --check-gate on, also choose --on-check-unavailable allow|refuse: what to do when the check can't run (no default)");
   }
-  const raises = raisesBetween(prev, next);
+  const raises = raisesBetween(cmp, next);
   // Which parts loosen. "purchases: ask -> auto" with no change to the purchase choice itself is the approval part's doing.
   const loosened = new Set();
   for (const r of raises) {
     const part = PARTS.find((x) => x.raise.includes(r));
     if (!part) continue;
-    if (part.key === "purchases" && next.purchase_approval === prev.purchase_approval) loosened.add("approval");
+    if (part.key === "purchases" && next.purchase_approval === cmp.purchase_approval) loosened.add("approval");
     else loosened.add(part.key);
   }
-  if (!stored && recorded) raises.unshift("policy file was missing; compared with the last recorded policy");
+  if (fromNothing) raises.unshift("no limits were in force; this folder has a history (a repair, a restore or the upgrade), so they wait like a raise");
+  else if (!stored && recorded) raises.unshift("policy file was missing; compared with the last recorded policy");
   const touched = new Set(PARTS.filter((x) => x.opts.some((o) => opts[o] !== undefined)).map((x) => x.key));
   if (swapSlippageBps === "off") touched.add("swaps");
   const pending = { ...(prev?.pending ?? {}) };
@@ -336,7 +367,7 @@ export function setPolicy(opts, { now = Date.now() } = {}) {
       const values = pickFields(next, part.fields);
       // Asking again for the same raise keeps its clock; anything else starts a new one.
       if (!(pending[part.key] && canon(pending[part.key].values) === canon(values))) pending[part.key] = { values, requested_at: iso(now), effective_at: iso(now + RAISE_DELAY_MS) };
-      Object.assign(out, part.meet ? part.meet(next, prev) : pickFields(prev, part.fields));
+      Object.assign(out, part.meet ? part.meet(next, cmp) : pickFields(cmp, part.fields));
     } else if (touched.has(part.key)) delete pending[part.key];
   }
   if (Object.keys(pending).length) out.pending = pending;
@@ -353,13 +384,16 @@ export function setPolicy(opts, { now = Date.now() } = {}) {
     to: out,
   });
   // The policy in force when this returns (a raise queued just now is not in it yet).
-  return { policy: fold(out, Date.now()), raised: raises.length > 0, raises, queued, first: !prev };
+  return { policy: fold(out, Date.now()), raised: raises.length > 0, raises, queued, first: !cmp };
 }
 
 /** Cancel every raise still waiting. Raises already in effect stay; tighten them with `policy set`. */
 export function cancelPending({ now = Date.now() } = {}) {
-  assertNotFrozen();
-  const stored = readJson(paths.policy());
+  return withLedgerLock(() => cancelLocked(now));
+}
+
+function cancelLocked(now) {
+  const { stored } = verifiedStored();
   const cur = fold(stored, now);
   const cancelled = pendingRaises(cur);
   if (!cancelled.length) return { policy: cur, cancelled };

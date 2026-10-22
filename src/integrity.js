@@ -103,7 +103,7 @@ export const sameWallet = (a, b) => Boolean(a && b) && a.evm?.toLowerCase() === 
 const short = (a) => (typeof a === "string" && a.length > 14 ? `${a.slice(0, 6)}…${a.slice(-4)}` : String(a));
 
 /** The line of the latest repair of a broken ledger: nothing before it is trusted to say what the limits were. */
-const lastLedgerRepair = (rows) => rows.findLastIndex((r) => r?.kind === "integrity" && r.status === "repaired" && typeof r.prefix_sha256 === "string");
+export const lastLedgerRepair = (rows) => rows.findLastIndex((r) => r?.kind === "integrity" && r.status === "repaired" && typeof r.prefix_sha256 === "string");
 
 /**
  * The last policy the ledger recorded (`to` of the last policy line), or null. Lines before the latest repair of a broken
@@ -117,15 +117,24 @@ export function lastRecordedPolicy(rows = ledgerLines().rows) {
   return null;
 }
 
-/** The wallet the ledger says this folder holds (the last line that names one), or null. Read when the seal is missing. */
-export function ledgerWallet(rows = ledgerLines().rows) {
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const r = rows[i];
-    if (r?.kind === "wallet" && (r.status === "created" || r.status === "restored") && typeof r.evm === "string" && typeof r.solana === "string") return { evm: r.evm, solana: r.solana };
-    if (r?.kind === "integrity" && typeof r.wallet?.evm === "string" && typeof r.wallet?.solana === "string") return { evm: r.wallet.evm, solana: r.wallet.solana };
+/**
+ * Every wallet the ledger names for this folder (created, restored, sealed by an upgrade or a repair), each once, in order. The kit
+ * never puts a second wallet in a folder, so a ledger naming two was edited.
+ */
+export function ledgerWallets(rows = ledgerLines().rows) {
+  const out = [];
+  for (const r of rows) {
+    const w = r?.kind === "wallet" && (r.status === "created" || r.status === "restored") ? { evm: r.evm, solana: r.solana } : r?.kind === "integrity" ? r.wallet : null;
+    if (typeof w?.evm === "string" && typeof w?.solana === "string" && !out.some((x) => sameWallet(x, w))) out.push({ evm: w.evm, solana: w.solana });
   }
-  return null;
+  return out;
 }
+
+/** The wallet the ledger says this folder holds, or null. Read when the seal is missing. */
+export const ledgerWallet = (rows = ledgerLines().rows) => ledgerWallets(rows)[0] ?? null;
+
+/** Lines that only a folder with a past writes: a policy, a seal started or repaired, a restore. */
+export const folderHasHistory = (rows = ledgerLines().rows) => rows.some((r) => r?.kind === "policy" || r?.kind === "integrity" || (r?.kind === "wallet" && r.status === "restored"));
 
 /** A chained line, or one that only a version with the chain writes: such a ledger is not a pre-chain one. */
 const isChained = (r) => Boolean(r) && (Object.hasOwn(r, "prev") || r.kind === "integrity");
@@ -215,7 +224,9 @@ function problemsNow() {
   let adoptable = false;
   // The wallet this folder holds: the seal says, and without a (readable) seal, the ledger's own wallet lines.
   const sealedWallet = integ && integ !== UNREADABLE ? (integ.wallet ?? null) : null;
-  const expected = sealedWallet ?? (integ && integ !== UNREADABLE ? null : ledgerWallet(L.rows));
+  const named = integ && integ !== UNREADABLE ? [] : ledgerWallets(L.rows);
+  const expected = sealedWallet ?? named[0] ?? null;
+  if (named.length > 1) problems.push({ rule: "wallet_tampered", limit: named[0].evm, observed: named.slice(1).map((w) => w.evm).join(", "), message: `spending is frozen: with no seal to say which, the ledger names more than one wallet for this folder (${named.map((w) => w.evm).join(", ")}). The kit never puts a second wallet in a folder. Tell the owner, and never ask anyone to fund an address from this list without checking it is the one they funded.` });
   if (integ === UNREADABLE) problems.push(ledgerProblem("the seal file (integrity.json) cannot be read"));
   else if (integ === null) {
     if (isLegacy(L) && !(wallet && wallet !== UNREADABLE && wallet.sealed)) {
@@ -246,8 +257,19 @@ function problemsNow() {
   return { problems, adoptable, sealed: integ !== null && integ !== UNREADABLE, wallet: sealedWallet, expected, pausedUntil, policyText, L, integ, walletNow: wallet };
 }
 
+/**
+ * problemsNow, after sealing a pre-chain folder first if it is one (with nothing wrong in it): the upgrade happens at the first
+ * read, under the ledger lock, so its pause is in force before any spend is decided.
+ */
+function current() {
+  const s = problemsNow();
+  if (!s.adoptable || s.problems.length) return s;
+  adopt(s.L);
+  return problemsNow();
+}
+
 /** The wallet this folder holds or held (its seal, or without a readable seal its ledger's wallet lines), or null. */
-export const expectedWallet = () => withLedgerLock(() => problemsNow().expected);
+export const expectedWallet = () => withLedgerLock(() => current().expected);
 
 /**
  * One consistent read for a spend: the problems, the pause, and the policy text and ledger rows that were checked, read once each
@@ -255,7 +277,7 @@ export const expectedWallet = () => withLedgerLock(() => problemsNow().expected)
  */
 export function snapshot() {
   return withLedgerLock(() => {
-    const s = problemsNow();
+    const s = current();
     return { problems: s.problems, paused_until: s.pausedUntil === null ? null : new Date(s.pausedUntil).toISOString(), policyText: s.policyText, rows: s.L.rows, raw: s.L.raw };
   });
 }
@@ -265,7 +287,7 @@ export function snapshot() {
  * or null) is a pause after a repair or a restore. `sealed_wallet` is the wallet this folder was sealed with.
  */
 export function inspect({ now = Date.now() } = {}) {
-  const s = withLedgerLock(problemsNow);
+  const s = withLedgerLock(current);
   const paused = s.pausedUntil !== null && now < s.pausedUntil;
   return { problems: s.problems, adoptable: s.adoptable, sealed: s.sealed, sealed_wallet: s.wallet, paused_until: s.pausedUntil === null ? null : new Date(s.pausedUntil).toISOString(), paused };
 }
@@ -277,7 +299,7 @@ export function pauseRefusal(state, now = Date.now()) {
     rule: "spending_paused",
     limit: state.paused_until,
     observed: null,
-    message: `spending is paused until ${state.paused_until} (24 hours after a repair or a restore), because the kit cannot see everything this wallet spent before it. Nothing to do but wait; \`status\` shows the time.`,
+    message: `spending is paused until ${state.paused_until} (24 hours after a repair, a restore or the upgrade that sealed this folder), because the kit cannot see everything this wallet spent before it. Nothing to do but wait; \`status\` shows the time.`,
   };
 }
 
@@ -303,10 +325,17 @@ function appendRaw(row, L) {
 
 /** Seal a pre-chain ledger as it is (the one-time step of an upgrade to v0.6.0). */
 function adopt(L) {
+  // A pre-chain policy.json with no recorded change behind it has nothing to be checked against: the owner sets the limits again.
+  if (!lastRecordedPolicy(L.rows) && readText(paths.policy()) !== null) {
+    writePrivate(`${paths.policy()}.unrecorded-${stamp(Date.now())}`, readText(paths.policy()));
+    fs.rmSync(paths.policy(), { force: true });
+  }
   const policy = legacyPolicyDigest(L);
   const w = walletAddresses();
   const wallet = w && w !== UNREADABLE ? { evm: w.evm, solana: w.solana } : null;
-  const row = { id: randomUUID(), ts: new Date().toISOString(), kind: "integrity", status: "started", legacy_lines: L.raw.length, ...(wallet ? { wallet } : {}) };
+  // Sealing a pre-chain ledger is never free: nothing tells a real one from a ledger and seal deleted and rewritten by hand, so
+  // spending is paused for 24 hours, once, as after a repair.
+  const row = { id: randomUUID(), ts: new Date().toISOString(), kind: "integrity", status: "started", legacy_lines: L.raw.length, ...(wallet ? { wallet } : {}), paused_until: new Date(Date.now() + PAUSE_MS).toISOString() };
   // The first chained line carries the hash of every byte before it, so the old lines cannot change afterwards either.
   const text = serialize({ ...row, prev: sha256(L.text) });
   fs.appendFileSync(paths.ledger(), `${text}\n`, { mode: 0o600 });

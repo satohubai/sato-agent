@@ -13,11 +13,11 @@
 // a ledger that is missing, cut short, reordered or edited freezes spending.
 
 import { randomUUID } from "node:crypto";
-import { paths, readLines, withLock } from "./store.js";
+import { withLock } from "./store.js";
 import { evaluate, fold } from "./policy.js";
 import { Refused } from "./errors.js";
 import { DEFAULT_EVM_CHAIN, explorerTx, isKnownChain } from "./chains.js";
-import { appendRow, snapshot, withLedgerLock } from "./integrity.js";
+import { appendRow, lastLedgerRepair, ledgerLines, snapshot, withLedgerLock } from "./integrity.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -36,18 +36,19 @@ const noPrev = (r) => (r && typeof r === "object" && Object.hasOwn(r, "prev") ? 
 
 /** The ledger's rows (without the chain's `prev` field, which only src/integrity.js reads), plus the numbers of unreadable lines. */
 export function read() {
-  const { rows, bad } = readLines(paths.ledger());
-  return { rows: rows.map(noPrev), bad };
+  return rowsOf(ledgerLines());
 }
 
 /** read() over the very lines integrity.js checked: rows of the lines that parse, and the 1-based numbers of the others. */
 function rowsOf(s) {
   const rows = [];
   const bad = [];
+  // A line that cannot be read but is pinned under a repair of the ledger is covered by that repair (and its pause): it no longer stops spending.
+  const pinned = lastLedgerRepair(s.rows);
   s.raw.forEach((l, i) => {
     if (!l.trim()) return;
     if (s.rows[i]) rows.push(noPrev(s.rows[i]));
-    else bad.push(i + 1);
+    else if (i > pinned) bad.push(i + 1);
   });
   return { rows, bad };
 }

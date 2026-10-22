@@ -35,7 +35,7 @@ function agent(limits = { chains: "base,solana", perTx: "5", perDay: "20" }) {
 const file = (name) => join(process.env.SATO_AGENT_HOME, name);
 const read = (name) => fs.readFileSync(file(name), "utf8");
 const write = (name, text) => fs.writeFileSync(file(name), text);
-const spend = (usd = 1) => reserve(loadPolicy(), { kind: "send", chain: "base", usd, to: DEAD });
+const spend = async (usd = 1) => reserve(loadPolicy(), { kind: "send", chain: "base", usd, to: DEAD });
 const cli = (args, { home = process.env.SATO_AGENT_HOME, input, env = {} } = {}) =>
   spawnSync(process.execPath, ["--import", PRELOAD, BIN, ...args], { env: { ...process.env, SATO_AGENT_HOME: home, SATO_AGENT_MCP_URL: "http://127.0.0.1:9/x", SATO_AGENT_BASE_RPC: "http://127.0.0.1:9", SATO_AGENT_SOLANA_RPC: "http://127.0.0.1:9", ...env }, input, encoding: "utf8" });
 
@@ -260,7 +260,8 @@ test("policy.json edited by hand, deleted, or added: policy_tampered; limits do 
   assert.throws(() => cancelPending(), Refused);
   fs.rmSync(file("policy.json"));
   assert.match(I.inspect().problems[0].message, /is missing/);
-  assert.deepEqual(rules(evaluate(loadPolicy(), { usd: 1, chain: "base" }, spentLast24h())), ["policy_tampered"], "frozen, not 'limits not set'");
+  assert.throws(() => loadPolicy(), (e) => e instanceof Refused && e.refusals[0].rule === "policy_tampered", "a spend never reads an unsealed policy");
+  assert.deepEqual(rules(evaluate(loadPolicy({ unverified: true }), { usd: 1, chain: "base" }, spentLast24h())), ["policy_tampered"], "frozen, not 'limits not set'");
 });
 
 test("a different wallet file: wallet_tampered (it is never accepted); a missing one: wallet_missing", async () => {
@@ -330,10 +331,12 @@ test("repair with a broken ledger AND a changed policy: the limits are removed (
   assert.ok(r.actions.some((a) => /removed the limits/.test(a)));
   assert.equal(loadPolicy(), null);
   assert.deepEqual(frozenRules(), []);
-  // setting them again is compared with the last recorded change; nothing recorded survived the emptied ledger here, so it is a first set
+  // nothing recorded is trusted after the repair, and the folder has a history: setting them again waits like a raise
   const again = setPolicy({ chains: "base", perTx: "5", perDay: "20" });
-  assert.equal(again.first, true);
-  assert.ok(I.inspect().paused, "but spending stays paused");
+  assert.equal(again.first, false);
+  assert.ok(again.queued.some((q) => q.part === "per_tx") && again.queued.some((q) => q.part === "chains"));
+  assert.deepEqual(loadPolicy().chains, [], "nothing is allowed until the wait is over");
+  assert.ok(I.inspect().paused, "and spending stays paused");
 });
 
 test("a wallet, and no ledger or seal next to it, is frozen (never a fresh install); repair then pauses", () => {
@@ -392,18 +395,21 @@ function legacyFolder({ edit } = {}) {
   return home;
 }
 
-test("upgrade: a pre-chain ledger is sealed as it is on the first write, its 24-hour total kept, and its old lines pinned", async () => {
+test("upgrade: a pre-chain ledger is sealed as it is on the first read, its 24-hour total kept, its old lines pinned, and spending paused once for 24 hours", async () => {
   legacyFolder();
   assert.deepEqual(frozenRules(), [], "an upgraded folder is not frozen");
-  assert.equal(I.inspect().adoptable, true);
   assert.equal(spentLast24h().usd, 7);
-  await spend(1);
+  // never free: nothing tells a real pre-chain ledger from one rewritten by hand, so the upgrade pauses spending once
+  assert.ok(I.inspect().paused);
+  await assert.rejects(spend(1), (e) => e.refusals?.[0]?.rule === "spending_paused");
+  assert.match(I.integrityRefusals()[0].message, /the upgrade that sealed this folder/);
+  record({ kind: "check", status: "skipped" });
   const L = I.ledgerLines();
   const start = L.rows.findIndex((r) => r.kind === "integrity" && r.status === "started");
   assert.ok(start > 0);
   assert.equal(L.rows[start].prev, I.sha256(L.raw.slice(0, start).map((l) => l + "\n").join("")));
   assert.equal(JSON.parse(read("integrity.json")).wallet.evm, addresses().base);
-  assert.equal(spentLast24h().usd, 8);
+  assert.equal(spentLast24h().usd, 7);
   write("ledger.jsonl", read("ledger.jsonl").replace('"usd":7', '"usd":0'));
   assert.ok(frozenRules().includes("ledger_tampered"), "an old line edited after the upgrade");
 });
@@ -598,7 +604,7 @@ test("R1 C1: deleting the seal and leaving a one-line ledger is not an upgrade: 
 
 test("R1 C1: an upgraded folder's wallet is stamped, so the same trick fails after an upgrade too; a legacy policy with a queued raise is refused", async () => {
   legacyFolder();
-  await spend(1); // the upgrade seals it
+  I.inspect(); // the upgrade seals it at the first read
   assert.equal(JSON.parse(read("wallet.json")).version, I.SEALED_WALLET_VERSION);
   fs.rmSync(file("integrity.json"));
   write("ledger.jsonl", "{}\n");
@@ -659,4 +665,112 @@ test("R1 M1: a policy line planted before a repair never comes back as 'the last
   assert.ok(!r.actions.some((a) => /put back/.test(a)), r.actions.join(" | "));
   assert.equal(loadPolicy(), null);
   assert.equal(I.lastRecordedPolicy(), null);
+});
+
+// ------------------------------------------------------------------ v0.6.0 docs
+
+test("v0.6.0: the docs say what the limits protect against (and what not), the backup step comes right after funding, and no claim overstates", () => {
+  const ROOT = (p) => fileURLToPath(new URL(`../${p}`, import.meta.url));
+  const bot = fs.readFileSync(ROOT("BOT.md"), "utf8");
+  const readme = fs.readFileSync(ROOT("README.md"), "utf8");
+  const skill = fs.readFileSync(ROOT("skills/sato-agent/SKILL.md"), "utf8");
+  assert.equal(JSON.parse(fs.readFileSync(ROOT("package.json"), "utf8")).version, "0.6.0");
+  for (const [name, text] of [["BOT.md", bot], ["README.md", readme]]) {
+    assert.match(text, /What the limits protect against/, name);
+    assert.match(text, /[Ff]und (it|the wallet) like a spending account/, name);
+    assert.match(text, /no secret/, `${name}: the chain's honest scope`);
+    assert.doesNotMatch(text, /can(no|')t be (overridden|bypassed)/i, name);
+  }
+  const fund = bot.indexOf("**Ask the owner to fund the wallet");
+  const backup = bot.indexOf("**Back up the wallet, once**");
+  const referral = bot.indexOf("**Referral, once**");
+  assert.ok(fund > 0 && backup > fund && referral > backup, "backup comes right after funding, before the referral step");
+  assert.match(bot, /After upgrading to 0\.6\.0/);
+  assert.match(readme, /Upgrading to v0\.6\.0/);
+  assert.match(skill, /Upgrading to 0\.6\.0/);
+  assert.match(bot, /backup --reveal/);
+  assert.match(bot, /restore <<'BACKUP'/);
+  assert.match(bot, /policy cancel/);
+  assert.match(bot, /Tell the owner now/);
+  // the words the owner's copy rules ban, in what this release added
+  // (each section up to the next heading: the Rules quote those words in "never call ... safe")
+  const section = (text, head) => {
+    const from = text.indexOf(head);
+    const next = text.indexOf("\n## ", from + head.length);
+    return text.slice(from, next < 0 ? undefined : next);
+  };
+  const added = [section(bot, "## What the limits protect against"), section(readme, "What the limits protect against")].join("\n");
+  assert.doesNotMatch(added, /\b(safe|secure|trusted|verified|guaranteed)\b/i);
+});
+
+// ------------------------------------------------------------------ review round 2
+
+test("R2 H-A: a sealed folder dressed up as pre-chain (seal deleted, ledger rewritten, wallet version set back to 1) is paused, and its unrecorded policy dropped", async () => {
+  agent();
+  await spend(5);
+  fs.rmSync(file("integrity.json"));
+  write("ledger.jsonl", "{}\n");
+  write("wallet.json", read("wallet.json").replace(`"version": ${I.SEALED_WALLET_VERSION}`, '"version": 1'));
+  write("policy.json", read("policy.json").replace('"max_usd_per_tx": 5', '"max_usd_per_tx": null'));
+  const s = I.inspect();
+  assert.equal(s.paused, true, "the upgrade is never free");
+  assert.equal(loadPolicy(), null, "a policy with no recorded change behind it is not kept");
+  await assert.rejects(spend(500), (e) => e instanceof Refused);
+  assert.ok(fs.readdirSync(process.env.SATO_AGENT_HOME).some((f) => f.startsWith("policy.json.unrecorded-")), "kept aside, not deleted");
+});
+
+test("R2 H-B: a policy.json swapped to approval auto is never acted on: the send is refused, nothing is reserved", () => {
+  agent({ chains: "base", perTx: "5", perDay: "20", approval: "ask" });
+  write("policy.json", read("policy.json").replace('"approval": "ask"', '"approval": "auto"'));
+  const r = cli(["send", "--chain", "base", "--to", DEAD, "--amount", "1", "--skip-check"]);
+  assert.equal(r.status, 3);
+  assert.match(r.stderr, /policy_tampered/);
+  assert.equal(entries().filter((e) => e.status === "submitted").length, 0);
+});
+
+test("R2 H-C: with no seal, a ledger naming a second wallet is frozen, and repair keeps neither", () => {
+  agent();
+  const other = { evm: "0x1111111111111111111111111111111111111111", solana: "11111111111111111111111111111112" };
+  fs.appendFileSync(file("ledger.jsonl"), JSON.stringify({ kind: "wallet", status: "created", ...other }) + "\n");
+  fs.rmSync(file("integrity.json"));
+  assert.ok(frozenRules().includes("wallet_tampered"));
+  assert.match(I.inspect().problems.find((p) => p.rule === "wallet_tampered").message, /names more than one wallet/);
+});
+
+test("R2 M-A: after a repair removed the limits, setting them again waits like a raise (never an instant 'first policy')", async () => {
+  agent();
+  fs.appendFileSync(file("ledger.jsonl"), "{}\n");
+  I.repair();
+  fs.rmSync(file("policy.json"));
+  I.repair();
+  const r = setPolicy({ chains: "base", perTx: "none", perDay: "none" });
+  assert.equal(r.first, false);
+  assert.ok(r.queued.length >= 3, r.queued.map((q) => q.part).join(","));
+  assert.match(r.raises[0], /this folder has a history/);
+  const p = loadPolicy();
+  assert.deepEqual(p.chains, []);
+  assert.equal(loadPolicy({ now: Date.now() + DAY + 1000 }).max_usd_per_day, null, "in force a day later");
+});
+
+test("R2 M-B: an unreadable line pinned under a repair no longer stops spending once the pause is over", () => {
+  agent();
+  fs.appendFileSync(file("ledger.jsonl"), "junk\n");
+  assert.ok(spentLast24h().unreadable.length);
+  const t = Date.now();
+  I.repair({ now: t });
+  assert.deepEqual(spentLast24h().unreadable, []);
+  assert.deepEqual(rules(evaluate(loadPolicy(), { usd: 1, chain: "base" }, { ...spentLast24h(), paused_until: null })), []);
+});
+
+test("R2 L-A: a folder wiped and restored from a copy: spending paused, and the first limits wait like a raise", () => {
+  const home = agent();
+  const copy = read("wallet.json");
+  fs.rmSync(home, { recursive: true });
+  const r = cli(["restore"], { home, input: copy });
+  assert.equal(r.status, 0, r.stderr);
+  process.env.SATO_AGENT_HOME = home;
+  assert.ok(I.inspect().paused);
+  const set = setPolicy({ chains: "base", perTx: "none", perDay: "none" });
+  assert.equal(set.first, false);
+  assert.deepEqual(loadPolicy().chains, []);
 });

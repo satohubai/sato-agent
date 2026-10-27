@@ -10,7 +10,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHash, createPublicKey, verify as edVerify } from "node:crypto";
+import { createHash, createPublicKey, randomBytes, verify as edVerify } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -19,6 +19,7 @@ import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { getBase58Encoder } from "@solana/kit";
 import { verifyMessage } from "viem";
+import { generatePrivateKey } from "viem/accounts";
 import { freshHome } from "./helpers.js";
 
 const home = freshHome();
@@ -388,7 +389,7 @@ test("join: the owner's approval comes first (nothing posted, signed or saved wi
   assert.ok(call.init.signal, "a timeout is set");
   assert.equal(call.body.issued_at, V.issued_at);
   // What the owner was shown and what the approval binds.
-  assert.deepEqual(asked[0].intent, { cmd: "join", name: "Grok Trader", via: "sato-bot", primary: `evm:${EVM.address}`, wallets: [`evm:${EVM.address}`, `solana:${SOL.address}`], again: false, replaces: null });
+  assert.deepEqual(asked[0].intent, { cmd: "join", name: "Grok Trader", via: "sato-bot", primary: `evm:${EVM.address}`, wallets: [`evm:${EVM.address}`, `solana:${SOL.address}`], again: false, replaces: null, host: "hub.test" });
   assert.ok(asked[0].card.some((l) => /PUBLIC/.test(l)) && asked[0].card.some((l) => l.includes(EVM.address)) && asked[0].card.some((l) => /Nothing has been signed or sent/.test(l)));
   for (const l of asked[0].card) assert.doesNotMatch(l, BANNED, l);
   // The result.
@@ -707,7 +708,7 @@ test("issue-claim: the owner's approval first, then one signed issue_claim to /a
   const asked = [];
   const r = await pj.issueClaim({}, { keys: KEYS, fetchImpl: hub.fetchImpl, origin: ORIGIN, now: new Date(V.issued_at), authorize: async (intent, card) => (order.push("authorize"), asked.push({ intent, card })) });
   assert.deepEqual(order, ["authorize", "post"]);
-  assert.deepEqual(asked[0].intent, { cmd: "passport issue-claim", passport: ID, wallet: `evm:${EVM.address}` });
+  assert.deepEqual(asked[0].intent, { cmd: "passport issue-claim", passport: ID, wallet: `evm:${EVM.address}`, host: "hub.test" });
   assert.ok(asked[0].card.some((l) => /earlier unused codes stop working/.test(l)));
   const call = hub.calls[0];
   assert.equal(call.url, "https://hub.test/api/passport/action");
@@ -752,7 +753,7 @@ test("prove: for a passport made before joins existed, this bot's wallet signs p
   const hub = hubFetch({ status: 200, json: { ok: true } });
   const asked = [];
   const r = await pj.proveWallet({ passport: ID }, { keys: KEYS, fetchImpl: hub.fetchImpl, origin: ORIGIN, now: new Date(V.issued_at), authorize: owner(asked) });
-  assert.deepEqual(asked[0].intent, { cmd: "passport prove", passport: ID, wallet: `evm:${EVM.address}` });
+  assert.deepEqual(asked[0].intent, { cmd: "passport prove", passport: ID, wallet: `evm:${EVM.address}`, host: "hub.test" });
   assert.equal(r.passport_id, ID);
   const call = hub.calls[0];
   assert.equal(call.url, "https://hub.test/api/passport/action");
@@ -1117,6 +1118,112 @@ test("v0.6 seal: join, passport issue-claim and passport prove refuse (exit 3) w
   // The right wallet file back: it works again.
   writeFileSync(b.file("wallet.json"), original, { mode: 0o600 });
   assert.equal((await b.run(["join"])).status, 5);
+});
+
+/** wallet.json with another wallet's KEYS but this wallet's address fields: the seal covers the addresses, so status does not see it. */
+function swapKeys(b, { evm = false, solana = false }) {
+  const w = JSON.parse(readFileSync(b.file("wallet.json"), "utf8"));
+  const other = { evm: generatePrivateKey(), solana: randomBytes(64).toString("base64") };
+  writeFileSync(b.file("wallet.json"), JSON.stringify({ ...w, evm: { ...w.evm, ...(evm ? { private_key: other.evm } : {}) }, solana: { ...w.solana, ...(solana ? { secret_key_b64: other.solana } : {}) } }, null, 2) + "\n", { mode: 0o600 });
+}
+
+test("v0.6 seal covers the KEYS the commands sign with: swapping only the private keys (addresses untouched, status not frozen) is refused by join, issue-claim, prove and backup, before any approval card or request", async () => {
+  const hub = await newHub();
+  const b = await bot(hub.origin);
+  const original = readFileSync(b.file("wallet.json"), "utf8");
+  swapKeys(b, { evm: true, solana: true });
+  assert.doesNotMatch((await b.run(["status"])).stdout, /FROZEN/, "the seal itself does not see a key swap");
+  for (const args of [["join"], ["join", "--no-solana"], ["passport", "issue-claim", "--passport", ID], ["passport", "prove", "--passport", ID], ["backup"], ["backup", "--reveal"]]) {
+    const r = await b.run(args);
+    assert.equal(r.status, 3, args.join(" "));
+    assert.match(r.stderr, /wallet_tampered/, args.join(" "));
+    assert.match(r.stderr, /the EVM key in wallet\.json belongs to 0x[0-9a-fA-F]{40}, not to 0x[0-9a-fA-F]{40}, the wallet this folder was sealed with/);
+    assert.doesNotMatch(r.stdout, /Join Sato Hub|WALLET BACKUP/, "no card, no keys shown");
+  }
+  assert.equal(existsSync(b.file("approvals.json")), false);
+  assert.equal(hub.state.requests.length, 0);
+  // Only the Solana key swapped: the commands that sign with it refuse; the ones that sign with the EVM key alone go ahead.
+  writeFileSync(b.file("wallet.json"), original, { mode: 0o600 });
+  swapKeys(b, { solana: true });
+  for (const args of [["join"], ["passport", "issue-claim", "--passport", ID, "--chain", "solana"], ["passport", "prove", "--passport", ID, "--chain", "solana"], ["backup"]]) {
+    const r = await b.run(args);
+    assert.equal(r.status, 3, args.join(" "));
+    assert.match(r.stderr, /the Solana key in wallet\.json belongs to /, args.join(" "));
+  }
+  assert.equal((await b.run(["join", "--no-solana"])).status, 5, "it signs with the EVM key alone, which is the sealed one");
+  assert.equal(hub.state.requests.length, 0);
+});
+
+test("v0.6 deleted seal: with integrity.json and ledger.jsonl deleted and wallet.json replaced, join, issue-claim, prove and backup refuse (the seal names no wallet); the same deletion with the real wallet is refused too", async () => {
+  const hub = await newHub();
+  const b = await bot(hub.origin);
+  const real = readFileSync(b.file("wallet.json"), "utf8");
+  const other = await bot(hub.origin);
+  const replaced = readFileSync(other.file("wallet.json"), "utf8");
+  for (const wallet of [replaced, real]) {
+    rmSync(b.file("integrity.json"), { force: true });
+    rmSync(b.file("ledger.jsonl"), { force: true });
+    writeFileSync(b.file("wallet.json"), wallet, { mode: 0o600 });
+    const st = await b.run(["status"]);
+    assert.match(st.stdout, /ledger_tampered/, "the freeze reports only the ledger: no wallet is expected");
+    for (const args of [["join"], ["passport", "issue-claim", "--passport", ID], ["passport", "prove", "--passport", ID], ["backup"]]) {
+      const r = await b.run(args);
+      assert.equal(r.status, 3, args.join(" "));
+      assert.match(r.stderr, /wallet_tampered/, args.join(" "));
+      assert.match(r.stderr, /no seal naming its wallet|seal naming its wallet|belongs to/, args.join(" "));
+    }
+  }
+  assert.equal(existsSync(b.file("approvals.json")), false);
+  assert.equal(hub.state.requests.length, 0);
+});
+
+test("v0.6 upgrade is not blocked: a folder as v0.5.4 left it (wallet version 1, a ledger with no chain, no seal) is adopted by the first read, and join goes ahead", async () => {
+  const hub = await newHub();
+  const b = await bot(hub.origin);
+  const wallet = JSON.parse(readFileSync(b.file("wallet.json"), "utf8"));
+  for (const f of readdirSync(b.dir)) rmSync(join(b.dir, f), { recursive: true, force: true });
+  writeFileSync(b.file("wallet.json"), JSON.stringify({ ...wallet, version: 1 }, null, 2) + "\n", { mode: 0o600 });
+  writeFileSync(b.file("ledger.jsonl"), JSON.stringify({ id: "s1", ts: new Date().toISOString(), kind: "check", status: "skipped" }) + "\n");
+  const { first, second } = await b.approved(["join"]);
+  assert.match(first.stdout, /Join Sato Hub/);
+  assert.equal(second.status, 0, second.stderr);
+  assert.equal(JSON.parse(readFileSync(b.file("integrity.json"), "utf8")).wallet.evm, wallet.evm.address, "adopted: sealed with this wallet");
+  assert.equal(b.saved().passport, "sato:agt:exmpexmp2223");
+});
+
+test("a host other than satohub.ai is named in the approval intent and on the card (and a code for one host is no use for another); satohub.ai adds nothing", async () => {
+  fresh();
+  const hub = hubFetch((call) => joined(call));
+  const seen = [];
+  await pj.joinPassport({}, { keys: KEYS, fetchImpl: hub.fetchImpl, origin: "https://hub.test:8443", authorize: owner(seen) });
+  assert.equal(seen[0].intent.host, "hub.test:8443");
+  assert.equal(seen[0].card[0], "⚠ Signing for hub.test:8443, not satohub.ai: SATO_AGENT_MCP_URL points the passport commands there. Say yes only if the owner set that on purpose.");
+  assert.equal(pj.customHost({ origin: "https://hub.test:8443" }), "hub.test:8443");
+  assert.equal(pj.customHost({ origin: "https://satohub.ai" }), null);
+  assert.equal(pj.customHost({ origin: "https://www.satohub.ai" }), "www.satohub.ai", "only satohub.ai itself is the official host");
+  fresh();
+  const official = [];
+  await pj.joinPassport({}, { keys: KEYS, fetchImpl: hub.fetchImpl, origin: "https://satohub.ai", authorize: owner(official) });
+  assert.equal("host" in official[0].intent, false, "the default host leaves the intent as it was");
+  assert.ok(!official[0].card.some((l) => /Signing for/.test(l)));
+  for (const [fn, args] of [["issueClaim", {}], ["proveWallet", { passport: ID }]]) {
+    const got = [];
+    await pj[fn](args, { keys: KEYS, fetchImpl: hubFetch({ status: 200, json: { ok: true } }).fetchImpl, origin: "http://127.0.0.1:9999", authorize: owner(got) }).catch(() => {});
+    assert.equal(got[0]?.intent.host, "127.0.0.1:9999", fn);
+    assert.match(got[0].card[0], /^⚠ Signing for 127\.0\.0\.1:9999, not satohub\.ai/, fn);
+  }
+  // At the CLI: the card says so, and the code binds the host.
+  const h1 = await newHub();
+  const b = await bot(h1.origin);
+  const ask = await b.run(["join", "--json"]);
+  const { code, intent, card } = JSON.parse(ask.stdout).needs_approval;
+  assert.equal(intent.host, new URL(h1.origin).host);
+  assert.match(card[0], /Signing for 127\.0\.0\.1:\d+, not satohub\.ai/);
+  const h2 = await newHub();
+  const elsewhere = await b.run(["join", "--approve", code], { SATO_AGENT_MCP_URL: `${h2.origin}/api/mcp` });
+  assert.equal(elsewhere.status, 1);
+  assert.match(elsewhere.stderr, /different intent/);
+  assert.equal(h2.state.requests.length + h1.state.requests.length, 0);
 });
 
 test("v0.6 pause: after a repair pauses spending, join, issue-claim and prove (which spend nothing) still work; and an approval code works only from 10 seconds after it was asked for", async () => {

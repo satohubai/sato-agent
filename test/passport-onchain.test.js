@@ -8,14 +8,14 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { concatHex, decodeFunctionData, encodeAbiParameters, encodeEventTopics, encodeFunctionData, hashTypedData, hexToString, keccak256, pad, parseTransaction, recoverTypedDataAddress, stringToHex, toFunctionSelector, toHex } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { freshHome } from "./helpers.js";
 
 freshHome();
@@ -641,6 +641,35 @@ test("CLI passport set-wallet (v0.6): a frozen folder and a pause stop it like a
   assert.match(paused.stderr, /spending_paused/);
   assert.equal(chain.state.reads.length, 0);
   assert.equal(chain.state.sent.length, 0);
+});
+
+test("CLI passport set-wallet (v0.6 seal): a wallet file with another wallet's EVM key (addresses untouched) is refused before a read; the approval binds the address derived from the key", async () => {
+  const chain = await fakeChain();
+  chains.push(chain);
+  const b = await walletBot(chain);
+  const original = readFileSync(join(b.dir, "wallet.json"), "utf8");
+  const w = JSON.parse(original);
+  writeFileSync(join(b.dir, "wallet.json"), JSON.stringify({ ...w, evm: { ...w.evm, private_key: generatePrivateKey() } }, null, 2) + "\n", { mode: 0o600 });
+  for (const extra of [[], ["--dry-run"]]) {
+    const r = await b.run(["passport", "set-wallet", "--agent-id", "91", ...extra]);
+    assert.equal(r.status, 3, r.stderr);
+    assert.match(r.stderr, /wallet_tampered/);
+    assert.match(r.stderr, /the EVM key in wallet\.json belongs to 0x[0-9a-fA-F]{40}, not to 0x[0-9a-fA-F]{40}/);
+  }
+  assert.equal(chain.state.reads.length, 0);
+  assert.equal(chain.state.sent.length, 0);
+  // The right file back: the intent names the address derived from the key (which is the sealed one).
+  writeFileSync(join(b.dir, "wallet.json"), original, { mode: 0o600 });
+  const ask = JSON.parse((await b.run(["passport", "set-wallet", "--agent-id", "91", "--json"])).stdout).needs_approval;
+  assert.equal(ask.intent.wallet, privateKeyToAccount(w.evm.private_key).address.toLowerCase());
+});
+
+test("setAgentWallet refuses when the wallet the caller approved (derived from the key) is not the wallet the client signs as, before any read", async () => {
+  walletSetup();
+  const c = chainClient();
+  await assert.rejects(setAgentWallet({ agentId: 5 }, c.c, { expectedWallet: "0x00000000000000000000000000000000000000cc" }), (e) => e instanceof PlainError && /is not the wallet this client signs as .*nothing was signed/.test(e.message));
+  assert.deepEqual(c.state.events, []);
+  await setAgentWallet({ agentId: 5, dryRun: true }, chainClient().c, { expectedWallet: acct.address.toLowerCase() });
 });
 
 test("CLI passport set-wallet: usage errors are exit 2 before any read; a chain the owner did not choose is refused (exit 3)", async () => {

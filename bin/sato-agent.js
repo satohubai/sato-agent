@@ -8,7 +8,7 @@ import { parseArgs } from "node:util";
 import { basename } from "node:path";
 import { isAddress as isEvmAddress } from "viem";
 import { createHash } from "node:crypto";
-import { addressFor, addresses, backupKeys, initWallet, restoreWallet, walletExists } from "../src/wallet.js";
+import { addressFor, addresses, backupKeys, initWallet, loadWallet, restoreWallet, solanaSecret, walletExists } from "../src/wallet.js";
 import { DEFAULT_EVM_CHAIN, chainKeys, chainsWith, defaultStable, evmChain, evmChainKeys, explorerAddress, getChain, isEvm, isKnownChain, labelList, labelOf, majorSymbols, orList, pipeList, stableBySymbol, stablesOf } from "../src/chains.js";
 import { RAISE_DELAY_MS, allowedChains, bridgesEnabled, cancelPending, evaluate, evmChainFor, isLegacyBridgesOff, isLegacySwapsOff, loadPolicy, pendingRaises, purchasesAsk, setPolicy, swapsEnabled } from "../src/policy.js";
 import { NeedsApproval, Pending, PlainError, Refused } from "../src/errors.js";
@@ -19,7 +19,7 @@ import { SHIP_FIELDS, clearShipTo, isReferralName, parseReferrerInput, referrer 
 import { parsePassportId, passportResultLines, resolveForRegister, resolvePassport, savedPassport } from "../src/passport.js";
 import { issueClaim, issueClaimLines, joinLines, joinPassport, parseName, parseVia, passportStatus, passportStatusLines, proveWallet } from "../src/passport-join.js";
 import { reportSettlement, settlementLine } from "../src/swap/referral.js";
-import { REFERRAL_SHARE_PERCENT, createReferralName, declineOffer, lookupReferralName, ownReferral, referralShow, setReferralPayout, shareTextLines, shareTexts, swapOffer, takeOffer } from "../src/referral-names.js";
+import { REFERRAL_SHARE_PERCENT, createReferralName, declineOffer, lookupReferralName, makeSigner, ownReferral, referralShow, setReferralPayout, shareTextLines, shareTexts, solanaSignerAddress, swapOffer, takeOffer } from "../src/referral-names.js";
 import { readFileSync } from "node:fs";
 import { buyGiftcard, giftcardChain, codesLine, invoiceStatus, productDetail, saveCodes, savedCodes, searchProducts } from "../src/bitrefill.js";
 import { localOrders, orderStatus, ordersAvailable, placeOrder, statusLines } from "../src/commerce.js";
@@ -333,13 +333,47 @@ const say = (text) => {
 };
 
 /**
- * v0.6.0's seal on the wallet: the commands that sign a passport message with this folder's keys (join, passport issue-claim, passport
- * prove) refuse when wallet.json is not the wallet the folder was sealed with (wallet_tampered, wallet_missing), like `backup`: a swapped
- * key would otherwise put another wallet on a public passport. They spend nothing, so a pause or a ledger problem does not stop them.
+ * v0.6.0's seal on the wallet, for the commands that sign with this folder's keys (join, passport issue-claim, passport prove,
+ * passport set-wallet, backup). They refuse (exit 3, wallet_tampered / wallet_missing) unless the wallet is the one the folder was
+ * sealed with, and the seal covers the ADDRESS fields of wallet.json, not the keys, so this also checks the keys themselves:
+ *   - the address DERIVED from each key the command will use (`evm`: the EVM key; `solana`: the Solana key) must equal the sealed one;
+ *   - a folder with no seal naming a wallet (the seal and the ledger deleted, wallet.json replaced) takes none: an older folder is
+ *     adopted inside inspect(), so a real upgrade has a sealed wallet by the time this looks, and a deleted seal does not.
+ * A folder with no wallet at all is left to the command's own "no wallet yet: run init". No pause or ledger problem stops these
+ * commands where they spend nothing (the caller adds integrityRefusals() where they spend gas).
  */
-function walletRefusals() {
-  return inspect().problems.filter((p) => p.rule === "wallet_tampered" || p.rule === "wallet_missing");
+function walletRefusals({ evm = true, solana = false } = {}) {
+  const s = inspect();
+  const named = s.problems.filter((p) => p.rule === "wallet_tampered" || p.rule === "wallet_missing");
+  if (named.length) return named;
+  if (!walletExists()) return [];
+  const refuse = (observed, message) => [{ rule: "wallet_tampered", limit: s.sealed_wallet?.evm ?? null, observed, message }];
+  const sealed = s.sealed_wallet;
+  if (!sealed) return refuse("no seal names a wallet", "this folder has no seal naming its wallet (the seal and the ledger are gone, or never existed), so the wallet file cannot be shown to be this folder's. Nothing was signed. Tell the owner; only the owner can ask for `repair` or `restore`.");
+  const same = (a, b) => typeof a === "string" && typeof b === "string" && a.toLowerCase() === b.toLowerCase();
+  try {
+    if (evm) {
+      const derived = makeSigner("base").address;
+      if (!same(derived, sealed.evm)) return refuse(derived, `the EVM key in wallet.json belongs to ${derived}, not to ${sealed.evm}, the wallet this folder was sealed with. Nothing was signed. Tell the owner.`);
+    }
+    if (solana) {
+      const derived = solanaSignerAddress(solanaSecret());
+      if (derived !== sealed.solana) return refuse(derived, `the Solana key in wallet.json belongs to ${derived}, not to ${sealed.solana}, the wallet this folder was sealed with. Nothing was signed. Tell the owner.`);
+    }
+  } catch {
+    return refuse("unreadable key", "a key in wallet.json cannot be read, so it cannot be shown to be this folder's wallet. Nothing was signed. Tell the owner.");
+  }
+  return [];
 }
+
+/** Does this folder's wallet hold a Solana key (a wallet made by `init` always does)? */
+const hasSolanaKeyFile = () => {
+  try {
+    return typeof loadWallet().solana?.secret_key_b64 === "string";
+  } catch {
+    return false;
+  }
+};
 
 /**
  * The owner's approval for something that makes the agent public or changes who can manage its passport (`join`, `passport issue-claim`,
@@ -486,7 +520,8 @@ async function main(command = cmd, args = positionals.slice(1)) {
     }
     case "backup": {
       // A wallet file that is not this folder's wallet is never shown as if it were (src/integrity.js).
-      const wrong = inspect().problems.filter((p) => p.rule === "wallet_tampered" || p.rule === "wallet_missing");
+      // The seal covers addresses, not keys, so the keys are also checked against it (walletRefusals; this only ever refuses a tampered folder).
+      const wrong = walletRefusals({ solana: true });
       if (wrong.length) throw new Refused(wrong);
       const k = backupKeys();
       const name = process.env.SATO_AGENT_HOME ? basename(home()) : null;
@@ -944,7 +979,7 @@ async function main(command = cmd, args = positionals.slice(1)) {
       } catch (err) {
         throw new UsageError(err.message);
       }
-      const wrong = walletRefusals();
+      const wrong = walletRefusals({ solana: !flags["no-solana"] && hasSolanaKeyFile() });
       if (wrong.length) throw new Refused(wrong);
       const r = await joinPassport({ name: flags.name, via: flags.via, noSolana: Boolean(flags["no-solana"]), again: Boolean(flags.again) }, { authorize: authorizeOwner });
       // The claim code is printed here, once: it is in neither the settings, the ledger nor any file.
@@ -969,14 +1004,14 @@ async function main(command = cmd, args = positionals.slice(1)) {
       }
       if (sub === "issue-claim") {
         if (rest.length > 1) throw new UsageError(usage);
-        const wrong = walletRefusals();
+        const wrong = walletRefusals({ solana: String(flags.chain ?? "").toLowerCase() === "solana" });
         if (wrong.length) throw new Refused(wrong);
         const r = await issueClaim({ passport: givenPassport(), chain: flags.chain }, { authorize: authorizeOwner });
         return out(issueClaimLines(r).join("\n"), r);
       }
       if (sub === "prove") {
         if (rest.length > 1) throw new UsageError(usage);
-        const wrong = walletRefusals();
+        const wrong = walletRefusals({ solana: String(flags.chain ?? "").toLowerCase() === "solana" });
         if (wrong.length) throw new Refused(wrong);
         const r = await proveWallet({ passport: givenPassport(), chain: flags.chain }, { authorize: authorizeOwner });
         return out(`Proved ${r.wallet} on ${r.passport_id}. It is saved here, so register links to it. Proving a wallet makes its control of the passport show on satohub.ai; it says nothing else about the agent.`, r);
@@ -993,6 +1028,11 @@ async function main(command = cmd, args = positionals.slice(1)) {
             throw new UsageError(err.message);
           }
         }
+        // The wallet file must be this folder's sealed wallet, keys included (see walletRefusals); the approval and the transaction then name the
+        // address DERIVED from the key, not the address field of wallet.json.
+        const wrong = walletRefusals();
+        if (wrong.length) throw new Refused(wrong);
+        const signerAddress = makeSigner("base").address;
         // It signs with the key and spends gas, like register: a freeze or a pause stops it like any spend (a dry run signs and sends nothing).
         if (!flags["dry-run"]) {
           const frozen = integrityRefusals();
@@ -1002,11 +1042,11 @@ async function main(command = cmd, args = positionals.slice(1)) {
         // gas), so the owner is never asked to approve something that would be refused anyway. It binds the agent, the chain and the wallet.
         const authorize = async () => {
           if (loadPolicy()?.approval !== "ask") return;
-          const intent = { cmd: "passport set-wallet", chain, agent_id: String(BigInt(flags["agent-id"])), wallet: addresses().base.toLowerCase() };
+          const intent = { cmd: "passport set-wallet", chain, agent_id: String(BigInt(flags["agent-id"])), wallet: signerAddress };
           if (!flags.approve) throw new NeedsApproval(intent, await requestApproval(intent));
           await consumeApproval(flags.approve, intent);
         };
-        const r = await baseChain.setAgentWallet({ agentId: flags["agent-id"], chain, dryRun: Boolean(flags["dry-run"]) }, undefined, { authorize });
+        const r = await baseChain.setAgentWallet({ agentId: flags["agent-id"], chain, dryRun: Boolean(flags["dry-run"]) }, undefined, { authorize, expectedWallet: signerAddress });
         if (r.already) return out(`Nothing to do: agent ${r.agent_id} on ${labelOf(chain)} already has this wallet (${r.wallet}) as its payment wallet.`, r);
         if (r.dry_run) return out(`DRY RUN: agent ${r.agent_id} on ${labelOf(chain)} belongs to this wallet, its payment wallet is ${r.current_wallet ?? "not set"}, and this wallet holds gas. Run for real, it signs one message and sends one transaction (this wallet's own gas) that sets ${r.wallet}. Nothing was signed or sent.`, r);
         return out(`Set agent ${r.agent_id}'s payment wallet on ${labelOf(chain)} to ${r.wallet}.\n  ${r.explorer}`, r);

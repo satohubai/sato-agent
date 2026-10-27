@@ -233,6 +233,25 @@ export async function buildActionRequest({ action, passportId, signer, claimSha2
 // ---------------------------------------------------------------- talking to Sato Hub
 
 const originOf = (deps) => deps.origin ?? new URL(MCP_URL).origin;
+
+/** The only host these commands are meant for. */
+export const OFFICIAL_HOST = "satohub.ai";
+
+/**
+ * The host the passport commands will sign for when it is not satohub.ai (SATO_AGENT_MCP_URL, or a test's origin), else null. A signed join
+ * is bound to the domain in its message, but the message says "satohub.ai" whatever host receives it: so the owner is told where it goes,
+ * in the approval intent (so a code for one host is no use for another) and on the card.
+ */
+export function customHost(deps = {}) {
+  try {
+    const h = new URL(originOf(deps)).host;
+    return h === OFFICIAL_HOST ? null : h;
+  } catch {
+    return "(an address the kit cannot read)";
+  }
+}
+const hostIntent = (h) => (h ? { host: h } : {});
+const hostCard = (h) => (h ? [`⚠ Signing for ${h}, not satohub.ai: SATO_AGENT_MCP_URL points the passport commands there. Say yes only if the owner set that on purpose.`] : []);
 const parse = (text) => {
   try {
     const v = JSON.parse(text);
@@ -549,8 +568,10 @@ export async function joinPassport({ name, via, noSolana = false, again = false 
     wallets: wallets.map(walletLabel),
     again: Boolean(again),
     replaces: again && had ? had : null,
+    ...hostIntent(customHost(deps)),
   };
   const card = [
+    ...hostCard(customHost(deps)),
     "Join Sato Hub: this makes the agent's Sato Passport PUBLIC on satohub.ai.",
     `Wallets it lists: ${wallets.map(eachWallet).join("; ")} (the EVM wallet is the primary).`,
     `Name: ${displayName ?? "(Sato Hub makes one)"}. It says it came from: ${how}.`,
@@ -645,8 +666,9 @@ function actionSigner(chain, keys) {
 export async function issueClaim({ passport, chain } = {}, deps = {}) {
   const passportId = passportForAction(passport);
   const signer = actionSigner(chain, deps.keys);
-  const intent = { cmd: "passport issue-claim", passport: passportId, wallet: walletLabel(signer) };
+  const intent = { cmd: "passport issue-claim", passport: passportId, wallet: walletLabel(signer), ...hostIntent(customHost(deps)) };
   const card = [
+    ...hostCard(customHost(deps)),
     `A new owner claim code for ${passportId}: the earlier unused codes stop working.`,
     `${eachWallet(signer)} signs one message (no payment, no gas). Nothing has been signed or sent.`,
     "The code lets whoever holds it link the passport to their account on satohub.ai, once. Give it only to the agent's owner.",
@@ -677,8 +699,9 @@ export function issueClaimLines(r) {
 export async function proveWallet({ passport, chain } = {}, deps = {}) {
   const passportId = passportForAction(passport);
   const signer = actionSigner(chain, deps.keys);
-  const intent = { cmd: "passport prove", passport: passportId, wallet: walletLabel(signer) };
+  const intent = { cmd: "passport prove", passport: passportId, wallet: walletLabel(signer), ...hostIntent(customHost(deps)) };
   const card = [
+    ...hostCard(customHost(deps)),
     `Prove this agent's wallet on ${passportId}, publicly: it makes the wallet's control of the passport show on satohub.ai, and any wallet on a passport can manage it.`,
     `${eachWallet(signer)} signs one message (no payment, no gas). Nothing has been signed or sent.`,
     JOIN_SCOPE_NOTE,

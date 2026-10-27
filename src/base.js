@@ -396,7 +396,7 @@ export async function registerAgent({ name, description, image, services = [], x
  * Read-only checks first, and nothing signed until they pass: the agent is this wallet's (ownerOf), its payment wallet is not already this
  * wallet (then nothing is sent), and the wallet holds some of the chain's coin for gas. Then `deps.authorize()` (the owner's approval, when
  * the owner chose "ask"; it throws to stop), then the signature, a simulation of the exact calldata, and the transaction.
- * `dryRun` stops after the checks. deps: authorize, deadline (seconds, for the tests), env.
+ * `dryRun` stops after the checks. deps: authorize, expectedWallet (the address derived from the key, refused if the client signs as another), deadline (seconds, for the tests), env.
  * Returns { already: true, ... } when nothing needed doing, { dry_run: true, ... } for a dry run, else { tx, explorer, ... }.
  */
 export async function setAgentWallet({ agentId, chain = DEFAULT_EVM_CHAIN, dryRun = false }, c = clients(undefined, chain), deps = {}) {
@@ -410,6 +410,10 @@ export async function setAgentWallet({ agentId, chain = DEFAULT_EVM_CHAIN, dryRu
   if (policy && !allowedChains(policy).includes(chain)) throw new PlainError(`this agent is set to work on ${allowedChains(policy).join(" and ")} only; the ERC-8004 registry meant here is on ${ch.label}. Nothing was signed.`);
   const id = BigInt(agentId);
   const wallet = c.account.address;
+  // The wallet the caller approved (derived from the key) is the one this client signs as; any difference is refused before a read.
+  if (deps.expectedWallet && String(deps.expectedWallet).toLowerCase() !== wallet.toLowerCase()) {
+    throw new PlainError(`the wallet this was approved for (${deps.expectedWallet}) is not the wallet this client signs as (${wallet}); nothing was signed.`);
+  }
   const owner = await c.pub.readContract({ address: registry, abi: identityRegistryAbi, functionName: "ownerOf", args: [id] });
   if (String(owner).toLowerCase() !== wallet.toLowerCase()) {
     throw new PlainError(`agent ${id} on ${ch.label} belongs to ${owner}, not this wallet (${wallet}); nothing was signed. Only the wallet that owns an agent can set its payment wallet: wait until Sato Hub has handed it over.`);

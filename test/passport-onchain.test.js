@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -619,6 +619,28 @@ test("CLI passport set-wallet: with the owner acting on its own (approval auto) 
   assert.equal(broke.status, 1);
   assert.match(broke.stderr, /this wallet holds no ETH on Base, so it cannot pay the gas for this\./);
   assert.equal(chain.state.sent.length, 1, "only the one that was allowed");
+});
+
+test("CLI passport set-wallet (v0.6): a frozen folder and a pause stop it like any spend before a single read; a dry run signs and sends nothing, so it still reports", async () => {
+  const chain = await fakeChain();
+  chains.push(chain);
+  const b = await walletBot(chain, ["--approval", "auto"]);
+  appendFileSync(join(b.dir, "ledger.jsonl"), '{"id":"x","kind":"check","status":"skipped"}\n');
+  const frozen = await b.run(["passport", "set-wallet", "--agent-id", "90"]);
+  assert.equal(frozen.status, 3, frozen.stderr);
+  assert.match(frozen.stderr, /ledger_tampered/);
+  assert.equal(chain.state.reads.length, 0, "refused before any read");
+  const dry = await b.run(["passport", "set-wallet", "--agent-id", "90", "--dry-run"]);
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.equal(chain.state.sent.length, 0);
+  // repair pauses spending for 24 hours: set-wallet (gas) stays stopped, like register.
+  assert.equal((await b.run(["repair"])).status, 0);
+  chain.state.reads.length = 0;
+  const paused = await b.run(["passport", "set-wallet", "--agent-id", "90"]);
+  assert.equal(paused.status, 3, paused.stderr);
+  assert.match(paused.stderr, /spending_paused/);
+  assert.equal(chain.state.reads.length, 0);
+  assert.equal(chain.state.sent.length, 0);
 });
 
 test("CLI passport set-wallet: usage errors are exit 2 before any read; a chain the owner did not choose is refused (exit 3)", async () => {

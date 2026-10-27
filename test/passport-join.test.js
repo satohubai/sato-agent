@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, createPublicKey, verify as edVerify } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1093,6 +1093,59 @@ test("CLI join: Sato Hub's join limits (429) are exit 1 with the sentence, one r
   }
 });
 
+test("v0.6 seal: join, passport issue-claim and passport prove refuse (exit 3) when wallet.json is not the wallet the folder was sealed with, or is gone, before any approval code or request", async () => {
+  const hub = await newHub();
+  const b = await bot(hub.origin);
+  const original = readFileSync(b.file("wallet.json"), "utf8");
+  const w = JSON.parse(original);
+  const cmds = [["join"], ["passport", "issue-claim", "--passport", ID], ["passport", "prove", "--passport", ID]];
+  writeFileSync(b.file("wallet.json"), JSON.stringify({ ...w, evm: { ...w.evm, address: `0x${"ab".repeat(20)}` } }, null, 2) + "\n", { mode: 0o600 });
+  for (const args of cmds) {
+    const r = await b.run(args);
+    assert.equal(r.status, 3, args.join(" "));
+    assert.match(r.stderr, /wallet_tampered/);
+  }
+  rmSync(b.file("wallet.json"));
+  for (const args of cmds) {
+    const r = await b.run(args);
+    assert.equal(r.status, 3, args.join(" "));
+    assert.match(r.stderr, /wallet_missing/);
+  }
+  assert.equal(existsSync(b.file("approvals.json")), false, "no approval code for a wallet that is not the sealed one");
+  assert.equal(hub.state.requests.length, 0);
+  assert.equal(existsSync(b.file("settings.json")), false);
+  // The right wallet file back: it works again.
+  writeFileSync(b.file("wallet.json"), original, { mode: 0o600 });
+  assert.equal((await b.run(["join"])).status, 5);
+});
+
+test("v0.6 pause: after a repair pauses spending, join, issue-claim and prove (which spend nothing) still work; and an approval code works only from 10 seconds after it was asked for", async () => {
+  const hub = await newHub();
+  const b = await bot(hub.origin);
+  // A line appended by hand freezes the folder; `repair` (only when the owner asks) puts it right and pauses spending for 24 hours.
+  appendFileSync(b.file("ledger.jsonl"), '{"id":"x","kind":"check","status":"skipped"}\n');
+  const status = await b.run(["status"]);
+  assert.match(status.stdout, /FROZEN \(ledger_tampered\)/);
+  assert.equal((await b.run(["repair"])).status, 0);
+  assert.match((await b.run(["status"])).stdout, /spending paused until/);
+  const { second } = await b.approved(["join"]);
+  assert.equal(second.status, 0, second.stderr);
+  const { second: again } = await b.approved(["passport", "issue-claim"]);
+  assert.equal(again.status, 0, again.stderr);
+  const { second: proved } = await b.approved(["passport", "prove", "--passport", ID2]);
+  assert.equal(proved.status, 0, proved.stderr);
+  // The v0.6 approval wait (the test suite turns it off; SATO_TEST_APPROVAL_WAIT=1 turns it on): a reflex re-run is refused and nothing is sent.
+  const hub2 = await newHub();
+  const c = await bot(hub2.origin);
+  const ask = await c.run(["join", "--json"], { SATO_TEST_APPROVAL_WAIT: "1" });
+  assert.equal(ask.status, 5);
+  const reflex = await c.run(["join", "--approve", JSON.parse(ask.stdout).needs_approval.code], { SATO_TEST_APPROVAL_WAIT: "1" });
+  assert.equal(reflex.status, 1);
+  assert.match(reflex.stderr, /was asked for \d+ s ago\. Nothing was spent\. Show the owner the intent and wait for their yes/);
+  assert.equal(hub2.state.requests.length, 0);
+  assert.equal(existsSync(c.file("settings.json")), false);
+});
+
 test("CLI join with no wallet yet: exit 1 and the way to make one, before any approval code or request", async () => {
   const hub = await newHub();
   const dir = join(mkdtempSync(join(tmpdir(), "sato-agent-join-")), "agent");
@@ -1232,7 +1285,7 @@ test("the README and BOT.md describe join: free, public, the wallets it lists, t
   assert.doesNotMatch(section, BANNED);
   assert.match(readme, /\| `join \[--name "<name>"\] \[--via kit\\\|sato-bot\] \[--no-solana\] \[--again\]` \|/);
   assert.match(readme, /`POST \/api\/passport\/join`/);
-  const step = bot.slice(bot.indexOf("8. **Public registration, once.**"), bot.indexOf("9. **EVM chains only"));
+  const step = bot.slice(bot.indexOf("9. **Public registration, once.**"), bot.indexOf("10. **EVM chains only"));
   assert.ok(step.length > 400, "BOT.md has the step");
   assert.match(step, /Ask the owner once: "Register this bot publicly with Sato Hub\? It's free\."/);
   assert.match(step, /join --via sato-bot/);

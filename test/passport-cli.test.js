@@ -78,10 +78,11 @@ test("a saved passport is used when no flag is given, so the intent names it; --
   assert.equal(JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).passport, ID, "asking for approval does not change what is saved");
 });
 
-test("--again: another agent never takes the saved passport in the intent; only an id given on that command; a --resume of the first agent does", () => {
-  // settings.json still holds the saved passport from the test above. Two agents on Base are in the ledger, oldest first.
-  const row = (agent) => JSON.stringify({ id: `r${agent}`, ts: new Date().toISOString(), kind: "register", status: "registered", chain: "base", usd: 0, agent_id: agent, tx: `0x${agent.padEnd(64, "0")}` }) + "\n";
-  appendFileSync(join(home, "ledger.jsonl"), row("76") + row("77"));
+test("--again: another agent never takes the saved passport in the intent; only an id given on that command; a --resume of the first agent does", async () => {
+  // settings.json still holds the saved passport from the test above. Two agents on Base are in the ledger, oldest first. They are written
+  // through the kit's own ledger (v0.6.0 chains and seals it: a line appended by hand would freeze the folder).
+  const { record } = await import("../src/ledger.js");
+  for (const agent of ["76", "77"]) record({ id: `r${agent}`, kind: "register", status: "registered", chain: "base", usd: 0, agent_id: agent, tx: `0x${agent.padEnd(64, "0")}` });
   assert.equal(JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).passport, ID);
   const intentOf = (...args) => JSON.parse(run(...REG, ...args, "--json").stdout).needs_approval.intent;
   const again = intentOf("--again");
@@ -126,7 +127,7 @@ test("README and BOT.md describe the link as the agent's own declaration, checke
   assert.match(section, /`register --again` \(another agent from the same wallet\) does \*\*not\*\* take the saved one/);
   assert.match(section, /`register` prints one line saying so/);
   assert.match(readme, /\| `register --name --description .*\[--passport <sato:agt:id\\\|none>\]/);
-  const step = bot.slice(bot.indexOf("If the owner gave you a Sato Passport id"), bot.indexOf("10. **Suggest one routine**"));
+  const step = bot.slice(bot.indexOf("If the owner gave you a Sato Passport id"), bot.indexOf("11. **Suggest one routine**"));
   assert.ok(step.length > 200, "BOT.md has the step");
   assert.match(step, /your own declaration, in your own file/);
   assert.match(step, /The kit checks nothing with Sato Hub/);

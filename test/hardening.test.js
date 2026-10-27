@@ -674,7 +674,7 @@ test("v0.6.0: the docs say what the limits protect against (and what not), the b
   const bot = fs.readFileSync(ROOT("BOT.md"), "utf8");
   const readme = fs.readFileSync(ROOT("README.md"), "utf8");
   const skill = fs.readFileSync(ROOT("skills/sato-agent/SKILL.md"), "utf8");
-  assert.equal(JSON.parse(fs.readFileSync(ROOT("package.json"), "utf8")).version, "0.6.0");
+  assert.equal(JSON.parse(fs.readFileSync(ROOT("package.json"), "utf8")).version, "0.6.1");
   for (const [name, text] of [["BOT.md", bot], ["README.md", readme]]) {
     assert.match(text, /What the limits protect against/, name);
     assert.match(text, /[Ff]und (it|the wallet) like a spending account/, name);

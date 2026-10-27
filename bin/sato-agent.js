@@ -333,6 +333,15 @@ const say = (text) => {
 };
 
 /**
+ * v0.6.0's seal on the wallet: the commands that sign a passport message with this folder's keys (join, passport issue-claim, passport
+ * prove) refuse when wallet.json is not the wallet the folder was sealed with (wallet_tampered, wallet_missing), like `backup`: a swapped
+ * key would otherwise put another wallet on a public passport. They spend nothing, so a pause or a ledger problem does not stop them.
+ */
+function walletRefusals() {
+  return inspect().problems.filter((p) => p.rule === "wallet_tampered" || p.rule === "wallet_missing");
+}
+
+/**
  * The owner's approval for something that makes the agent public or changes who can manage its passport (`join`, `passport issue-claim`,
  * `passport prove`), in EVERY approval mode, like `settings set --referrer`: without --approve the command stops with exit 5 and a one-time
  * code for this exact intent, printing `card` first; the same command with --approve <code> goes ahead. Nothing is signed before that.
@@ -935,6 +944,8 @@ async function main(command = cmd, args = positionals.slice(1)) {
       } catch (err) {
         throw new UsageError(err.message);
       }
+      const wrong = walletRefusals();
+      if (wrong.length) throw new Refused(wrong);
       const r = await joinPassport({ name: flags.name, via: flags.via, noSolana: Boolean(flags["no-solana"]), again: Boolean(flags.again) }, { authorize: authorizeOwner });
       // The claim code is printed here, once: it is in neither the settings, the ledger nor any file.
       return out(joinLines(r).join("\n"), r);
@@ -958,11 +969,15 @@ async function main(command = cmd, args = positionals.slice(1)) {
       }
       if (sub === "issue-claim") {
         if (rest.length > 1) throw new UsageError(usage);
+        const wrong = walletRefusals();
+        if (wrong.length) throw new Refused(wrong);
         const r = await issueClaim({ passport: givenPassport(), chain: flags.chain }, { authorize: authorizeOwner });
         return out(issueClaimLines(r).join("\n"), r);
       }
       if (sub === "prove") {
         if (rest.length > 1) throw new UsageError(usage);
+        const wrong = walletRefusals();
+        if (wrong.length) throw new Refused(wrong);
         const r = await proveWallet({ passport: givenPassport(), chain: flags.chain }, { authorize: authorizeOwner });
         return out(`Proved ${r.wallet} on ${r.passport_id}. It is saved here, so register links to it. Proving a wallet makes its control of the passport show on satohub.ai; it says nothing else about the agent.`, r);
       }
@@ -977,6 +992,11 @@ async function main(command = cmd, args = positionals.slice(1)) {
             if (err instanceof Refused) throw err;
             throw new UsageError(err.message);
           }
+        }
+        // It signs with the key and spends gas, like register: a freeze or a pause stops it like any spend (a dry run signs and sends nothing).
+        if (!flags["dry-run"]) {
+          const frozen = integrityRefusals();
+          if (frozen.length) throw new Refused(frozen);
         }
         // The usual approval: only when the owner chose "ask", and only after the read-only checks passed (ownership, the current wallet,
         // gas), so the owner is never asked to approve something that would be refused anyway. It binds the agent, the chain and the wallet.

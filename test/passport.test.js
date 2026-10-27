@@ -91,7 +91,7 @@ test("the id: only sato:agt: plus 12 characters of the passport alphabet; anythi
     "", " ", "none-ish", "sato:agt:", "sato:agt:exmpexmpexm", "sato:agt:exmpexmpexmpp", "sato:agt:EXMPEXMPEXMP", "SATO:AGT:exmpexmpexmp",
     "sato:agt:exmpexmpexm1", "sato:agt:exmpexmpexm0", "sato:agt:exmpexmpexmi", "sato:agt:exmpexmpexml", "sato:agt:exmpexmpexmo",
     "sato:agt:exmpexmpexm-", "sato:agt:exmpexmpex m", "sato:usr:exmpexmpexmp", "https://satohub.ai/passport/exmpexmpexmp", "exmpexmpexmp",
-    "sato:agt:exmpexmpexmp/../x", `${ID}\n${ID}`, "sato:agt:exmpexmpexmp‮",
+    "sato:agt:exmpexmpexmp/../x", `${ID}\n${ID}`, "sato:agt:exmpexmpexmp\u202e",
   ];
   for (const v of bad) assert.throws(() => parsePassportId(v), /--passport must be a Sato Passport id like sato:agt:/, JSON.stringify(v));
   for (const v of [undefined, null, 12, {}, []]) assert.throws(() => parsePassportId(v), /--passport must be/, String(v));
@@ -234,7 +234,7 @@ test("an invalid id stops register before anything is simulated, signed or saved
     assert.equal(state.simulated, 0, "not even simulated");
   }
   assert.throws(() => readFileSync(settingsFile(), "utf8"), /ENOENT/, "nothing saved");
-  assert.equal(entries().filter((e) => e.kind !== "policy").length, 0, "nothing in the ledger but the policy set up above");
+  assert.equal(entries().filter((e) => e.kind !== "policy" && e.kind !== "wallet").length, 0, "nothing in the ledger but the policy and the wallet set up above");
   // Same on a --resume.
   const { c, state } = client();
   await assert.rejects(registerAgent({ name: "Sato Base Agent", description: "test", resume: 4242, passport: "nope" }, c), /--passport must be/);
